@@ -1,0 +1,2 @@
+# core-auth
+Authentication Module
