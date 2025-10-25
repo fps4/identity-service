@@ -5,15 +5,18 @@ import { CONFIG } from './config.js';
 import { getMasterConnection, disconnect } from './utils/db.js';
 import logger from './utils/logger.js';
 import sessionRoutes from './routes/session-routes.js';
+import oauthRoutes from './routes/oauth-routes.js';
 import {
   refreshTenantOrigins,
   scheduleTenantCorsRefresh,
   hasTenantOrigins,
   isTenantOriginAllowed
 } from './utils/tenant-cors.js';
+import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
 
 async function bootstrap() {
   const app = express();
+  app.use(express.urlencoded({ extended: false }));
   app.use(express.json({ limit: '512kb' }));
 
   const isProd = CONFIG.environment === 'production';
@@ -42,7 +45,7 @@ async function bootstrap() {
       }
       return callback(new Error('Not allowed by CORS'));
     },
-    methods: CONFIG.cors.allowedMethods,
+    methods: Array.from(CONFIG.cors.allowedMethods),
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     optionsSuccessStatus: 204
@@ -56,6 +59,13 @@ async function bootstrap() {
     res.json({ status: 'ok', uptime: process.uptime() });
   });
 
+  app.get('/.well-known/jwks.json', async (_req, res) => {
+    await ensureActiveSigningKey();
+    const keys = await listPublicKeys();
+    res.json({ keys });
+  });
+
+  app.use('/oauth2', oauthRoutes);
   app.use('/v1', sessionRoutes);
 
   let server: Server;

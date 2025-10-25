@@ -1,5 +1,6 @@
 import { CONFIG } from './config.js';
 import { createAuthorizer, createSessionJwtSigner } from './core/index.js';
+import { createOAuthServer } from './oauth/server.js';
 import { getMasterConnection } from './utils/db.js';
 import { makeModels } from './models/index.js';
 import logger from './utils/logger.js';
@@ -15,5 +16,11 @@ export const authorizer = createAuthorizer({
   makeModels,
   signJwt: sessionJwtSigner,
   sessionTtlMinutes: CONFIG.auth.sessionTtlMinutes,
+  logger
+});
+
+export const oauthServer = createOAuthServer({
+  getMasterConnection,
+  makeModels,
   logger
 });

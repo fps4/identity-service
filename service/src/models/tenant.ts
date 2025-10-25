@@ -2,6 +2,19 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
 
 const { Schema } = mongoose;
 
+export interface TenantOAuthLimits {
+  tokensPerMinute?: number;
+  refreshTokens?: number;
+  clientCap?: number;
+}
+
+export interface TenantOAuthConfig {
+  enabled?: boolean;
+  allowedGrantTypes?: string[];
+  allowedScopes?: string[];
+  limits?: TenantOAuthLimits;
+}
+
 export interface TenantDocument extends Document {
   _id: string;
   name: string;
@@ -12,9 +25,24 @@ export interface TenantDocument extends Document {
   cookieDomain?: string;
   jwtAudience?: string;
   jwtIssuer?: string;
+  oauth?: TenantOAuthConfig | null;
+  settings?: Record<string, unknown> | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
+
+const oauthLimitsSchema = new Schema<TenantOAuthLimits>({
+  tokensPerMinute: { type: Number },
+  refreshTokens: { type: Number },
+  clientCap: { type: Number }
+}, { _id: false });
+
+const oauthConfigSchema = new Schema<TenantOAuthConfig>({
+  enabled: { type: Boolean, default: false },
+  allowedGrantTypes: { type: [String], default: [] },
+  allowedScopes: { type: [String], default: [] },
+  limits: { type: oauthLimitsSchema, default: undefined }
+}, { _id: false });
 
 const tenantSchema = new Schema<TenantDocument>({
   _id: { type: String, required: true },
@@ -26,6 +54,8 @@ const tenantSchema = new Schema<TenantDocument>({
   cookieDomain: { type: String },
   jwtAudience: { type: String },
   jwtIssuer: { type: String },
+  oauth: { type: oauthConfigSchema, default: undefined },
+  settings: { type: Schema.Types.Mixed, default: undefined },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

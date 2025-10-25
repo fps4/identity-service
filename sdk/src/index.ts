@@ -4,6 +4,8 @@ export interface CoreAuthClientOptions {
   defaultTenantId?: string;
   fetchImpl?: typeof fetch;
   defaultHeaders?: Record<string, string>;
+  defaultClientId?: string;
+  defaultClientSecret?: string;
 }
 
 export interface CreateSessionParams {
@@ -38,10 +40,25 @@ export interface UpdateSessionResponse {
   };
 }
 
+export interface ClientCredentialsParams {
+  clientId?: string;
+  clientSecret?: string;
+  scope?: string[];
+  headers?: Record<string, string>;
+}
+
+export interface ClientCredentialsResponse {
+  accessToken: string;
+  tokenType: string;
+  expiresIn: number;
+  scope: string[];
+}
+
 interface RequestOptions {
   method: string;
   headers?: Record<string, string>;
   body?: string;
+  skipDefaultAuth?: boolean;
 }
 
 export class CoreAuthClient {
@@ -50,6 +67,8 @@ export class CoreAuthClient {
   private readonly defaultTenantId?: string;
   private readonly fetchImpl?: typeof fetch;
   private readonly defaultHeaders: Record<string, string>;
+  private readonly defaultClientId?: string;
+  private readonly defaultClientSecret?: string;
 
   constructor(options: CoreAuthClientOptions) {
     if (!options?.baseUrl) {
@@ -60,6 +79,8 @@ export class CoreAuthClient {
     this.defaultTenantId = options.defaultTenantId;
     this.fetchImpl = options.fetchImpl;
     this.defaultHeaders = options.defaultHeaders ? { ...options.defaultHeaders } : {};
+    this.defaultClientId = options.defaultClientId;
+    this.defaultClientSecret = options.defaultClientSecret;
   }
 
   async createSession(params: CreateSessionParams): Promise<CreateSessionResponse> {
@@ -102,9 +123,58 @@ export class CoreAuthClient {
     return response;
   }
 
-  private async request<T>(url: string, init: RequestOptions): Promise<T> {
+  async requestClientCredentialsToken(params: ClientCredentialsParams = {}): Promise<ClientCredentialsResponse> {
+    const clientId = params.clientId ?? this.defaultClientId;
+    const clientSecret = params.clientSecret ?? this.defaultClientSecret;
+    if (!clientId || !clientSecret) {
+      throw new Error('clientId and clientSecret are required to request client credentials tokens');
+    }
+
+    const url = `${this.baseUrl}/oauth2/token`;
+    const body = new URLSearchParams({
+      grant_type: 'client_credentials'
+    });
+    if (params.scope?.length) {
+      body.set('scope', params.scope.join(' '));
+    }
+
+    const headers: Record<string, string> = {
+      ...params.headers,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    };
+
+    if (!headers.Authorization && !headers.authorization) {
+      const bufferCtor = (globalThis as any)?.Buffer;
+      if (bufferCtor?.from) {
+        headers.Authorization = `Basic ${bufferCtor.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+      } else {
+        body.set('client_id', clientId);
+        body.set('client_secret', clientSecret);
+      }
+    } else {
+      body.set('client_id', clientId);
+    }
+
+    const response = await this.request<any>(url, {
+      method: 'POST',
+      headers,
+      body: body.toString(),
+      skipDefaultAuth: true
+    });
+
+    return {
+      accessToken: response.access_token,
+      tokenType: response.token_type,
+      expiresIn: response.expires_in,
+      scope: typeof response.scope === 'string' && response.scope.trim()
+        ? response.scope.trim().split(/\s+/)
+        : []
+    };
+  }
+
+  private async request<T>(url: string, init: RequestOptions & { skipDefaultAuth?: boolean }): Promise<T> {
     const fetcher = await this.resolveFetch();
-    const headers = this.buildHeaders(init.headers);
+    const headers = this.buildHeaders(init.headers, init.skipDefaultAuth);
     const response = await fetcher(url, {
       method: init.method,
       body: init.body,
@@ -123,13 +193,15 @@ export class CoreAuthClient {
     return data as T;
   }
 
-  private buildHeaders(headers?: Record<string, string>) {
+  private buildHeaders(headers?: Record<string, string>, skipDefaultAuth?: boolean) {
     const result: Record<string, string> = {
-      'Content-Type': 'application/json',
       ...this.defaultHeaders,
       ...(headers ?? {})
     };
-    if (this.apiKey && !result.Authorization && !result.authorization) {
+    if (!result['Content-Type'] && !result['content-type']) {
+      result['Content-Type'] = 'application/json';
+    }
+    if (!skipDefaultAuth && this.apiKey && !result.Authorization && !result.authorization) {
       result.Authorization = `Bearer ${this.apiKey}`;
     }
     return result;

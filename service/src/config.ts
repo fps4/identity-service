@@ -26,6 +26,20 @@ export const CONFIG = {
     jwtIssuer: process.env.AUTH_JWT_ISSUER ?? 'core-auth-service',
     jwtAudience: process.env.AUTH_JWT_AUDIENCE ?? 'core-auth-clients'
   },
+  oauth: {
+    accessTokenTtlSec: toNumber(process.env.OAUTH_ACCESS_TOKEN_TTL_SEC, 15 * 60),
+    refreshTokenTtlSec: toNumber(process.env.OAUTH_REFRESH_TOKEN_TTL_SEC, 30 * 24 * 60 * 60),
+    defaultClientCredentialsScopes: parseOrigins(process.env.OAUTH_CLIENT_CREDENTIALS_SCOPE),
+    key: {
+      encryptionPassphrase: process.env.OAUTH_KEY_PASSPHRASE ?? '',
+      rotationIntervalHours: toNumber(process.env.OAUTH_KEY_ROTATION_HOURS, 24 * 30)
+    },
+    tenantDefaults: {
+      maxClients: toNumber(process.env.OAUTH_TENANT_MAX_CLIENTS, 50),
+      maxAccessTokensPerMinute: toNumber(process.env.OAUTH_TENANT_MAX_TOKENS_PER_MINUTE, 200),
+      maxRefreshTokens: toNumber(process.env.OAUTH_TENANT_MAX_REFRESH_TOKENS, 10_000)
+    }
+  },
   cors: {
     staticOrigins: parseOrigins(process.env.CORS_ORIGINS),
     allowedMethods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS']

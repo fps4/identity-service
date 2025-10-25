@@ -77,8 +77,8 @@ function buildResponse(isExpress: boolean, status: number, payload: Record<strin
 function extractSessionId(reqOrEvent: ExpressLike, body: any, isExpress: boolean): string | undefined {
   if (isExpress) {
     return (
-      reqOrEvent.params?.sessionId ||
-      reqOrEvent.params?.session_id ||
+      (reqOrEvent as any).params?.sessionId ||
+      (reqOrEvent as any).params?.session_id ||
       body?.sessionId ||
       body?.session_id ||
       body?.cookies?.sessionId ||
@@ -86,9 +86,11 @@ function extractSessionId(reqOrEvent: ExpressLike, body: any, isExpress: boolean
     );
   }
 
+  const pathParameters = (reqOrEvent as any)?.pathParameters;
+
   return (
-    reqOrEvent.pathParameters?.sessionId ||
-    reqOrEvent.pathParameters?.session_id ||
+    pathParameters?.sessionId ||
+    pathParameters?.session_id ||
     body?.sessionId ||
     body?.session_id ||
     body?.cookies?.sessionId ||

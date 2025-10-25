@@ -1,34 +1,59 @@
 # Core Auth Architecture
 
-The **core-auth** project separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent, multi-tenant aware way.
+The **core-auth** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent, tenant-aware way.
 
 ## Components
 
-- **Service (`service/`)** – Node.js + Express API that brokers session creation and updates. It validates tenants, persists sessions in MongoDB, and issues JWTs for downstream services.
-- **SDK (`sdk/`)** – Minimal TypeScript client that wraps the HTTP endpoints with ergonomic methods for server-side or serverless use.
-- **Docs (`docs/`)** – Design notes, API surface, and onboarding references for teams adopting the service.
+- **Service (`service/`)** – Node.js + Express API hosting OAuth 2.0 and legacy session endpoints. It validates tenants, persists sessions and token metadata in MongoDB, manages RSA signing keys, and issues JWT access tokens for downstream services.
+- **SDK (`sdk/`)** – Minimal TypeScript client wrapping the HTTP surface (session helpers plus OAuth client-credentials helper).
+- **Docs (`docs/`)** – Architecture, API, and configuration references to help consumers integrate quickly.
 
-## Request Flow
+## High-Level Flow
 
-1. A widget or product backend makes a `POST /v1/tenants/{tenantId}/sessions` request to the service.
-2. The service validates the tenant, creates a session record, signs a JWT, and returns session metadata.
-3. The client stores the token (e.g., cookie) and uses it to authenticate subsequent calls to product APIs.
-4. When additional context (contact id, cookies) becomes available, `PATCH /v1/sessions/{sessionId}` associates it with the session.
+1. A product backend requests an access token via `POST /oauth2/token` (client credentials). Legacy clients may still call `POST /v1/tenants/{tenantId}/sessions`.
+2. The service validates the tenant, confirms OAuth is enabled for that tenant, checks client registration, and records token/session metadata.
+3. JWT access tokens are signed with the active RSA key and embed tenant (`tid`), client (`cid`), optional session (`sid`), and scope claims.
+4. Consumers attach the token to downstream API requests. Additional visitor context can be attached later via `PATCH /v1/sessions/{sessionId}`.
+
+```
+┌───────────────┐    /oauth2/token     ┌──────────────────┐
+│ Client / SDK  │ ───────────────────▶ │ Core Auth Service │
+└───────────────┘                      │  ├─ OAuth Server  │
+         ▲                             │  ├─ Session Core  │
+         │  Bearer token               │  └─ Key Manager   │
+         │                             └────────┬─────────┘
+         │                                      │
+         │                                 MongoDB
+         │                         (tenants, clients, sessions,
+         │                          tokens, key_store, logs)
+```
 
 ## Multi-Tenancy Model
 
-- Tenants and sessions are stored in MongoDB collections partitioned by `tenantId`.
-- Allowed CORS origins are loaded from tenant documents and refreshed periodically (configurable interval).
-- JWTs embed both session (`sid`) and tenant (`tid`) identifiers, letting downstream services authorize tenant-level resources quickly.
+- Each tenant document may opt into OAuth by providing an `oauth` configuration block (see [Tenant Configuration](tenant-config.md)).
+- OAuth clients reference a single tenant; rate limits and scope policies are evaluated per tenant on every token issuance.
+- Session metadata remains available for use cases that rely on `/v1/sessions`, and session IDs continue to flow through access tokens as `sid` when present.
+- Allowed CORS origins are seeded from tenant documents and refreshed periodically (configurable interval).
 
 ## Deployment
 
-- The service runs as a stateless container. Configuration is driven entirely through environment variables; see `service/.env.example`.
-- MongoDB is the only stateful dependency; a sample `docker-compose` file is available in `service/infra`.
-- JWT secrets remain unique per environment; rotation can be handled by redeploying with updated `AUTH_JWT_SECRET`.
+- The service runs as a stateless container driven entirely by environment variables (`service/.env.example` documents all knobs).
+- MongoDB is the only persistent dependency. The root `docker-compose.yaml` provisions Mongo and the service for local development.
+- RSA signing keys are stored in the `key_store` collection. Key rotation utilities mint new keys, demote the previous key to `inactive`, and expose the public JWKS at `/.well-known/jwks.json` for verifiers.
+
+## OAuth 2.0 Architecture Highlights
+
+- **Token Endpoint** (`/oauth2/token`) currently supports the client-credentials grant. Additional grants can be added by extending the OAuth server module.
+- **Key Management** – Active keys are generated automatically; optional AES-256-GCM encryption at rest is available when `OAUTH_KEY_PASSPHRASE` is configured.
+- **Data Collections**
+  - `oauth_clients` – Registered clients per tenant (client secret hashes, grant types, redirect URIs, scopes).
+  - `oauth_tokens` – Issued access (and future refresh) token metadata with rate-limit friendly indexes.
+  - `key_store` – RSA key material with status flags for rotation and JWKS publishing.
+- **Rate Limiting** – Tenants may override default token throughput (`tokensPerMinute`) and refresh-token budgets via their OAuth config.
 
 ## Extensibility
 
-- Add custom tenant validation logic by extending `createAuthorizer` dependencies.
-- Implement additional routes by mounting new routers inside `service/src/server.ts`.
-- The SDK can be wrapped or re-exported with product-specific defaults to simplify adoption. 
+- Plug additional grant flows into `service/src/oauth/server.ts` and expose them via new routes under `/oauth2`.
+- Add custom tenant validation or logging in `service/src/container.ts` by injecting decorators around the OAuth/session cores.
+- Extend the SDK (or wrap it internally) to provide product-specific helpers for registration, consent management, etc.
+- Review [Tenant Configuration](tenant-config.md) when onboarding new tenants; adjustments there ripple automatically to all grant flows.
