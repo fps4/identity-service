@@ -1,0 +1,32 @@
+version: "3.9"
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: core-auth-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+  core-auth-service:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    container_name: core-auth-service
+    environment:
+      PORT: 7305
+      NODE_ENV: development
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB_NAME: core-auth
+      AUTH_JWT_SECRET: local-dev-secret
+      AUTH_JWT_ISSUER: core-auth-service
+      AUTH_JWT_AUDIENCE: core-auth-clients
+      SESSION_TTL_MINUTES: 15
+      LOG_LEVEL: debug
+      LOG_PRETTY: "true"
+    ports:
+      - "7305:7305"
+    depends_on:
+      - mongo
+volumes:
+  mongo_data:
