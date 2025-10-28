@@ -17,6 +17,9 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - mongo
+    networks:
+      - default
+      - net-public
     environment:
       PORT: ${PORT:-7305}
       NODE_ENV: ${NODE_ENV:-production}
@@ -40,3 +43,8 @@ services:
 
 volumes:
   mongo_data:
+
+networks:
+  net-public:
+    external: true
+    name: net-public
