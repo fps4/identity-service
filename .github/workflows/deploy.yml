@@ -9,6 +9,10 @@ on:
     inputs:
       environment:
         description: "Select environment (dev or prod)"
+        type: choice
+        options:
+          - "prod"
+          - "dev"
         required: true
         default: "dev"
 
