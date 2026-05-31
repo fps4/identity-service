@@ -1,6 +1,6 @@
-# Core Auth SDK
+# Component Auth SDK
 
-Minimal TypeScript client for the Core Auth service. Designed for server-side or serverless environments.
+Minimal TypeScript client for the Component Auth service. Designed for server-side or serverless environments.
 
 ## Installation
 
@@ -15,9 +15,9 @@ Publish or link the generated package as needed. Consumers require a `fetch` imp
 ## Usage
 
 ```ts
-import { CoreAuthClient } from '@core-auth/sdk';
+import { ComponentAuthClient } from '@fps4/component-auth';
 
-const auth = new CoreAuthClient({
+const auth = new ComponentAuthClient({
   baseUrl: process.env.CORE_AUTH_URL!,
   defaultTenantId: 'tenant-123',
   defaultClientId: process.env.CORE_AUTH_CLIENT_ID,

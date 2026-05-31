@@ -1,6 +1,6 @@
 # Tenant Configuration Guide
 
-Core Auth relies on tenant-scoped metadata stored in MongoDB. Enabling OAuth 2.0 for a tenant requires adding an `oauth` section to the tenant document. This guide explains the structure, recommended defaults, and validation rules enforced by the service.
+Component Auth relies on tenant-scoped metadata stored in MongoDB. Enabling OAuth 2.0 for a tenant requires adding an `oauth` section to the tenant document. This guide explains the structure, recommended defaults, and validation rules enforced by the service.
 
 ## Minimal Tenant Document
 

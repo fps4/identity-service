@@ -1,6 +1,6 @@
-# Core Auth Architecture
+# Component Auth Architecture
 
-The **core-auth** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent, tenant-aware way.
+The **component-auth** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent, tenant-aware way.
 
 ## Components
 
@@ -17,7 +17,7 @@ The **core-auth** platform separates authentication responsibilities into a conf
 
 ```
 ┌───────────────┐    /oauth2/token     ┌──────────────────┐
-│ Client / SDK  │ ───────────────────▶ │ Core Auth Service │
+│ Client / SDK  │ ───────────────────▶ │ Component Auth Service │
 └───────────────┘                      │  ├─ OAuth Server  │
          ▲                             │  ├─ Session Core  │
          │  Bearer token               │  └─ Key Manager   │

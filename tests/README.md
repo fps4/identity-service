@@ -1,6 +1,6 @@
-# Core Auth Test Harness
+# Component Auth Test Harness
 
-This folder contains lightweight assets to validate a deployed Core Auth environment without additional tooling.
+This folder contains lightweight assets to validate a deployed Component Auth environment without additional tooling.
 
 ## Contents
 
@@ -17,7 +17,7 @@ This folder contains lightweight assets to validate a deployed Core Auth environ
    npm install  # ensure dependencies like mongoose are available
    npx tsx ../tests/load-tenant.ts \
      --mongoUri="mongodb://mongo:27017" \
-     --dbName="core-auth" \
+     --dbName="component-auth" \
      --tenantFile="../tests/new-tenant.json" \
      --clientName="Manual Harness Client" \
      --clientScopes="telemetry:read,telemetry:write" \

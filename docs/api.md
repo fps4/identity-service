@@ -1,4 +1,4 @@
-# Core Auth API
+# Component Auth API
 
 The service exposes OAuth 2.0 endpoints under `/oauth2/*` and legacy session routes under `/v1/*`. Responses are JSON unless noted otherwise.
 

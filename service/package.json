@@ -1,5 +1,5 @@
 {
-  "name": "@core-auth/service",
+  "name": "@fps4/component-auth-service",
   "version": "0.1.0",
   "private": true,
   "type": "module",

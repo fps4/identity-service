@@ -1,11 +1,11 @@
-# Core Auth
+# Component Auth
 
 Multi-tenant authentication building blocks shared across products. The project ships a standalone service for session management plus a lightweight SDK for consumers.
 
 ## Project Layout
 
 ```
-core-auth/
+component-auth/
  ├── docker/           # Docker Compose base + env-specific overrides
  ├── service/          # REST API + Docker assets
  │    ├── src/         # Express app, core logic, models
@@ -53,9 +53,9 @@ The service listens on `PORT` (default `7305`). Health check at `GET /health`.
 ## SDK Usage
 
 ```ts
-import { CoreAuthClient } from '@core-auth/sdk';
+import { ComponentAuthClient } from '@fps4/component-auth';
 
-const client = new CoreAuthClient({
+const client = new ComponentAuthClient({
   baseUrl: 'https://auth.example.com',
   defaultTenantId: 'tenant-123'
 });

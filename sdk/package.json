@@ -1,5 +1,5 @@
 {
-  "name": "@core-auth/sdk",
+  "name": "@fps4/component-auth",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",

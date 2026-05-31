@@ -1,4 +1,4 @@
-# Core Auth Service
+# Component Auth Service
 
 Express-based REST + OAuth service for multi-tenant authentication.
 

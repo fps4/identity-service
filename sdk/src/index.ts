@@ -1,4 +1,4 @@
-export interface CoreAuthClientOptions {
+export interface ComponentAuthClientOptions {
   baseUrl: string;
   apiKey?: string;
   defaultTenantId?: string;
@@ -61,7 +61,7 @@ interface RequestOptions {
   skipDefaultAuth?: boolean;
 }
 
-export class CoreAuthClient {
+export class ComponentAuthClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
   private readonly defaultTenantId?: string;
@@ -70,7 +70,7 @@ export class CoreAuthClient {
   private readonly defaultClientId?: string;
   private readonly defaultClientSecret?: string;
 
-  constructor(options: CoreAuthClientOptions) {
+  constructor(options: ComponentAuthClientOptions) {
     if (!options?.baseUrl) {
       throw new Error('baseUrl is required');
     }
@@ -218,4 +218,4 @@ export class CoreAuthClient {
   }
 }
 
-export default CoreAuthClient;
+export default ComponentAuthClient;

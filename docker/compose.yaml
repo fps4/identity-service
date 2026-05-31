@@ -1,6 +1,6 @@
 services:
   mongo:
-    container_name: core-auth-mongo
+    container_name: component-auth-mongo
     # MongoDB 5.0+ requires AVX; using `mongo:latest` pulls a newer major
     # Ref: https://github.com/flakybitnet/mongodb-oci
     image: ghcr.io/flakybitnet/mongodb-server:8.0.13-fb1
@@ -10,8 +10,8 @@ services:
     volumes:
       - mongo_data:/data/db
 
-  core-auth:
-    container_name: core-auth
+  component-auth:
+    container_name: component-auth
     build:
       context: ../service
       dockerfile: Dockerfile
@@ -24,10 +24,10 @@ services:
       PORT: ${PORT:-7305}
       NODE_ENV: ${NODE_ENV:-production}
       MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
-      MONGO_DB_NAME: ${MONGO_DB_NAME:-core-auth}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-component-auth}
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-local-dev-secret}
-      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-core-auth-service}
-      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-core-auth-clients}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-component-auth-service}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-component-auth-clients}
       SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-15}
       OAUTH_ACCESS_TOKEN_TTL_SEC: ${OAUTH_ACCESS_TOKEN_TTL_SEC:-900}
       OAUTH_REFRESH_TOKEN_TTL_SEC: ${OAUTH_REFRESH_TOKEN_TTL_SEC:-2592000}

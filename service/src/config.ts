@@ -18,13 +18,13 @@ export const CONFIG = {
   port: Number(process.env.PORT ?? 7305),
   mongo: {
     uri: process.env.MONGO_URI ?? 'mongodb://localhost:27017',
-    dbName: process.env.MONGO_DB_NAME ?? 'core-auth'
+    dbName: process.env.MONGO_DB_NAME ?? 'component-auth'
   },
   auth: {
     sessionTtlMinutes: toNumber(process.env.SESSION_TTL_MINUTES, 15),
     jwtSecret: process.env.AUTH_JWT_SECRET ?? '',
-    jwtIssuer: process.env.AUTH_JWT_ISSUER ?? 'core-auth-service',
-    jwtAudience: process.env.AUTH_JWT_AUDIENCE ?? 'core-auth-clients'
+    jwtIssuer: process.env.AUTH_JWT_ISSUER ?? 'component-auth-service',
+    jwtAudience: process.env.AUTH_JWT_AUDIENCE ?? 'component-auth-clients'
   },
   oauth: {
     accessTokenTtlSec: toNumber(process.env.OAUTH_ACCESS_TOKEN_TTL_SEC, 15 * 60),

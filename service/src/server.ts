@@ -89,7 +89,7 @@ async function bootstrap() {
   let server: Server;
 
   server = app.listen(CONFIG.port, () => {
-    logger.info({ port: CONFIG.port }, 'core-auth service is running');
+    logger.info({ port: CONFIG.port }, 'component-auth service is running');
   });
 
   const shutdown = (signal: NodeJS.Signals) => {
@@ -110,6 +110,6 @@ async function bootstrap() {
 }
 
 bootstrap().catch((error) => {
-  logger.error({ err: error }, 'failed to start core-auth service');
+  logger.error({ err: error }, 'failed to start component-auth service');
   process.exit(1);
 });
