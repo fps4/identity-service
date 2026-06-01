@@ -1,0 +1,25 @@
+{
+  "name": "@fps4/component-auth-react",
+  "version": "0.1.0",
+  "description": "Optional React UI for component-auth — a drop-in <Login/> for consumer apps (RQ-0003). Separate from the headless @fps4/component-auth SDK so server-side consumers never pull in React.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.4.5",
+    "vitest": "^3.2.4"
+  }
+}
