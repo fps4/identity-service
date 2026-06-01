@@ -10,7 +10,9 @@ component-auth/
  ├── service/          # REST API + Docker assets
  │    ├── src/         # Express app, core logic, models
  │    ├── Dockerfile   # Container build
- ├── sdk/              # TypeScript client for the API
+ ├── sdk/              # Headless TypeScript client for the API
+ │    └── src/
+ ├── react/            # Optional React UI: drop-in <Login/> (@fps4/component-auth-react)
  │    └── src/
  ├── docs/             # Architecture notes & API reference
  └── README.md
@@ -99,6 +101,24 @@ const token = await client.completeGoogleLogin({
 ```
 
 Run `npm install && npm run build` inside `sdk/` to compile distributable assets. Consumers need a `fetch` implementation (Node 18+ or polyfill); the login helpers also require WebCrypto (browser or Node 18+).
+
+### React login component
+
+For React consumers, `@fps4/component-auth-react` (in `react/`) ships a drop-in `<Login/>` for the
+local email/password IdP — so apps don't rebuild the form. It's a **separate, opt-in** package (React
+peer dependency only); the headless SDK stays UI-free.
+
+```tsx
+import { Login } from '@fps4/component-auth-react';
+
+<Login
+  baseUrl="https://auth-dev.example.com"
+  clientId="client-local"
+  onSuccess={(token) => sessionStorage.setItem('access_token', token.accessToken)}
+/>
+```
+
+See [`react/README.md`](react/README.md) for styling (Tailwind/shadcn) and the full API.
 
 ## Docs
 

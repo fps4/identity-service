@@ -5,6 +5,9 @@
 TypeScript service plus a lightweight SDK. It owns **authentication** (who you are) only — consuming
 products keep their own **authorization** (what you may do).
 
+It is a standalone TypeScript service, a headless SDK, and an optional React UI package
+(`@fps4/component-auth-react`) with a drop-in `<Login/>`.
+
 It issues two kinds of JWT, both RS256-signed and verifiable via a published JWKS:
 
 - **Machine tokens** — `client_credentials` grant; claims `tid` / `cid` / `sid` / `scope`.
@@ -25,7 +28,8 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 | `service/scripts/` | `manage-users.ts` — operator CLI (create/reset/lock/unlock/disable users). |
 | `service/src/utils/` | Key store (RSA generate/rotate + JWKS), db, hashing, CORS, logging. |
 | `service/tests/` | Vitest suites (dependency-injected, no network/DB). |
-| `sdk/` | TypeScript client: `requestClientCredentialsToken` + the Google login helpers (`beginGoogleLogin` / `completeGoogleLogin` / `refreshUserToken` / `revokeUserToken`). |
+| `sdk/` | Headless TypeScript client: `requestClientCredentialsToken` + the Google login helpers (`beginGoogleLogin` / `completeGoogleLogin` / `refreshUserToken` / `revokeUserToken`) + `registerWithPassword` / `loginWithPassword`. No UI; safe server-side. |
+| `react/` | **Optional** React UI package `@fps4/component-auth-react` — a drop-in `<Login/>` (password) for consumer apps (RQ-0003 / ADR-0002). Separate package so server-side consumers never pull in React. |
 | `docker/` | Compose base + dev/prod overlays. Deploys are manual over `ssh://ds1` (see `README.md`). |
 | `docs/` | API, architecture, tenant-config references, and `docs/requirements/` (RQ specs). |
 
