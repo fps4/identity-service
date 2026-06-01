@@ -1,6 +1,15 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'crypto';
+import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'crypto';
 
 const SCRYPT_KEY_LEN = 64;
+
+/**
+ * Deterministic hash for high-entropy opaque tokens (refresh tokens) so they can be looked up by
+ * hash without storing the raw value. NOT for low-entropy secrets — those use {@link hashSecret}
+ * (salted scrypt). Deterministic is required here: lookup hashes the presented token and matches.
+ */
+export function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
 
 export function hashSecret(secret: string): string {
   const salt = randomBytes(16);

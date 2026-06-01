@@ -42,19 +42,34 @@ export async function rotateSigningKey(): Promise<ActiveKey> {
   const { KeyStore } = makeModels(connection);
 
   const { privateKey, publicKey, kid } = createKeyPair();
+  const newKeyDoc = {
+    kid,
+    privateKey: encryptPrivateKey(privateKey),
+    publicKey,
+    algorithm: 'RS256' as const,
+    status: 'active' as const
+  };
 
+  // Prefer an atomic rotation. A single-node Mongo (the default dev/prod compose) is a standalone,
+  // not a replica set, so `withTransaction` throws — fall back to a sequential rotation there. The
+  // demote-then-create ordering keeps verification safe either way: the JWKS publishes both active
+  // and inactive keys, so a token signed by the just-demoted key still verifies (ADR rotation rule).
   const session = await connection.startSession();
-  await session.withTransaction(async () => {
-    await KeyStore.updateMany({ status: 'active' }, { $set: { status: 'inactive', rotatedAt: new Date() } }).session(session);
-    await KeyStore.create([{
-      kid,
-      privateKey: encryptPrivateKey(privateKey),
-      publicKey,
-      algorithm: 'RS256',
-      status: 'active'
-    }], { session });
-  });
-  session.endSession();
+  try {
+    await session.withTransaction(async () => {
+      await KeyStore.updateMany({ status: 'active' }, { $set: { status: 'inactive', rotatedAt: new Date() } }).session(session);
+      await KeyStore.create([newKeyDoc], { session });
+    });
+  } catch (error) {
+    if (!isTransactionsUnsupported(error)) {
+      throw error;
+    }
+    logger.warn({ kid }, 'transactions unavailable (standalone Mongo); rotating signing key sequentially');
+    await KeyStore.updateMany({ status: 'active' }, { $set: { status: 'inactive', rotatedAt: new Date() } });
+    await KeyStore.create(newKeyDoc);
+  } finally {
+    await session.endSession();
+  }
 
   logger.info({ kid }, 'rotated signing key');
 
@@ -73,6 +88,13 @@ export async function listPublicKeys() {
     use: 'sig',
     ...exportPublicJwk(item.publicKey)
   }));
+}
+
+/** True when Mongo rejected a transaction because the deployment is a standalone (not a replica set). */
+function isTransactionsUnsupported(error: unknown): boolean {
+  const err = error as { code?: number; codeName?: string; message?: string };
+  if (err?.code === 20 || err?.codeName === 'IllegalOperation') return true;
+  return typeof err?.message === 'string' && /Transaction numbers are only allowed on a replica set/i.test(err.message);
 }
 
 function createKeyPair() {

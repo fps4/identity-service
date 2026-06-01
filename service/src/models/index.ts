@@ -3,6 +3,7 @@ import { getTenantModel, Tenant, type TenantDocument } from './tenant.js';
 import { getSessionModel, Session, type SessionDocument } from './session.js';
 import { getOAuthClientModel, OAuthClient, type OAuthClientDocument } from './oauth-client.js';
 import { getOAuthTokenModel, OAuthToken, type OAuthTokenDocument } from './oauth-token.js';
+import { getOAuthAuthorizationModel, OAuthAuthorization, type OAuthAuthorizationDocument } from './oauth-authorization.js';
 import { getKeyStoreModel, KeyStore, type KeyStoreDocument } from './key-store.js';
 
 export const makeModels = (connection: Connection) => ({
@@ -10,6 +11,7 @@ export const makeModels = (connection: Connection) => ({
   Session: getSessionModel(connection) as Model<SessionDocument>,
   OAuthClient: getOAuthClientModel(connection) as Model<OAuthClientDocument>,
   OAuthToken: getOAuthTokenModel(connection) as Model<OAuthTokenDocument>,
+  OAuthAuthorization: getOAuthAuthorizationModel(connection) as Model<OAuthAuthorizationDocument>,
   KeyStore: getKeyStoreModel(connection) as Model<KeyStoreDocument>
 });
 
@@ -17,4 +19,5 @@ export { Tenant, type TenantDocument } from './tenant.js';
 export { Session, type SessionDocument } from './session.js';
 export { OAuthClient, type OAuthClientDocument } from './oauth-client.js';
 export { OAuthToken, type OAuthTokenDocument } from './oauth-token.js';
+export { OAuthAuthorization, type OAuthAuthorizationDocument } from './oauth-authorization.js';
 export { KeyStore, type KeyStoreDocument } from './key-store.js';
