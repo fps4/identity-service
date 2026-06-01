@@ -72,7 +72,33 @@ const token = await client.requestClientCredentialsToken({
 console.log(token.accessToken);
 ```
 
-Run `npm install && npm run build` inside `sdk/` to compile distributable assets. Consumers need a `fetch` implementation (Node 18+ or polyfill).
+### User login via Google (RQ-0001)
+
+A browser frontend drives the redirect login with PKCE and forwards the issued token as
+`Authorization: Bearer` to its own API:
+
+```ts
+// 1. Begin: stash the verifier/state, then navigate to Google.
+const { authorizationUrl, codeVerifier, state } = await client.beginGoogleLogin({
+  clientId: 'client-maestro',
+  redirectUri: 'https://app.example.com/auth/callback'
+});
+sessionStorage.setItem('pkce', JSON.stringify({ codeVerifier, state }));
+window.location.assign(authorizationUrl);
+
+// 2. On the redirect back (…/auth/callback?code=…&state=…): exchange the code.
+const { codeVerifier, state } = JSON.parse(sessionStorage.getItem('pkce')!);
+if (params.get('state') !== state) throw new Error('state mismatch');
+const token = await client.completeGoogleLogin({
+  code: params.get('code')!,
+  codeVerifier,
+  redirectUri: 'https://app.example.com/auth/callback',
+  clientId: 'client-maestro'
+});
+// token.accessToken → send as `Authorization: Bearer`; token.refreshToken → client.refreshUserToken(...)
+```
+
+Run `npm install && npm run build` inside `sdk/` to compile distributable assets. Consumers need a `fetch` implementation (Node 18+ or polyfill); the login helpers also require WebCrypto (browser or Node 18+).
 
 ## Docs
 
@@ -93,7 +119,26 @@ Downstream products should replace direct module imports with API calls through 
 
 ## Deployments
 
-- `.github/workflows/deploy.yml` deploys with self-hosted runners and Docker Compose overlays.
-- Pushes to `main` roll out to production using `docker/compose.prod.yaml` on a runner labeled `prod`.
-- Pushes to any other branch deploy to the `dev` runner with `docker/compose.dev.yaml`.
-- Manual runs via *Run workflow* in GitHub Actions let you redeploy either environment on demand.
+Deploys are **manual over SSH** to the lab docker host (`ds1`), the same pattern the sibling
+fps4 stacks use (maestro, copilot). The GitHub Actions self-hosted-runner workflow is
+**disabled** — kept fully commented in `.github/workflows/deploy.yml` so it can be restored if
+we move back to CI-driven deploys.
+
+Secrets live in a **gitignored `docker/.env`** (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`,
+`OAUTH_KEY_PASSPHRASE`, the HTTPS `AUTH_JWT_ISSUER`, etc.) — never committed. Build context
+(`../service`) and `${VAR}` interpolation resolve locally before being sent to the remote daemon.
+
+```bash
+# Deploy to ds1 from the Mac (runs against ds1's daemon over SSH)
+export DOCKER_HOST=ssh://ds1
+docker compose --env-file docker/.env \
+  -f docker/compose.yaml -f docker/compose.dev.yaml up -d --build   # dev overlay
+docker compose -f docker/compose.yaml -f docker/compose.dev.yaml ps
+
+# Production overlay (same host today): swap compose.dev.yaml → compose.prod.yaml
+```
+
+Prerequisites on `ds1`: the external `net-public` network must exist
+(`docker network inspect net-public`), and a public HTTPS hostname via the Cloudflare Tunnel —
+required both for Google's OAuth redirect URI and for maestro's `COMPONENT_AUTH_JWKS_URL` /
+`COMPONENT_AUTH_ISSUER` / `COMPONENT_AUTH_AUDIENCE`. The service listens on `7305`.

@@ -9,11 +9,18 @@ export interface TenantOAuthLimits {
   clientCap?: number;
 }
 
+export interface TenantIdpConfig {
+  // Upstream identity provider this tenant federates for user login (RQ-0001). Declarative marker
+  // only — the Google app's client id/secret live in service config (env), never in the tenant doc.
+  provider: 'google';
+}
+
 export interface TenantOAuthConfig {
   enabled?: boolean;
   allowedGrantTypes?: string[];
   allowedScopes?: string[];
   limits?: TenantOAuthLimits;
+  idp?: TenantIdpConfig | null;
 }
 
 export interface TenantDocument extends Document {
@@ -38,11 +45,16 @@ const oauthLimitsSchema = new Schema<TenantOAuthLimits>({
   clientCap: { type: Number }
 }, { _id: false });
 
+const idpConfigSchema = new Schema<TenantIdpConfig>({
+  provider: { type: String, enum: ['google'], required: true }
+}, { _id: false });
+
 const oauthConfigSchema = new Schema<TenantOAuthConfig>({
   enabled: { type: Boolean, default: false },
   allowedGrantTypes: { type: [String], default: [] },
   allowedScopes: { type: [String], default: [] },
-  limits: { type: oauthLimitsSchema, default: undefined }
+  limits: { type: oauthLimitsSchema, default: undefined },
+  idp: { type: idpConfigSchema, default: undefined }
 }, { _id: false });
 
 const tenantSchema = new Schema<TenantDocument>({

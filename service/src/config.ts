@@ -30,6 +30,9 @@ export const CONFIG = {
     accessTokenTtlSec: toNumber(process.env.OAUTH_ACCESS_TOKEN_TTL_SEC, 15 * 60),
     refreshTokenTtlSec: toNumber(process.env.OAUTH_REFRESH_TOKEN_TTL_SEC, 30 * 24 * 60 * 60),
     defaultClientCredentialsScopes: parseOrigins(process.env.OAUTH_CLIENT_CREDENTIALS_SCOPE),
+    // The short-lived authorization record (state + PKCE challenge + nonce, then the minted code)
+    // that ties the Google redirect leg to the consumer's token exchange. Kept small.
+    authorizationTtlSec: toNumber(process.env.OAUTH_AUTHORIZATION_TTL_SEC, 10 * 60),
     key: {
       encryptionPassphrase: process.env.OAUTH_KEY_PASSPHRASE ?? '',
       rotationIntervalHours: toNumber(process.env.OAUTH_KEY_ROTATION_HOURS, 24 * 30)
@@ -39,6 +42,19 @@ export const CONFIG = {
       maxAccessTokensPerMinute: toNumber(process.env.OAUTH_TENANT_MAX_TOKENS_PER_MINUTE, 200),
       maxRefreshTokens: toNumber(process.env.OAUTH_TENANT_MAX_REFRESH_TOKENS, 10_000)
     }
+  },
+  // Upstream Google OIDC app (RQ-0001). A single Google app per deployment federates user login;
+  // the issued user token's `aud` is still per-consumer (oauth_clients.audience), not Google's.
+  // Endpoints are overridable so tests can inject a stub IdP with no network.
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+    issuer: process.env.GOOGLE_ISSUER ?? 'https://accounts.google.com',
+    authorizationEndpoint: process.env.GOOGLE_AUTHORIZATION_ENDPOINT ?? 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenEndpoint: process.env.GOOGLE_TOKEN_ENDPOINT ?? 'https://oauth2.googleapis.com/token',
+    jwksUri: process.env.GOOGLE_JWKS_URI ?? 'https://www.googleapis.com/oauth2/v3/certs',
+    // Where Google redirects back to this service; must be a registered redirect URI on the Google app.
+    redirectUri: process.env.GOOGLE_REDIRECT_URI ?? ''
   },
   cors: {
     staticOrigins: parseOrigins(process.env.CORS_ORIGINS),

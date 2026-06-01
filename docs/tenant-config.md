@@ -1,3 +1,14 @@
+---
+title: Tenant Configuration Guide
+status: current
+last_updated: 2026-06-01
+owners: [architect]
+related:
+  - docs/api.md
+  - docs/architecture.md
+  - docs/requirements/RQ-0001-workspace-user-identity-google-sso.md
+---
+
 # Tenant Configuration Guide
 
 Component Auth relies on tenant-scoped metadata stored in MongoDB. Enabling OAuth 2.0 for a tenant requires adding an `oauth` section to the tenant document. This guide explains the structure, recommended defaults, and validation rules enforced by the service.
@@ -89,6 +100,73 @@ Component Auth relies on tenant-scoped metadata stored in MongoDB. Enabling OAut
 - Rate limiting uses `limits.tokensPerMinute` when provided, otherwise the global default `OAUTH_TENANT_MAX_TOKENS_PER_MINUTE`.
 
 Tenants without the `oauth` section continue to support legacy session issuance, but OAuth token requests will fail with `unauthorized_client`.
+
+## User login via Google SSO (RQ-0001)
+
+To let a consumer (e.g. the maestro workspace) authenticate humans through Google and receive a user
+identity JWT, configure three things.
+
+### 1. Service-level Google app (env)
+
+A single Google OIDC app per deployment federates user login. Its credentials live in the service
+environment, **never** in tenant documents:
+
+```
+GOOGLE_CLIENT_ID=...           # from Google Cloud Console
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=https://auth-dev.example.com/oauth2/callback   # register this on the Google app
+AUTH_JWT_ISSUER=https://auth-dev.example.com                        # HTTPS issuer; becomes the token `iss`
+```
+
+### 2. Tenant opts into the grant
+
+Add `authorization_code` to the tenant's `allowedGrantTypes` and mark the upstream IdP:
+
+```js
+db.tenants.updateOne(
+  { _id: "tenant-maestro" },
+  { $set: {
+      status: "active",
+      "oauth.enabled": true,
+      "oauth.allowedGrantTypes": ["authorization_code"],
+      "oauth.idp": { provider: "google" }   // declarative marker; secrets stay in env
+  } },
+  { upsert: true }
+);
+```
+
+### 3. Register the consumer client with an audience + redirect URI
+
+The client's **`audience`** is the load-bearing `aud` value stamped on every user token it mints —
+it binds the token to one workspace. A user-login client is **public** (PKCE), so `isConfidential`
+may be `false` and no secret is needed for the `authorization_code` exchange.
+
+```js
+db.oauth_clients.insertOne({
+  _id: "client-maestro",
+  tenantId: "tenant-maestro",
+  name: "maestro web",
+  grantTypes: ["authorization_code"],
+  redirectUris: ["https://app.maestro.example.com/auth/callback"],  // exact-match validated
+  audience: "maestro-workspace",                                    // → the token `aud`
+  scopes: [],
+  isConfidential: false,
+  secretHash: ""                                                    // unused by PKCE
+});
+```
+
+### Values to give the consumer (maestro)
+
+maestro's verifier (`orchestrator/edgeauth.py`) must be configured to match what this service mints:
+
+| maestro env var | Value | Source |
+| --- | --- | --- |
+| `COMPONENT_AUTH_JWKS_URL` | `https://auth-dev.example.com/.well-known/jwks.json` | this service's JWKS endpoint |
+| `COMPONENT_AUTH_ISSUER` | `https://auth-dev.example.com` | `AUTH_JWT_ISSUER` above |
+| `COMPONENT_AUTH_AUDIENCE` | `maestro-workspace` | the client's `audience` field |
+
+If `iss` / `aud` / the JWKS URL do not line up exactly, maestro rejects the token as unauthenticated
+(401) — there is no fallback.
 
 ## Operational Tips
 

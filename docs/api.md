@@ -1,3 +1,14 @@
+---
+title: Component Auth API
+status: current
+last_updated: 2026-06-01
+owners: [architect]
+related:
+  - docs/architecture.md
+  - docs/tenant-config.md
+  - docs/requirements/RQ-0001-workspace-user-identity-google-sso.md
+---
+
 # Component Auth API
 
 The service exposes OAuth 2.0 endpoints under `/oauth2/*` and legacy session routes under `/v1/*`. Responses are JSON unless noted otherwise.
@@ -15,11 +26,14 @@ The service currently relies on network-level controls (private network, API gat
 
 ## `POST /oauth2/token`
 
-Issue OAuth 2.0 access tokens. Currently only the **client credentials** grant is supported.
+Issue OAuth 2.0 tokens. Three grants are supported: **`client_credentials`** (machine tokens),
+**`authorization_code`** (user login via Google SSO — RQ-0001), and **`refresh_token`** (rotate a
+user token).
 
-> **Prerequisite:** the tenant must have `oauth.enabled = true` and allow the `client_credentials` grant. See [Tenant Configuration](tenant-config.md).
+> **Prerequisite:** the tenant must have `oauth.enabled = true` and allow the grant in
+> `oauth.allowedGrantTypes`. See [Tenant Configuration](tenant-config.md).
 
-### Request
+### `grant_type=client_credentials`
 
 - `Content-Type: application/x-www-form-urlencoded`
 - Client authentication via HTTP Basic (`Authorization: Basic base64(client_id:client_secret)`) **or** `client_id` and `client_secret` form fields.
@@ -27,7 +41,7 @@ Issue OAuth 2.0 access tokens. Currently only the **client credentials** grant i
   - `grant_type=client_credentials`
   - `scope` (optional, space-delimited string; subset of client’s registered scopes)
 
-### Response (`200`)
+Response (`200`):
 
 ```json
 {
@@ -38,14 +52,88 @@ Issue OAuth 2.0 access tokens. Currently only the **client credentials** grant i
 }
 ```
 
+### `grant_type=authorization_code` (user login — PKCE)
+
+Completes the Google login started at [`GET /oauth2/authorize`](#get-oauth2authorize). The client is
+**public** — the PKCE `code_verifier` authenticates the exchange, not a client secret.
+
+- `Content-Type: application/x-www-form-urlencoded`
+- Body parameters: `grant_type=authorization_code`, `code`, `code_verifier`, `client_id`, `redirect_uri`.
+
+Response (`200`):
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9...",
+  "token_type": "Bearer",
+  "expires_in": 900,
+  "refresh_token": "k7b3...opaque",
+  "refresh_expires_in": 2592000,
+  "scope": ""
+}
+```
+
+The `access_token` is an RS256 JWT carrying **`email`**, the stable Google **`sub`** (the JWT
+`sub` claim), **`iss`**, the consumer-bound **`aud`** (the client's configured `audience`), and
+**`exp`** + `iat` — verifiable via [`/.well-known/jwks.json`](#get-well-knownjwksjson).
+
+### `grant_type=refresh_token`
+
+Rotates a user token. The presented refresh token is single-use; a fresh access + refresh pair is
+returned. A refresh fails once its session is revoked or expired.
+
+- `Content-Type: application/x-www-form-urlencoded`
+- Body parameters: `grant_type=refresh_token`, `refresh_token`, `client_id`.
+- Response: same shape as `authorization_code`.
+
 ### Errors
 
-- `400 invalid_request` – missing grant_type.
+- `400 invalid_request` – missing/unsupported `grant_type` or required parameter.
 - `400 invalid_scope` – requested scope not permitted.
-- `401 invalid_client` – bad client credentials.
-- `400 unauthorized_client` – grant not allowed for client.
+- `400 invalid_grant` – bad/expired/used authorization code, failed PKCE, or invalid/revoked refresh token.
+- `401 invalid_client` – bad client credentials (client-credentials grant).
+- `400 unauthorized_client` – grant not allowed for client/tenant, or client has no `audience`.
 - `429 slow_down` – tenant token rate limit exceeded.
 - `500 server_error` – unexpected failure.
+
+---
+
+## `GET /oauth2/authorize`
+
+Browser entry point for user login (RQ-0001). Validates the client + tenant and the registered
+`redirect_uri`, then **302-redirects** the browser to Google to authenticate.
+
+### Query parameters
+
+- `client_id` – a tenant OAuth client allowing the `authorization_code` grant.
+- `redirect_uri` – must be pre-registered on the client (exact match).
+- `code_challenge` – PKCE challenge; `code_challenge_method=S256` (the only supported method).
+- `state` (recommended) – opaque CSRF value, echoed back unchanged on the consumer redirect.
+- `scope` (optional) – space-delimited subset of the client's scopes.
+
+On success: `302` to Google. On a bad/unregistered request: a JSON OAuth error (no redirect, since
+an unvalidated `redirect_uri` is never trusted).
+
+---
+
+## `GET /oauth2/callback`
+
+Where Google redirects back after authentication. The service exchanges Google's `code`, verifies
+its `id_token` (signature, `iss`, `aud`, `exp`, `nonce`), then **302-redirects** the browser to the
+consumer's `redirect_uri` with a single-use `code` (and the echoed `state`). If Google
+authentication fails, it redirects back with `?error=access_denied` and issues **no** token.
+
+---
+
+## `POST /oauth2/revoke`
+
+Revoke a refresh token and its session (RFC 7009). Always `200`, even for an unknown token.
+
+- `Content-Type: application/x-www-form-urlencoded`
+- Body: `token` (the refresh token).
+
+Revoking cascades to the session, so any sibling refresh token is also dead. Already-issued access
+JWTs remain valid until `exp` (≤ 15 min) — they are stateless and not checked against the store.
 
 ---
 

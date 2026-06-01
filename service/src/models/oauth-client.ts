@@ -10,6 +10,9 @@ export interface OAuthClientDocument extends Document {
   redirectUris: string[];
   scopes: string[];
   isConfidential: boolean;
+  // The `aud` value stamped on user tokens minted for this consumer (RQ-0001). Binds a token to one
+  // workspace — maestro's COMPONENT_AUTH_AUDIENCE must equal this. Unused by the client-credentials grant.
+  audience?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -23,6 +26,7 @@ const oauthClientSchema = new mongoose.Schema<OAuthClientDocument>({
   redirectUris: { type: [String], default: [] },
   scopes: { type: [String], default: [] },
   isConfidential: { type: Boolean, default: true },
+  audience: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

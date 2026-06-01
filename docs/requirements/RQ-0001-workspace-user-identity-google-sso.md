@@ -1,3 +1,23 @@
+---
+title: "RQ-0001 — User identity via Google SSO (OIDC), issued as a verifiable JWT"
+status: current
+last_updated: 2026-06-01
+owners: [architect]
+related:
+  - docs/api.md
+  - docs/tenant-config.md
+  - docs/architecture.md
+maestro:
+  feature: user-identity-google-sso
+  kind: functional_spec
+  summary: |
+    Add a Google sign-in to the shared auth service so a person can log in and receive a signed
+    identity token the maestro workspace already knows how to check. The token carries the person's
+    email and a stable Google id, is bound to the workspace it was issued for, and expires; a refresh
+    path keeps a session alive and revoking the session stops it. The existing machine-to-machine
+    tokens are untouched. A small SDK helper drives the browser login and hands the token back.
+---
+
 # RQ-0001 — User identity via Google SSO (OIDC), issued as a verifiable JWT
 
 - **Status:** proposed

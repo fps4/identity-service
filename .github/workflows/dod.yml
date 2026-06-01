@@ -1,0 +1,40 @@
+name: Definition of Done
+
+# The quality gate maestro reads before opening the merge gate (ADR-0016 / onboarding step 3).
+# Runs on GitHub-hosted runners — independent of the ds1 deploy host. Build + test must be green.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  service:
+    name: service (build + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - run: npm test -- --run
+
+  sdk:
+    name: sdk (build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run build
