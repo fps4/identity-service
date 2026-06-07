@@ -1,12 +1,12 @@
 ---
 title: "RQ-0003 — Reusable React login component"
 status: current
-last_updated: 2026-06-01
+last_updated: 2026-06-07
 owners: [architect]
 related:
-  - docs/decisions/0002-optional-react-ui-package.md
-  - docs/requirements/RQ-0002-local-password-idp.md
-  - docs/api.md
+  - docs/design/decisions/0002-optional-react-ui-package.md
+  - docs/product/RQ-0002-local-password-idp.md
+  - docs/reference/api.md
 maestro:
   feature: react-login-component
   kind: functional_spec
@@ -23,11 +23,11 @@ maestro:
 - **Status:** accepted
 - **Raised:** 2026-06-01
 - **Owner:** @farid (architect)
-- **Decision:** [ADR-0002](../decisions/0002-optional-react-ui-package.md)
+- **Decision:** [ADR-0002](../design/decisions/0002-optional-react-ui-package.md)
 
 ## Why
 
-A consumer (sovereign-copilot) needs a login screen and would rather reuse one than hand-roll it.
+A consumer needs a login screen and would rather reuse one than hand-roll it.
 component-auth previously shipped only backend + a headless SDK (RQ-0001); this adds an opt-in React
 UI so consumers drop in a `<Login/>` instead of each rebuilding the form.
 
@@ -45,7 +45,7 @@ UI so consumers drop in a `<Login/>` instead of each rebuilding the form.
 - **Google SSO button** — a natural follow-up over the existing redirect helpers; password only now.
 - **Session management** — token storage, route guarding, auto-refresh, and a provider/guard kit are
   the host app's concern (deferred; ADR-0002).
-- **Wiring into any specific consumer** (e.g. sovereign-copilot) — this ships the component; adoption
+- **Wiring into any specific consumer** — this ships the component; adoption
   is the consumer's change.
 
 ## Acceptance criteria (EARS)

@@ -3,23 +3,23 @@ title: "0001: A local email/password IdP alongside Google SSO"
 status: accepted
 date: 2026-06-01
 related:
-  - ../requirements/RQ-0002-local-password-idp.md
-  - ../requirements/RQ-0001-workspace-user-identity-google-sso.md
-  - ../api.md
-  - ../tenant-config.md
+  - ../../product/RQ-0002-local-password-idp.md
+  - ../../product/RQ-0001-workspace-user-identity-google-sso.md
+  - ../../reference/api.md
+  - ../../guides/tenant-config.md
 ---
 
 ## Context
 
-[RQ-0001](../requirements/RQ-0001-workspace-user-identity-google-sso.md) added human identity via
-**Google SSO**, and maestro's ADR-0019 deliberately chose *"don't roll our own auth — delegate
+[RQ-0001](../../product/RQ-0001-workspace-user-identity-google-sso.md) added human identity via
+**Google SSO**, and a consumer (maestro) deliberately chose *"don't roll our own auth — delegate
 identity to Google."* But not every consumer of component-auth can or wants to require a Google
 account: local development without a Google app, evaluation environments, and consumers whose users
 are outside any Google tenant. The need surfaced concretely as *"do we have a simple username/password
 option?"* while standing up a dev deployment with Google not yet wired.
 
-The risk is contradicting ADR-0019 — re-introducing a bespoke credential blob that competes with the
-"identity comes from Google" model, or weakening the token contract maestro verifies.
+The risk is contradicting that stance — re-introducing a bespoke credential blob that competes with the
+"identity comes from Google" model, or weakening the token contract consumers verify.
 
 ## Decision
 
@@ -43,9 +43,9 @@ replacement for Google, and not a change to the issued token contract.**
 
 ### Why not the alternatives
 
-- **Keep Google-only (ADR-0019 as-is).** Cleanest, but blocks local/eval use and any non-Google user
-  population. The local IdP is additive and per-tenant, so ADR-0019's default stance (Google for the
-  maestro workspace) is untouched.
+- **Keep Google-only (the original Google-SSO stance).** Cleanest, but blocks local/eval use and any
+  non-Google user population. The local IdP is additive and per-tenant, so the original
+  Google-for-the-workspace default is untouched.
 - **A dev-only stub token issuer.** Considered; it solves "test without Google" but is not a real
   login and must be hard-gated off in prod. The architect chose a real, permanent credential IdP.
 - **Self-service password reset now.** Needs an email/SMS provider this service doesn't have;
@@ -59,7 +59,7 @@ replacement for Google, and not a change to the issued token contract.**
 - **New `users` collection + a password-management surface** (self-service register, operator CLI).
   component-auth now stores credentials — a new security responsibility (hashing, lockout, rate limit
   are in place; password reset delivery and email verification are explicitly deferred).
-- **ADR-0019 stands.** This does not mandate local auth anywhere; it offers it. The "identity, not
+- **The Google-SSO stance stands.** This does not mandate local auth anywhere; it offers it. The "identity, not
   authorization" boundary is unchanged — local login still only proves *who you are*.
 - **Deferred follow-ups** (named, not built): email verification, self-service password reset over a
   real delivery channel, and an admin-authenticated HTTP management API (today management is CLI/DB).

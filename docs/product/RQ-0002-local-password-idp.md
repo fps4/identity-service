@@ -1,13 +1,13 @@
 ---
 title: "RQ-0002 — Local email/password identity provider"
 status: current
-last_updated: 2026-06-01
+last_updated: 2026-06-07
 owners: [architect]
 related:
-  - docs/decisions/0001-local-credential-idp.md
-  - docs/requirements/RQ-0001-workspace-user-identity-google-sso.md
-  - docs/api.md
-  - docs/tenant-config.md
+  - docs/design/decisions/0001-local-credential-idp.md
+  - docs/product/RQ-0001-workspace-user-identity-google-sso.md
+  - docs/reference/api.md
+  - docs/guides/tenant-config.md
 maestro:
   feature: local-password-idp
   kind: functional_spec
@@ -25,7 +25,7 @@ maestro:
 - **Status:** accepted
 - **Raised:** 2026-06-01
 - **Owner:** @farid (architect)
-- **Decision:** [ADR-0001](../decisions/0001-local-credential-idp.md)
+- **Decision:** [ADR-0001](../design/decisions/0001-local-credential-idp.md)
 
 ## Why
 
@@ -69,4 +69,4 @@ that issues the **same** verifiable user token — so consumers integrate once.
 
 - A user can register and log in with email/password through a local-IdP tenant and receive a token that **passes maestro's verifier unchanged**.
 - Wrong-password, unknown-email, lockout, disabled-account, weak-password, duplicate-email, and grant-gating paths are covered by tests.
-- `docs/api.md`, `docs/tenant-config.md`, and `docs/architecture.md` document the new endpoints, tenant config, and `users` collection; ADR-0001 records the decision.
+- `docs/reference/api.md`, `docs/guides/tenant-config.md`, and `docs/design/architecture.md` document the new endpoints, tenant config, and `users` collection; ADR-0001 records the decision.

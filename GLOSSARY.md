@@ -21,7 +21,7 @@ Terms where component-auth's business language and code diverge, or that a consu
   and stamped into the user token's `roles` claim (RQ-0005). Provisioned by the operator (seed config
   `users[].roles` / `manage-users set-roles`), optionally constrained by a tenant's `oauth.allowedRoles`
   vocabulary. component-auth **asserts** roles but does not enforce them — each product maps roles to
-  its own permissions ([ADR-0005](docs/decisions/0005-decentralized-authorization.md)). Contrast
+  its own permissions ([ADR-0005](docs/design/decisions/0005-decentralized-authorization.md)). Contrast
   **scope** (machine/client authorization); roles describe the *user*.
 
 - **IdP (identity provider)** — how a user authenticates. `google` federates Google SSO (RQ-0001);

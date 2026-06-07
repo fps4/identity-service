@@ -1,9 +1,10 @@
 # Codebase overview
 
-**component-auth** is a multi-tenant authentication building block shared across fps4 products
-(maestro ADR-0024 onboards it as a `kind: component`, `product_type: technical`). It is a standalone
-TypeScript service plus a lightweight SDK. It owns **authentication** (who you are) only — consuming
-products keep their own **authorization** (what you may do).
+**component-auth** is a multi-tenant authentication building block shared across products. It is
+onboarded as a managed product (`kind: component`, `product_type: technical`) under the shared
+documentation standard. It is a standalone TypeScript service plus a lightweight SDK. It owns
+**authentication** (who you are) only — consuming products keep their own **authorization** (what
+you may do).
 
 It is a standalone TypeScript service, a headless SDK, and an optional React UI package
 (`@fps4/component-auth-react`) with a drop-in `<Login/>`.
@@ -33,8 +34,8 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 | `service/tests/` | Vitest suites (dependency-injected, no network/DB). |
 | `sdk/` | Headless TypeScript client: `requestClientCredentialsToken` + the Google login helpers (`beginGoogleLogin` / `completeGoogleLogin` / `refreshUserToken` / `revokeUserToken`) + `registerWithPassword` / `loginWithPassword`. No UI; safe server-side. |
 | `react/` | **Optional** React UI package `@fps4/component-auth-react` — a drop-in `<Login/>` (password) for consumer apps (RQ-0003 / ADR-0002). Separate package so server-side consumers never pull in React. |
-| `docker/` | Compose base + dev/prod overlays. Deploys are manual over `ssh://ds1` (see `README.md`). |
-| `docs/` | API, architecture, tenant-config references, and `docs/requirements/` (RQ specs). |
+| `docker/` | Compose base + dev/prod overlays. Deploys are manual over SSH to a Docker host (see `docs/guides/deployment.md`). |
+| `docs/` | Two-plane docs: `design/` (architecture + ADRs), `reference/` (API), `guides/` (tenant-config, deployment), `product/` (RQ specs). Index: `docs/README.md`. |
 
 ## Entry points
 
@@ -42,7 +43,7 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 - **User login — Google (in):** `GET /oauth2/authorize` → Google → `GET /oauth2/callback` → consumer redirect with a code → `POST /oauth2/token` (`grant_type=authorization_code` + PKCE) → user JWT + refresh token.
 - **User login — local (in):** `POST /v1/tenants/:id/register` then `POST /oauth2/token` (`grant_type=password`) → the same user JWT + refresh token (RQ-0002).
 - **Token refresh / revoke (in):** `POST /oauth2/token` (`grant_type=refresh_token`); `POST /oauth2/revoke`.
-- **Verification (out):** consumers fetch `GET /.well-known/jwks.json` and verify tokens by `kid` (e.g. maestro's `orchestrator/edgeauth.py`).
+- **Verification (out):** consumers fetch `GET /.well-known/jwks.json` and verify tokens by `kid` (e.g. maestro's JWT verifier at its authenticated edge).
 - **Boot:** `service/src/server.ts` → `bootstrap()`.
 
 ## Naming notes
