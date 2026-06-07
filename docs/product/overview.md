@@ -1,3 +1,17 @@
+---
+title: "component-auth documentation overview"
+maestro:
+  feature: documentation-refactor-maestro-standards
+  kind: overview
+  summary: |
+    Orientation page for readers new to the component-auth documentation. It
+    explains that product-facing material lives on the product shelf and
+    technical material lives on the architecture shelf, and it points to the
+    functional specifications, the decision records, and the main documentation
+    index. The page helps readers and the Maestro workspace find the right
+    starting point without searching the file tree.
+---
+
 # component-auth documentation overview
 
 This page orients readers to the documentation for the component-auth repository. It describes what each documentation shelf contains and where to start.
