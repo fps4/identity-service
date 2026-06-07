@@ -1,12 +1,12 @@
 ---
 title: Tenant Configuration Guide
 status: current
-last_updated: 2026-06-01
+last_updated: 2026-06-07
 owners: [architect]
 related:
-  - docs/api.md
-  - docs/architecture.md
-  - docs/requirements/RQ-0001-workspace-user-identity-google-sso.md
+  - docs/reference/api.md
+  - docs/design/architecture.md
+  - docs/product/RQ-0001-workspace-user-identity-google-sso.md
 ---
 
 # Tenant Configuration Guide
@@ -155,11 +155,12 @@ db.oauth_clients.insertOne({
 });
 ```
 
-### Values to give the consumer (maestro)
+### Values to give the consumer
 
-maestro's verifier (`orchestrator/edgeauth.py`) must be configured to match what this service mints:
+The consumer's JWT verifier must be configured to match what this service mints. maestro, for example,
+sets these (`COMPONENT_AUTH_*`) — a consuming product picks its own variable names:
 
-| maestro env var | Value | Source |
+| consumer env var | Value | Source |
 | --- | --- | --- |
 | `COMPONENT_AUTH_JWKS_URL` | `https://auth-dev.example.com/.well-known/jwks.json` | this service's JWKS endpoint |
 | `COMPONENT_AUTH_ISSUER` | `https://auth-dev.example.com` | `AUTH_JWT_ISSUER` above |
@@ -214,7 +215,7 @@ npm run manage-users -- lock|unlock|disable|enable|delete --tenant=tenant-local 
 A local user can carry a list of **coarse, tenant-scoped roles** that are stamped into the user
 token's **`roles`** claim (a JSON array of strings). component-auth **asserts** roles but does **not**
 enforce them — each consuming product maps roles to its own permissions
-([ADR-0005](decisions/0005-decentralized-authorization.md)). The claim is omitted when a user has no
+([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is omitted when a user has no
 roles, and is re-read on every token issuance (including refresh), so a change applies on next refresh.
 
 Optionally declare a per-tenant **`allowedRoles`** vocabulary (mirrors `allowedScopes`). When non-empty
@@ -228,7 +229,7 @@ db.tenants.updateOne(
 );
 ```
 
-Roles are provisioned by the operator (no HTTP API, [ADR-0003](decisions/0003-seed-config-not-admin-api.md)):
+Roles are provisioned by the operator (no HTTP API, [ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)):
 
 - **Seed config:** add `roles: [..]` under a user in `config/seed.yaml` (applies to **newly created**
   users; re-running the seed leaves existing users untouched).
@@ -259,7 +260,7 @@ The file lists tenants, their OAuth clients (with `audience`), and local users; 
 `${ENV_VAR}` references resolved at run time and stored scrypt-hashed. Re-running upserts tenants and
 clients and **leaves existing users untouched** (use `npm run manage-users set-password` to change a
 password). The loader is operator-run against the database — there is **no HTTP seeding endpoint**
-([ADR-0003](decisions/0003-seed-config-not-admin-api.md)). The loader reads `MONGO_URI`, so run it
+([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). The loader reads `MONGO_URI`, so run it
 where it can reach the target Mongo (locally against the published port, or inside the docker network).
 
 ## Operational Tips
@@ -268,5 +269,5 @@ where it can reach the target Mongo (locally against the published port, or insi
 - Rotate client secrets periodically by recomputing `secretHash` and redistributing new credentials.
 - Monitor structured logs for `issued client credentials token` events to validate adoption and spot unexpected tenants/grants.
 
-For full architecture context, review [architecture.md](architecture.md). For endpoint contracts, see [api.md](api.md).
+For full architecture context, review [architecture.md](../design/architecture.md). For endpoint contracts, see [api.md](../reference/api.md).
 > **Tip:** The `_id` is automatically generated as a UUID when omitted. Provide one explicitly only if you need a stable identifier determined outside the service.

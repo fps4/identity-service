@@ -1,12 +1,12 @@
 ---
 title: Component Auth API
 status: current
-last_updated: 2026-06-01
+last_updated: 2026-06-07
 owners: [architect]
 related:
-  - docs/architecture.md
-  - docs/tenant-config.md
-  - docs/requirements/RQ-0001-workspace-user-identity-google-sso.md
+  - docs/design/architecture.md
+  - docs/guides/tenant-config.md
+  - docs/product/RQ-0001-workspace-user-identity-google-sso.md
 ---
 
 # Component Auth API
@@ -31,7 +31,7 @@ Issue OAuth 2.0 tokens. Three grants are supported: **`client_credentials`** (ma
 user token).
 
 > **Prerequisite:** the tenant must have `oauth.enabled = true` and allow the grant in
-> `oauth.allowedGrantTypes`. See [Tenant Configuration](tenant-config.md).
+> `oauth.allowedGrantTypes`. See [Tenant Configuration](../guides/tenant-config.md).
 
 ### `grant_type=client_credentials`
 
@@ -80,7 +80,7 @@ The `access_token` is an RS256 JWT carrying **`email`**, the stable Google **`su
 When the authenticated user has roles, the token also carries a **`roles`** claim — a JSON array of
 coarse, tenant-scoped role strings (RQ-0005), **omitted** when the user has none. Roles are advisory
 identity assertions: component-auth does **not** enforce them — each consuming product maps roles to
-its own permissions ([ADR-0005](decisions/0005-decentralized-authorization.md)). The claim is additive
+its own permissions ([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is additive
 (a verifier that ignores it is unaffected) and is re-read from the user store on every issuance
 (including `refresh_token`), so a role change applies on the next refresh.
 

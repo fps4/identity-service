@@ -4,19 +4,19 @@ status: accepted
 date: 2026-06-01
 related:
   - 0001-local-credential-idp.md
-  - ../requirements/RQ-0003-react-login-component.md
-  - ../requirements/RQ-0001-workspace-user-identity-google-sso.md
+  - ../../product/RQ-0003-react-login-component.md
+  - ../../product/RQ-0001-workspace-user-identity-google-sso.md
 ---
 
 ## Context
 
-[RQ-0001](../requirements/RQ-0001-workspace-user-identity-google-sso.md) deliberately kept **UI out of
+[RQ-0001](../../product/RQ-0001-workspace-user-identity-google-sso.md) deliberately kept **UI out of
 component-auth**: it ships backend flows + a headless TypeScript SDK, and "the consumer's login UI"
-was out of scope (maestro's ADR-0019 puts the login screen in the consumer). That holds for maestro,
+was out of scope (the consumer puts the login screen in its own app). That holds for maestro,
 which builds its own surface.
 
-But a second consumer — **sovereign-copilot** — needs a login screen and would rather **reuse** one
-than hand-roll it (its auth is a planned `core-6` slice; today it runs on a hardcoded user). The
+But a second consumer needs a login screen and would rather **reuse** one
+than hand-roll it (its auth is planned; today it runs on a hardcoded user). The
 architect chose: ship a **reusable React `<Login/>` component from component-auth** so consumers drop
 it in rather than each rebuilding the form.
 
@@ -43,7 +43,7 @@ to the headless `@fps4/component-auth` SDK.**
 
 - **Add React to `@fps4/component-auth`.** Simplest to find, but pollutes the headless SDK with a
   React (peer) dependency and JSX build for every consumer, including Node-only ones. Rejected.
-- **Build the screen only in sovereign-copilot.** Fine for one app, but the architect explicitly
+- **Build the screen only in the consuming app.** Fine for one app, but the architect explicitly
   wanted reuse across consumers. A shared package pays off as more surfaces appear.
 - **A full session/provider kit** (`<AuthProvider>`, route guards, auto-refresh). More than asked
   for and more opinionated about app architecture; deferred. The component returns the token and gets

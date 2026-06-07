@@ -5,8 +5,8 @@ date: 2026-06-02
 related:
   - 0001-local-credential-idp.md
   - 0003-seed-config-not-admin-api.md
-  - ../requirements/RQ-0005-user-roles-in-identity-token.md
-  - ../tenant-config.md
+  - ../../product/RQ-0005-user-roles-in-identity-token.md
+  - ../../guides/tenant-config.md
 ---
 
 ## Context
@@ -14,11 +14,10 @@ related:
 component-auth mints a user identity token (`sub`, `email`, `iss`, `aud`, `exp`) that products verify
 via JWKS. It has **no role/permission concept**. Consumers now need to authorize users:
 
-- **maestro** already owns a rich, domain-specific authorization model — a participant register
-  (`config/products.yaml`, private per its ADR-0010) and a role×gate routing matrix
-  (`config/reviewers.yaml`), enforced at its API boundary (`writeapi.py`). It needs *identity* from
+- **maestro** already owns a rich, domain-specific authorization model — a private participant
+  register and a role×gate routing matrix, enforced at its API boundary. It needs *identity* from
   the token, and resolves permissions itself.
-- **sovereign-copilot / sovereign-cloud** have little or no per-user authorization today.
+- **Other consumers** have little or no per-user authorization today.
 
 The question: where should RBAC live? Two poles — a **central Policy Decision Point** (component-auth
 owns roles *and* permissions for every product) versus **decentralized** (component-auth asserts
@@ -44,7 +43,7 @@ fine-grained mapping of roles to permissions.**
 
 - **maestro's authorization is domain logic** (gate governance, split-review, self-dealing
   prevention). Centralizing it would couple component-auth to maestro's delivery-engine semantics, and
-  maestro's ADR-0010 already keeps instance data private to maestro.
+  maestro already keeps its instance data private.
 - A central PDP becomes a **bottleneck and a single point of failure**: every new product permission
   would require a component-auth change, redeploy, and token refresh. The claims-in-token model needs
   no per-request call to auth.
@@ -63,9 +62,8 @@ user"*** and belong on the user identity token. We add a distinct `roles` claim 
 This change is **additive and non-breaking**, so deploying it does not disturb existing deployments:
 
 - **Additive claim.** A new `roles` claim is ignored by existing verifiers — JWT verification does not
-  fail on unknown claims. maestro's `edgeauth.py` (checks signature + `iss`/`aud`/`exp`, reads
-  `email`/`sub`) is unaffected; sovereign-copilot, which does not verify these tokens yet, is
-  unaffected.
+  fail on unknown claims. maestro's verifier (checks signature + `iss`/`aud`/`exp`, reads
+  `email`/`sub`) is unaffected; a consumer that does not verify these tokens yet is unaffected.
 - **Additive schema.** `user.roles` defaults to `[]` and `tenant.oauth.allowedRoles` is optional;
   Mongo needs no migration and existing documents stay valid.
 - **Keys persist.** Signing keys live in Mongo (`KeyStore`, encrypted), loaded on boot and only created
@@ -82,8 +80,8 @@ product repo, not a side effect of deploying here.
 - **Clear ownership boundary:** component-auth answers *"who is this person and what tenant-roles do
   they hold."* Each product answers *"given this person, what may they do here."*
 - **Products do real work:** maestro keeps (and remains the source of truth for) its participant/gate
-  model; it may additionally consume `roles` for cross-product org-roles. sovereign-copilot must first
-  adopt JWKS verification, then add a thin role-gated check.
+  model; it may additionally consume `roles` for cross-product org-roles. A consumer with no
+  verification yet must first adopt JWKS verification, then add a thin role-gated check.
 - **Staleness is bounded** by the access-token TTL (a revoked role lingers at most until refresh); for
   sensitive operations a product can consult a live source. Acceptable for coarse roles.
 - **Role vocabulary** is operator-curated per tenant (`allowedRoles`); a normalized role/permission

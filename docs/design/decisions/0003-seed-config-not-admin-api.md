@@ -4,15 +4,15 @@ status: accepted
 date: 2026-06-01
 related:
   - 0001-local-credential-idp.md
-  - ../requirements/RQ-0004-seed-config-provisioning.md
-  - ../tenant-config.md
+  - ../../product/RQ-0004-seed-config-provisioning.md
+  - ../../guides/tenant-config.md
 ---
 
 ## Context
 
 Tenants, OAuth clients, and (now) local users are provisioned out-of-band — originally via
 `tests/load-tenant.ts` for a single tenant. As deployments need *several* tenants plus demo/admin
-users (e.g. the `ds1` demo), the one-off script doesn't scale and there's no recorded, repeatable
+users (e.g. a demo deployment), the one-off script doesn't scale and there's no recorded, repeatable
 source of "what exists." The question raised: a config file of tenants + users, loaded by something,
 expandable later — and whether to trigger that load **behind an HTTP API guarded by a secret**.
 
@@ -26,7 +26,7 @@ whether to expose it on the wire.
 expose seeding over HTTP.**
 
 - A **committed `config/seed.example.yaml`** documents the shape; the **real `config/seed.yaml` is
-  gitignored**. (Same split as maestro's `products.yaml` / `products.example.yaml`.)
+  gitignored**. (The common committed-example / gitignored-real-file split.)
 - **`npm run seed`** reads the file, validates it, and **upserts** tenants + clients and
   **inserts-if-absent** users (passwords scrypt-hashed). Re-running is safe and never resets an
   existing password.
@@ -47,7 +47,7 @@ real, authenticated admin API is justified, it gets its own decision (the ADR-00
 ## Consequences
 
 - **Repeatable, reviewable provisioning** — the example file documents the contract; the real data is
-  versionable in a private location (like maestro's register) without leaking secrets.
+  versionable in a private location without leaking secrets.
 - **No new attack surface** — nothing seeding-related is exposed; the loader is dev/ops tooling.
 - **Operational note** — the loader connects to `MONGO_URI`; run it where it can reach the target DB
   (locally against the published Mongo port, or as a one-shot inside the docker network). A compose

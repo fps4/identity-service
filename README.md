@@ -14,7 +14,7 @@ component-auth/
  │    └── src/
  ├── react/            # Optional React UI: drop-in <Login/> (@fps4/component-auth-react)
  │    └── src/
- ├── docs/             # Architecture notes & API reference
+ ├── docs/             # Two-plane docs: design/ · reference/ · guides/ · product/ (index: docs/README.md)
  └── README.md
 ```
 
@@ -50,7 +50,7 @@ The service listens on `PORT` (default `7305`). Health check at `GET /health`.
 - `GET /.well-known/jwks.json` – JWKS for verifying issued tokens.
 - `POST /v1/tenants/:tenantId/sessions` – validate tenant, persist session, issue legacy session JWT (in migration).
 - `PATCH /v1/sessions/:sessionId` – attach contact identifiers or cookie context.
-- See `docs/api.md` for full payloads and responses.
+- See `docs/reference/api.md` for full payloads and responses.
 
 ## SDK Usage
 
@@ -122,43 +122,25 @@ See [`react/README.md`](react/README.md) for styling (Tailwind/shadcn) and the f
 
 ## Docs
 
-- `docs/architecture.md` – overall architecture and OAuth components.
-- `docs/api.md` – endpoint contract.
-- `docs/tenant-config.md` – tenant onboarding & OAuth configuration.
-- `docs/requirements/` – open requirements for pickup. `RQ-0001` adds user identity via Google SSO (OIDC), issued as a JWT maestro's authenticated edge verifies.
+Docs follow a two-plane structure — see [`docs/README.md`](docs/README.md) for the full index, or
+[`docs/overview.md`](docs/overview.md) for the landing.
+
+- [`docs/design/architecture.md`](docs/design/architecture.md) – overall architecture and OAuth components.
+- [`docs/reference/api.md`](docs/reference/api.md) – endpoint contract and token shape.
+- [`docs/guides/tenant-config.md`](docs/guides/tenant-config.md) – tenant onboarding & OAuth configuration.
+- [`docs/guides/deployment.md`](docs/guides/deployment.md) – how the service is deployed.
+- [`docs/product/`](docs/product) – the `RQ-*` functional specs (e.g. `RQ-0001` adds user identity via Google SSO, issued as a verifiable JWT).
+- [`docs/design/decisions/`](docs/design/decisions) – architecture decision records (ADRs).
 - `tests/` – manual harness + scripts for integration checks on deployed environments.
-
-## Migration Notes
-
-Existing authentication logic in `product-chatbot` maps directly onto this service:
-
-- `packages/authorizer-core` → `service/src/core`
-- `services/authorizer` → `service/src/server.ts` and routes/models
-
-Downstream products should replace direct module imports with API calls through the service or the SDK to decouple authentication concerns.
 
 ## Deployments
 
-Deploys are **manual over SSH** to the lab docker host (`ds1`), the same pattern the sibling
-fps4 stacks use (maestro, copilot). The GitHub Actions self-hosted-runner workflow is
-**disabled** — kept fully commented in `.github/workflows/deploy.yml` so it can be restored if
-we move back to CI-driven deploys.
+The service is a **stateless container** with **MongoDB** as its only persistent dependency, deployed
+**manually over SSH** to a Docker host (`DOCKER_HOST=ssh://<host>`). Secrets live in a **gitignored
+`docker/.env`** (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, `OAUTH_KEY_PASSPHRASE`, the HTTPS
+`AUTH_JWT_ISSUER`, etc.) — never committed. A public HTTPS endpoint (reverse proxy or tunnel) fronts
+the service; it listens on `PORT` (default `7305`). The image build runs `npm run build && npm test`,
+so a red test fails the deploy.
 
-Secrets live in a **gitignored `docker/.env`** (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`,
-`OAUTH_KEY_PASSPHRASE`, the HTTPS `AUTH_JWT_ISSUER`, etc.) — never committed. Build context
-(`../service`) and `${VAR}` interpolation resolve locally before being sent to the remote daemon.
-
-```bash
-# Deploy to ds1 from the Mac (runs against ds1's daemon over SSH)
-export DOCKER_HOST=ssh://ds1
-docker compose --env-file docker/.env \
-  -f docker/compose.yaml -f docker/compose.dev.yaml up -d --build   # dev overlay
-docker compose -f docker/compose.yaml -f docker/compose.dev.yaml ps
-
-# Production overlay (same host today): swap compose.dev.yaml → compose.prod.yaml
-```
-
-Prerequisites on `ds1`: the external `net-public` network must exist
-(`docker network inspect net-public`), and a public HTTPS hostname via the Cloudflare Tunnel —
-required both for Google's OAuth redirect URI and for maestro's `COMPONENT_AUTH_JWKS_URL` /
-`COMPONENT_AUTH_ISSUER` / `COMPONENT_AUTH_AUDIENCE`. The service listens on `7305`.
+See [`docs/guides/deployment.md`](docs/guides/deployment.md) for the full procedure, prerequisites,
+and how a consumer's verifier env lines up with what the service mints.

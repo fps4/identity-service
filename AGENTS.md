@@ -23,8 +23,8 @@ A change is not done until **all** of these hold (CI enforces them — `.github/
 
 - `service` and `sdk` both **build** (`npm run build`) with no type errors.
 - `service` **tests pass** (`npm test -- --run`). New behaviour ships with tests.
-- Docs that describe changed behaviour are updated **in the same change** (`docs/api.md`,
-  `docs/tenant-config.md`, `docs/architecture.md` as applicable).
+- Docs that describe changed behaviour are updated **in the same change** (`docs/reference/api.md`,
+  `docs/guides/tenant-config.md`, `docs/design/architecture.md` as applicable).
 - The Docker image builds — its build runs `npm run build && npm test`, so a red test fails the deploy.
 
 ## Rules / guardrails

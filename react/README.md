@@ -1,7 +1,7 @@
 # @fps4/component-auth-react
 
 Optional React UI for [component-auth](../README.md) — a drop-in `<Login/>` for consumer apps
-(RQ-0003 / [ADR-0002](../docs/decisions/0002-optional-react-ui-package.md)).
+(RQ-0003 / [ADR-0002](../docs/design/decisions/0002-optional-react-ui-package.md)).
 
 This package is **separate from the headless `@fps4/component-auth` SDK** on purpose: server-side
 consumers (e.g. the client-credentials grant) never pull in React. It depends only on React (peer);
@@ -40,7 +40,7 @@ and refresh are intentionally the host app's responsibility** — this is a logi
 manager.
 
 > Requires a tenant with the **local IdP** enabled (`oauth.idp.provider: 'local'` + the `password`
-> grant) and a client with an `audience`. See [tenant-config](../docs/tenant-config.md).
+> grant) and a client with an `audience`. See [tenant-config](../docs/guides/tenant-config.md).
 
 ## Styling
 

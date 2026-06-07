@@ -1,13 +1,13 @@
 ---
 title: "RQ-0005 — Tenant-scoped user roles in the identity token"
 status: current
-last_updated: 2026-06-02
+last_updated: 2026-06-07
 owners: [architect]
 related:
-  - docs/decisions/0005-decentralized-authorization.md
-  - docs/requirements/RQ-0002-local-password-idp.md
-  - docs/requirements/RQ-0004-seed-config-provisioning.md
-  - docs/tenant-config.md
+  - docs/design/decisions/0005-decentralized-authorization.md
+  - docs/product/RQ-0002-local-password-idp.md
+  - docs/product/RQ-0004-seed-config-provisioning.md
+  - docs/guides/tenant-config.md
 maestro:
   feature: user-roles-in-identity-token
   kind: functional_spec
@@ -25,13 +25,13 @@ maestro:
 - **Status:** accepted
 - **Raised:** 2026-06-02
 - **Owner:** @farid (architect)
-- **Decision:** [ADR-0005](../decisions/0005-decentralized-authorization.md)
+- **Decision:** [ADR-0005](../design/decisions/0005-decentralized-authorization.md)
 
 ## Why
 
 component-auth authenticates users and mints an identity token (`sub`, `email`, `iss`, `aud`, `exp`)
 but carries **no notion of what a user is** — "admin" is only a labelled email. Consumers
-(maestro, sovereign-copilot) increasingly need to authorize users, not just identify them. We want a
+(maestro among them) increasingly need to authorize users, not just identify them. We want a
 **single, central place** to assert coarse organizational roles for a user, delivered in the token
 the products already verify, **without** turning component-auth into a central permission engine.
 
@@ -39,7 +39,7 @@ the products already verify, **without** turning component-auth into a central p
 
 1. A user MAY carry a list of **coarse, opaque role strings**, scoped to its tenant.
 2. Roles are provisioned by the **operator** — via the **seed config** (`users[].roles`) and the
-   **`manage-users` CLI** (a `set-roles` command) — consistent with [ADR-0003](../decisions/0003-seed-config-not-admin-api.md)
+   **`manage-users` CLI** (a `set-roles` command) — consistent with [ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)
    (no admin HTTP API).
 3. A tenant MAY declare an **`oauth.allowedRoles`** allow-list; when non-empty, seeded/assigned roles
    are validated against it (mirrors `allowedScopes`). An empty/absent list accepts any role string.
@@ -75,5 +75,5 @@ the products already verify, **without** turning component-auth into a central p
 - `manage-users set-roles --tenant=<id> --email=<e> --roles=a,b` sets roles on an existing user.
 - The user identity token carries a `roles` claim when present (password, authorization_code, refresh).
 - The parser/validator and the claim are covered by tests.
-- `docs/tenant-config.md`, `docs/api.md`, `GLOSSARY.md`, and `CODEBASE.md` document roles and the claim;
+- `docs/guides/tenant-config.md`, `docs/reference/api.md`, `GLOSSARY.md`, and `CODEBASE.md` document roles and the claim;
   ADR-0005 records the decentralized-authorization decision.

@@ -1,12 +1,12 @@
 ---
 title: "RQ-0004 — Seed config provisioning (tenants, clients, users)"
 status: current
-last_updated: 2026-06-01
+last_updated: 2026-06-07
 owners: [architect]
 related:
-  - docs/decisions/0003-seed-config-not-admin-api.md
-  - docs/requirements/RQ-0002-local-password-idp.md
-  - docs/tenant-config.md
+  - docs/design/decisions/0003-seed-config-not-admin-api.md
+  - docs/product/RQ-0002-local-password-idp.md
+  - docs/guides/tenant-config.md
 maestro:
   feature: seed-config-provisioning
   kind: functional_spec
@@ -23,13 +23,13 @@ maestro:
 - **Status:** accepted
 - **Raised:** 2026-06-01
 - **Owner:** @farid (architect)
-- **Decision:** [ADR-0003](../decisions/0003-seed-config-not-admin-api.md)
+- **Decision:** [ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)
 
 ## Why
 
 Provisioning was a one-off single-tenant script (`tests/load-tenant.ts`). Deployments now need several
-tenants plus demo/admin users (e.g. the `ds1` demo) from a repeatable, reviewable source — without an
-admin HTTP API (which component-auth has no auth layer for, [ADR-0001](../decisions/0001-local-credential-idp.md)).
+tenants plus demo/admin users (e.g. a demo deployment) from a repeatable, reviewable source — without an
+admin HTTP API (which component-auth has no auth layer for, [ADR-0001](../design/decisions/0001-local-credential-idp.md)).
 
 ## Scope
 
@@ -56,4 +56,4 @@ admin HTTP API (which component-auth has no auth layer for, [ADR-0001](../decisi
 
 - `config/seed.example.yaml` committed; `config/seed.yaml` gitignored; `npm run seed` loads it idempotently.
 - The parser/validator is covered by tests (valid, missing env, missing audience, users-without-local-idp, bad email, empty).
-- `docs/tenant-config.md` documents bulk provisioning; ADR-0003 records the no-API decision.
+- `docs/guides/tenant-config.md` documents bulk provisioning; ADR-0003 records the no-API decision.

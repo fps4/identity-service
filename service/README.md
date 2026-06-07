@@ -51,7 +51,7 @@ Optional:
 - `oauth_tokens` – access/refresh token metadata.
 - `key_store` – RSA signing key material.
 
-See `../docs/tenant-config.md` for guidance on enabling OAuth for a tenant and registering clients.
+See `../docs/guides/tenant-config.md` for guidance on enabling OAuth for a tenant and registering clients.
 
 Seed tenants by inserting documents similar to:
 

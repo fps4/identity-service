@@ -1,11 +1,23 @@
-# Component Auth Architecture
+---
+title: Architecture
+status: current
+last_updated: 2026-06-07
+owners: [architect]
+related:
+  - docs/reference/api.md
+  - docs/guides/tenant-config.md
+  - docs/overview.md
+---
+
+# Architecture
 
 The **component-auth** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent, tenant-aware way.
 
 ## Components
 
 - **Service (`service/`)** – Node.js + Express API hosting OAuth 2.0 and legacy session endpoints. It validates tenants, persists sessions and token metadata in MongoDB, manages RSA signing keys, and issues JWT access tokens for downstream services.
-- **SDK (`sdk/`)** – Minimal TypeScript client wrapping the HTTP surface (session helpers plus OAuth client-credentials helper).
+- **SDK (`sdk/`)** – Headless TypeScript client wrapping the HTTP surface: the OAuth client-credentials helper, the Google login helpers, and the local register/login helpers. No UI; safe server-side.
+- **React (`react/`)** – Optional, opt-in package (`@fps4/component-auth-react`) shipping a drop-in `<Login/>` for the local IdP. Separate package so server-side consumers never pull in React.
 - **Docs (`docs/`)** – Architecture, API, and configuration references to help consumers integrate quickly.
 
 ## High-Level Flow
@@ -15,22 +27,24 @@ The **component-auth** platform separates authentication responsibilities into a
 3. JWT access tokens are signed with the active RSA key and embed tenant (`tid`), client (`cid`), optional session (`sid`), and scope claims.
 4. Consumers attach the token to downstream API requests. Additional visitor context can be attached later via `PATCH /v1/sessions/{sessionId}`.
 
-```
-┌───────────────┐    /oauth2/token     ┌──────────────────┐
-│ Client / SDK  │ ───────────────────▶ │ Component Auth Service │
-└───────────────┘                      │  ├─ OAuth Server  │
-         ▲                             │  ├─ Session Core  │
-         │  Bearer token               │  └─ Key Manager   │
-         │                             └────────┬─────────┘
-         │                                      │
-         │                                 MongoDB
-         │                         (tenants, clients, sessions,
-         │                          tokens, key_store, logs)
+```mermaid
+flowchart LR
+    client["Client / SDK"]
+    subgraph svc["component-auth service"]
+        oauth["OAuth Server"]
+        session["Session Core"]
+        keys["Key Manager"]
+    end
+    db[("MongoDB<br/>tenants · clients · sessions<br/>tokens · key_store · logs")]
+
+    client -->|"POST /oauth2/token"| svc
+    svc -->|"Bearer token"| client
+    svc --> db
 ```
 
 ## Multi-Tenancy Model
 
-- Each tenant document may opt into OAuth by providing an `oauth` configuration block (see [Tenant Configuration](tenant-config.md)).
+- Each tenant document may opt into OAuth by providing an `oauth` configuration block (see [Tenant Configuration](../guides/tenant-config.md)).
 - OAuth clients reference a single tenant; rate limits and scope policies are evaluated per tenant on every token issuance.
 - Session metadata remains available for use cases that rely on `/v1/sessions`, and session IDs continue to flow through access tokens as `sid` when present.
 - Allowed CORS origins are seeded from tenant documents and refreshed periodically (configurable interval).
@@ -58,4 +72,4 @@ The **component-auth** platform separates authentication responsibilities into a
 - Plug additional grant flows into `service/src/oauth/server.ts` and expose them via new routes under `/oauth2`.
 - Add custom tenant validation or logging in `service/src/container.ts` by injecting decorators around the OAuth/session cores.
 - Extend the SDK (or wrap it internally) to provide product-specific helpers for registration, consent management, etc.
-- Review [Tenant Configuration](tenant-config.md) when onboarding new tenants; adjustments there ripple automatically to all grant flows.
+- Review [Tenant Configuration](../guides/tenant-config.md) when onboarding new tenants; adjustments there ripple automatically to all grant flows.
