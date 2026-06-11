@@ -67,9 +67,41 @@ host-port access). `workflow_dispatch` runs it on demand.
 - **Secrets** (repo Actions secrets, appended only when set — the ds1 SMOKE posture runs without them):
   `OAUTH_KEY_PASSPHRASE`, and `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI`.
 - **Seeding stays manual** (RQ-0004): the pipeline ships the service; provisioning tenants/clients/users
-  (`npm run seed` with `config/seed.yaml`) remains an operator step.
+  (`npm run seed`) remains an operator step — see *Seed & recovery* below.
 
 The SSH / `DOCKER_HOST` runbook above still works for a laptop-driven deploy or a host without the runner.
+
+## Seed & recovery (identity data) — ADR-0006 / RQ-0006
+
+The auth data (tenants, app clients, users) lives in MongoDB. Its **definition is committed** at
+`config/seed.yaml` (only `${ENV}` secret references — no plaintext), and the secret **values** live as
+**GitHub Actions secrets** — the durable, off-host fallback. The deploy keeps the mongo data volume, so
+steady-state data is not wiped; re-seed only for first setup, a new tenant/client, or after a loss.
+
+**Required secrets** (set as repo/Environment Actions secrets, and export into the environment to seed):
+
+| Secret env var | What |
+| --- | --- |
+| `SEED_DEMO_PASSWORD`, `SEED_ADMIN_PASSWORD` | `demo` tenant users |
+| `SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD`, `SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD` | `sovereign-copilot` users |
+| `SEED_MAESTRO_PO_PASSWORD`, `SEED_MAESTRO_SA_PASSWORD`, `SEED_MAESTRO_ADMIN_PASSWORD` | `maestro` users |
+| `MAESTRO_GATEWAY_DS1_SECRET` | `sovereign-llm-gateway-ds1` runtime client secret — **must equal** the gateway repo's `MAESTRO_RUNTIME_CLIENT_SECRET` (US-0086) |
+| `MAESTRO_COPILOT_DS1_SECRET` | `sovereign-copilot-ds1` runtime client secret — **must equal** the copilot repo's `MAESTRO_RUNTIME_CLIENT_SECRET` |
+
+**Recover / re-seed** (from `service/`, against ds1's Mongo on its published port `27019`):
+
+```bash
+SEED_DEMO_PASSWORD=… SEED_ADMIN_PASSWORD=… \
+SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD=… SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD=… \
+SEED_MAESTRO_PO_PASSWORD=… SEED_MAESTRO_SA_PASSWORD=… SEED_MAESTRO_ADMIN_PASSWORD=… \
+MAESTRO_GATEWAY_DS1_SECRET=… MAESTRO_COPILOT_DS1_SECRET=… \
+MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=component-auth \
+  npm run seed
+```
+
+Idempotent: tenants/clients are upserted; **existing users are left untouched** — change a password with
+`npm run manage-users -- set-password --tenant=<id> --email=<e> --password=<p>`. Passwords are stored as
+scrypt hashes; the plaintext lives only in the Actions secret and with the human owner.
 
 ## Verify
 

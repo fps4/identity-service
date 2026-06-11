@@ -1,0 +1,127 @@
+# ds1 identity seed — the DURABLE, recoverable definition (ADR-0006 / RQ-0006).
+#
+# COMMITTED on purpose: every secret here is an ${ENV_VAR} reference resolved at run time, so this file
+# holds NO plaintext. The secret VALUES live in GitHub Actions secrets (the fallback); export them into
+# the environment before seeding. To rebuild the auth DB after a loss, from service/:
+#
+#     SEED_DEMO_PASSWORD=… SEED_ADMIN_PASSWORD=… \
+#     SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD=… SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD=… \
+#     SEED_MAESTRO_PO_PASSWORD=… SEED_MAESTRO_SA_PASSWORD=… SEED_MAESTRO_ADMIN_PASSWORD=… \
+#     MAESTRO_GATEWAY_DS1_SECRET=… MAESTRO_COPILOT_DS1_SECRET=… \
+#     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=component-auth \
+#       npm run seed
+#
+# Idempotent: tenants + clients are upserted on every run; existing users are left untouched
+# (insert-if-absent), so a re-run never resets a password. Use `npm run manage-users -- set-password …`
+# to change a password. See docs/guides/deployment.md.
+
+tenants:
+  - id: demo
+    name: Demo Tenant
+    status: active
+    allowedOrigins:
+      - http://localhost:3000
+    oauth:
+      enabled: true
+      allowedGrantTypes: [password]      # local email/password login (RQ-0002)
+      allowedScopes: []
+      idp: { provider: local }           # required when the tenant has users
+      limits: { tokensPerMinute: 200 }
+    clients:
+      - id: demo-web
+        name: Demo Web
+        grantTypes: [password]
+        audience: demo-workspace         # REQUIRED for password/authorization_code — becomes the token `aud`
+        redirectUris: []
+        isConfidential: false
+    users:
+      - email: demo@fps4.nl
+        password: ${SEED_DEMO_PASSWORD}  # set SEED_DEMO_PASSWORD in the environment / .env
+        status: active
+      - email: admin@fps4.nl
+        password: ${SEED_ADMIN_PASSWORD} # "admin" is just a labelled user — component-auth has no role concept
+        status: active
+
+  - id: sovereign-copilot
+    name: Sovereign Copilot
+    status: active
+    allowedOrigins:
+      - http://localhost:3033        # local dev (web runs on :3033)
+      - http://ds1:3033              # ds1 demo
+      - https://copilot.fps4.nl      # NL production surface
+      - https://copilot.fps4.com     # .com production surface
+    oauth:
+      enabled: true
+      allowedGrantTypes: [password]
+      allowedScopes: []
+      idp: { provider: local }
+      limits: { tokensPerMinute: 200 }
+    clients:
+      - id: sovereign-copilot-web
+        name: Sovereign Copilot Web
+        grantTypes: [password]
+        audience: sovereign-copilot-workspace   # becomes the token `aud`
+        redirectUris: []
+        isConfidential: false
+    users:
+      - email: demo@sovereign-copilot.fps4.nl
+        password: ${SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD}
+        status: active
+      - email: admin@sovereign-copilot.fps4.nl
+        password: ${SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD}
+        status: active
+
+  - id: maestro
+    name: Maestro
+    status: active
+    allowedOrigins:
+      - http://localhost:3034        # local dev (web runs on :3034)
+      - http://ds1:3034              # ds1 demo
+      - https://maestro.fps4.nl      # NL production surface
+      - https://maestro.fps4.com     # .com production surface
+    oauth:
+      enabled: true
+      allowedGrantTypes: [password, client_credentials]
+      allowedScopes: []
+      idp: { provider: local }
+      limits: { tokensPerMinute: 200 }
+    clients:
+      - id: maestro-web
+        name: Maestro Web
+        grantTypes: [password]
+        audience: maestro-workspace             # becomes the token `aud`
+        redirectUris: []
+        isConfidential: false
+      # The product_runtime machine principals (US-0086): each deployment's runtime exchanges its
+      # client_id/secret for a short-lived JWT (aud=maestro-workspace) that maestro's intake accepts.
+      # The secret MUST equal the consuming repo's MAESTRO_RUNTIME_CLIENT_SECRET Actions secret.
+      - id: sovereign-llm-gateway-ds1
+        name: sovereign-llm-gateway@ds1 runtime
+        grantTypes: [client_credentials]
+        isConfidential: true
+        secret: ${MAESTRO_GATEWAY_DS1_SECRET}
+        audience: maestro-workspace
+        subject: runtime@sovereign-llm-gateway.fps4.nl
+        claims:
+          role: product_runtime
+          email: runtime@sovereign-llm-gateway.fps4.nl
+      - id: sovereign-copilot-ds1
+        name: sovereign-copilot@ds1 runtime
+        grantTypes: [client_credentials]
+        isConfidential: true
+        secret: ${MAESTRO_COPILOT_DS1_SECRET}
+        audience: maestro-workspace
+        subject: runtime@sovereign-copilot.fps4.nl
+        claims:
+          role: product_runtime
+          email: runtime@sovereign-copilot.fps4.nl
+    users:
+      - email: po@maestro.fps4.nl
+        password: ${SEED_MAESTRO_PO_PASSWORD}
+        status: active
+      - email: sa@maestro.fps4.nl
+        password: ${SEED_MAESTRO_SA_PASSWORD}
+        status: active
+      - email: admin@maestro.fps4.nl
+        password: ${SEED_MAESTRO_ADMIN_PASSWORD}
+        status: active
