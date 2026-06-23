@@ -44,16 +44,16 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'onboard_tenant',
-    description: 'Create or update a tenant (idempotent upsert). Pass `id` to update an existing one.',
+    description: 'Create or update a tenant (idempotent upsert). Pass `id` to update an existing one. `allowedOrigins` is the CORS allow-list (array of origins).',
     areaScope: ADMIN_SCOPES.tenants,
-    inputSchema: obj({ id: str, name: str, status: str, oauth: { type: 'object' } }, ['name']),
+    inputSchema: obj({ id: str, name: str, status: str, allowedOrigins: strArr, oauth: { type: 'object' } }, ['name']),
     handler: (a) => adminService.upsertTenant(a)
   },
   {
     name: 'create_client',
-    description: 'Register an OAuth client under a tenant. Returns the generated client secret ONCE.',
+    description: 'Register an OAuth client under a tenant. Pass `id` to set a stable client_id (e.g. "coach-web"); omit to generate a UUID. Returns the generated client secret ONCE.',
     areaScope: ADMIN_SCOPES.clients,
-    inputSchema: obj({ tenantId: str, name: str, grantTypes: strArr, scopes: strArr, redirectUris: strArr, audience: str }, ['tenantId', 'name', 'grantTypes']),
+    inputSchema: obj({ tenantId: str, id: str, name: str, grantTypes: strArr, scopes: strArr, redirectUris: strArr, audience: str }, ['tenantId', 'name', 'grantTypes']),
     handler: (a) => adminService.createClient(a)
   },
   {

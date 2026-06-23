@@ -36,7 +36,13 @@ function fakeCollection(items: any[]) {
     findById: (id: string) => exec(items.find((d) => d._id === id) ?? null),
     findOne: (filter: any) => exec(items.find((d) => match(d, filter)) ?? null),
     countDocuments: (filter: any = {}) => ({ exec: async () => items.filter((d) => match(d, filter)).length }),
-    create: async (doc: any) => { items.push({ ...doc }); return doc; },
+    create: async (doc: any) => {
+      if (doc._id != null && items.some((d) => d._id === doc._id)) {
+        throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
+      }
+      items.push({ ...doc });
+      return doc;
+    },
     findByIdAndUpdate: (id: string, update: any, opts: any = {}) => {
       let doc = items.find((d) => d._id === id);
       const set = update.$set ?? {};
@@ -96,6 +102,15 @@ describe('admin service', () => {
     const stored = state.OAuthClient._items.find((c) => c._id === clientId);
     expect(stored.secretHash).not.toContain(secret);
     expect(verifySecret(secret, stored.secretHash)).toBe(true);
+  });
+
+  it('honors an explicit client id and rejects reusing it', async () => {
+    const admin = makeAdmin(state);
+    const { clientId } = await admin.createClient({ tenantId: 't1', id: 'coach-web', name: 'Coach Web', grantTypes: ['password'], audience: 'coach-workspace' });
+    expect(clientId).toBe('coach-web');
+    expect(state.OAuthClient._items.find((c) => c._id === 'coach-web')).toBeTruthy();
+    await expect(admin.createClient({ tenantId: 't1', id: 'coach-web', name: 'dupe', grantTypes: ['password'] }))
+      .rejects.toMatchObject({ status: 409, code: 'client_exists' });
   });
 
   it('rotates a client secret and 404s on an unknown client', async () => {
