@@ -1,5 +1,5 @@
 {
-  "name": "@fps4/component-auth-service",
+  "name": "@fps4/identity-service-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "start:prod": "NODE_ENV=production node dist/server.js",
     "manage-users": "tsx scripts/manage-users.ts",
+    "mcp": "tsx src/mcp/server.ts",
     "seed": "tsx scripts/seed.ts",
     "test": "vitest"
   },

@@ -18,13 +18,13 @@ export const CONFIG = {
   port: Number(process.env.PORT ?? 7305),
   mongo: {
     uri: process.env.MONGO_URI ?? 'mongodb://localhost:27017',
-    dbName: process.env.MONGO_DB_NAME ?? 'component-auth'
+    dbName: process.env.MONGO_DB_NAME ?? 'identity-service'
   },
   auth: {
     sessionTtlMinutes: toNumber(process.env.SESSION_TTL_MINUTES, 15),
     jwtSecret: process.env.AUTH_JWT_SECRET ?? '',
-    jwtIssuer: process.env.AUTH_JWT_ISSUER ?? 'component-auth-service',
-    jwtAudience: process.env.AUTH_JWT_AUDIENCE ?? 'component-auth-clients',
+    jwtIssuer: process.env.AUTH_JWT_ISSUER ?? 'identity-service',
+    jwtAudience: process.env.AUTH_JWT_AUDIENCE ?? 'identity-service-clients',
     // Local-credential IdP (RQ-0002): password policy + brute-force lockout.
     password: {
       minLength: toNumber(process.env.AUTH_PASSWORD_MIN_LENGTH, 10),
@@ -50,6 +50,18 @@ export const CONFIG = {
       maxAccessTokensPerMinute: toNumber(process.env.OAUTH_TENANT_MAX_TOKENS_PER_MINUTE, 200),
       maxRefreshTokens: toNumber(process.env.OAUTH_TENANT_MAX_REFRESH_TOKENS, 10_000)
     }
+  },
+  // Management plane (ADR-0007): the authenticated admin API (/admin/v1) + MCP server. Admin principals
+  // are OAuth client-credentials clients whose token carries the `requiredScope` below (default `admin`),
+  // verified against this service's own JWKS. `enabled` lets a deployment turn the whole surface off; on
+  // ds1 it should be bound off the public tunnel (network-restricted) — see ADR-0007.
+  admin: {
+    enabled: (process.env.ADMIN_API_ENABLED ?? 'true') !== 'false',
+    basePath: process.env.ADMIN_API_BASE_PATH ?? '/admin/v1',
+    // The scope a client-credentials token must carry to reach the management plane. Granular
+    // per-area scopes (`admin:tenants`, `admin:users`, …) also satisfy their own routes for
+    // least-privilege agents; this superscope satisfies all of them.
+    requiredScope: process.env.ADMIN_API_SCOPE ?? 'admin'
   },
   // Upstream Google OIDC app (RQ-0001). A single Google app per deployment federates user login;
   // the issued user token's `aud` is still per-consumer (oauth_clients.audience), not Google's.
