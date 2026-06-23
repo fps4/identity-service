@@ -103,6 +103,35 @@ scrypt hashes; plaintext lives only inside the encrypted file and with the human
 re-encrypts on save), then re-seed. A runtime client secret must stay equal to its consumer-repo mirror
 (`MAESTRO_RUNTIME_CLIENT_SECRET` in the gateway / copilot repos, US-0086).
 
+## Nightly backups & point-in-time recovery — ADR-0007
+
+Two recovery paths cover different failure modes:
+
+- **Seed-from-git (ADR-0006)** rebuilds the *intended topology* (tenants/clients/users + secrets). Use it
+  for a from-scratch bootstrap or when there is no good backup.
+- **Nightly backup (this section)** restores *actual runtime state* — issued tokens, authorizations,
+  brute-force lockouts, signing-key history, and the audit log — to last night. Preferred for data loss.
+
+`docker/backup.sh` runs on the ds1 host: it dumps the DB via the mongo container, **age-encrypts** the
+archive to the recipient in `.sops.yaml` (so the **same master key** that unlocks the SOPS secrets
+decrypts the backup — ADR-0006), writes it off-host, and prunes by retention. Schedule it from the host
+crontab (nightly at 02:30, 30-day retention):
+
+```cron
+30 2 * * *  AGE_RECIPIENT=age1nrlz6lv8rk37t4qtlkq5w90ewer9hk6uy7k9t04kchq6sc74qszq0y9qkh \
+            BACKUP_DIR=/mnt/backups/identity-service RETENTION_DAYS=30 \
+            /opt/identity-service/docker/backup.sh backup >> /var/log/is-backup.log 2>&1
+```
+
+Point `BACKUP_DIR` at off-host storage (an NFS mount), or set `RCLONE_REMOTE=s3:bucket/identity-service`
+to copy each snapshot to object storage. **Restore** a snapshot (needs the master key — `SOPS_AGE_KEY`):
+
+```bash
+SOPS_AGE_KEY='AGE-SECRET-KEY-…' docker/backup.sh restore /mnt/backups/identity-service/identity-service-20260623-023000.archive.gz.age
+```
+
+Only ciphertext ever leaves the host, so backups stay sovereign (plaintext never lands in storage).
+
 ## Rename cutover: component-auth → identity-service (one-time) — ADR-0007
 
 The rename changes the compose **project** name (so the data volume moves from `component-auth_mongo_data`
