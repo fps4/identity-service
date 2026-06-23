@@ -135,3 +135,39 @@ tenants:
       - email: admin@maestro.fps4.nl
         password: ${SEED_MAESTRO_ADMIN_PASSWORD}
         status: active
+
+  # Sovereign Skills Coach — resource server verifies aud=coach-workspace + the `roles` claim.
+  - id: coach
+    name: Sovereign Skills Coach
+    status: active
+    allowedOrigins:
+      - http://localhost:3000        # local dev (web runs on :3000)
+      - https://skills-coach.fps4.nl # NL production surface
+    oauth:
+      enabled: true
+      allowedGrantTypes: [password]
+      allowedScopes: []
+      allowedRoles: [learner, compliance-officer]   # RQ-0005: coach role vocabulary → token `roles`
+      idp: { provider: local }
+      limits: { tokensPerMinute: 200 }
+    clients:
+      - id: coach-web
+        name: Sovereign Skills Coach Web
+        grantTypes: [password]
+        audience: coach-workspace     # becomes the token `aud` (matches the coach API's COMPONENT_AUTH_AUDIENCE)
+        redirectUris: []
+        isConfidential: false
+    users:
+      # Admin first — full access to both surfaces (tutor + compliance read view).
+      - email: admin@coach.fps4.nl
+        password: ${SEED_COACH_ADMIN_PASSWORD}
+        status: active
+        roles: [compliance-officer, learner]
+      - email: learner@coach.fps4.nl
+        password: ${SEED_COACH_LEARNER_PASSWORD}
+        status: active
+        roles: [learner]
+      - email: officer@coach.fps4.nl
+        password: ${SEED_COACH_OFFICER_PASSWORD}
+        status: active
+        roles: [compliance-officer]
