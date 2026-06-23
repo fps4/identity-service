@@ -33,6 +33,8 @@ export interface UpsertTenantInput {
 
 export interface CreateClientInput {
   tenantId: string;
+  /** Optional stable client id (becomes the OAuth `client_id` / Mongo `_id`). Omit to generate a UUID. */
+  id?: string;
   name: string;
   grantTypes: string[];
   scopes?: string[];
@@ -108,20 +110,28 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const tenant = await m.Tenant.findById(input.tenantId).lean().exec();
     if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
 
-    const clientId = randomUUID();
+    const clientId = input.id?.trim() || randomUUID();
     const secret = newSecret();
-    await m.OAuthClient.create({
-      _id: clientId,
-      tenantId: input.tenantId,
-      name: input.name,
-      secretHash: hashSecret(secret),
-      grantTypes: input.grantTypes,
-      scopes: input.scopes ?? [],
-      redirectUris: input.redirectUris ?? [],
-      audience: input.audience,
-      subject: input.subject,
-      isConfidential: input.isConfidential ?? true
-    });
+    try {
+      await m.OAuthClient.create({
+        _id: clientId,
+        tenantId: input.tenantId,
+        name: input.name,
+        secretHash: hashSecret(secret),
+        grantTypes: input.grantTypes,
+        scopes: input.scopes ?? [],
+        redirectUris: input.redirectUris ?? [],
+        audience: input.audience,
+        subject: input.subject,
+        isConfidential: input.isConfidential ?? true
+      });
+    } catch (err) {
+      // Duplicate _id when an explicit id is reused — surface a clean conflict rather than a raw Mongo error.
+      if ((err as { code?: number }).code === 11000) {
+        throw new AdminServiceError(`Client '${clientId}' already exists`, 409, 'client_exists');
+      }
+      throw err;
+    }
     deps.logger?.info?.({ tenantId: input.tenantId, clientId }, 'admin created client');
     return { clientId, secret };
   }
