@@ -2,13 +2,15 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, THead, TBody } from '@/components/ui/table';
 import { ActionForm } from '@/components/action-form';
-import { Field } from '@/components/field';
+import { Field, SelectField } from '@/components/field';
 import { createClient, rotateClientSecret } from '@/app/actions';
 
 export const dynamic = 'force-dynamic';
 
 export default async function ClientsPage({ searchParams }: { searchParams: Promise<{ tenantId?: string }> }) {
   const { tenantId } = await searchParams;
+  const tenants = await api.listTenants().catch(() => []);
+  const tenantOptions = tenants.map((t) => ({ value: t._id, label: `${t.name} (${t._id})` }));
   let clients: Awaited<ReturnType<typeof api.listClients>> | undefined; let error: string | undefined;
   if (tenantId) {
     try { clients = await api.listClients(tenantId); } catch (e) { error = (e as Error).message; }
@@ -22,7 +24,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
         <CardHeader><CardTitle>Register a client</CardTitle></CardHeader>
         <CardContent>
           <ActionForm action={createClient} submitLabel="Create client">
-            <Field name="tenantId" label="Tenant id" required defaultValue={tenantId} />
+            <SelectField name="tenantId" label="Tenant" options={tenantOptions} required defaultValue={tenantId} />
             <Field name="name" label="Name" placeholder="my-service" required />
             <Field name="grantTypes" label="Grant types (comma)" placeholder="client_credentials" required />
             <Field name="scopes" label="Scopes (comma)" placeholder="admin" />

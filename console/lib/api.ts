@@ -47,22 +47,28 @@ export interface Stats {
   keys: { active: number };
   at: string;
 }
-export interface Tenant { _id: string; name: string; status: string; oauth?: unknown }
-export interface Client { _id: string; tenantId: string; name: string; grantTypes: string[]; scopes: string[]; audience?: string }
+export interface Tenant { _id: string; name: string; status: string; region?: string; oauth?: TenantOAuth }
+export interface TenantOAuth { enabled?: boolean; allowedGrantTypes?: string[]; allowedScopes?: string[]; idp?: { provider?: string } }
+export interface Client { _id: string; tenantId: string; name: string; grantTypes: string[]; scopes: string[]; audience?: string; isConfidential?: boolean; redirectUris?: string[] }
+export interface User { _id: string; tenantId: string; email: string; status: string; roles?: string[]; emailVerified?: boolean; lockedUntil?: string | null; failedAttempts?: number }
 export interface AuditEntry { _id: string; at: string; action: string; principalClientId?: string; targetId?: string; status: number }
 
 export const api = {
   getStats: () => request<Stats>('/stats'),
   listTenants: () => request<{ tenants: Tenant[] }>('/tenants').then((r) => r.tenants),
+  getTenant: (tenantId: string) => request<Tenant>(`/tenants/${tenantId}`),
   listClients: (tenantId: string) => request<{ clients: Client[] }>(`/tenants/${tenantId}/clients`).then((r) => r.clients),
+  listUsers: (tenantId: string) => request<{ users: User[] }>(`/tenants/${tenantId}/users`).then((r) => r.users),
   recentAudit: (limit = 25) => request<{ entries: AuditEntry[] }>(`/audit?limit=${limit}`).then((r) => r.entries),
 
   upsertTenant: (body: Record<string, unknown>) => request<Tenant>('/tenants', { method: 'POST', body: JSON.stringify(body) }),
   createClient: (body: Record<string, unknown>) => request<{ clientId: string; secret: string }>('/clients', { method: 'POST', body: JSON.stringify(body) }),
   rotateClientSecret: (clientId: string) => request<{ clientId: string; secret: string }>(`/clients/${clientId}/rotate-secret`, { method: 'POST' }),
+  deleteClient: (clientId: string) => request<{ clientId: string; deleted: true }>(`/clients/${clientId}`, { method: 'DELETE' }),
   createUser: (body: Record<string, unknown>) => request<{ id: string; email: string }>('/users', { method: 'POST', body: JSON.stringify(body) }),
   resetPassword: (body: Record<string, unknown>) => request<{ ok: boolean }>('/users/reset-password', { method: 'POST', body: JSON.stringify(body) }),
   setUserStatus: (body: Record<string, unknown>) => request<{ ok: boolean }>('/users/status', { method: 'POST', body: JSON.stringify(body) }),
   unlockUser: (body: Record<string, unknown>) => request<{ ok: boolean }>('/users/unlock', { method: 'POST', body: JSON.stringify(body) }),
+  deleteUser: (body: Record<string, unknown>) => request<{ email: string; deleted: true }>('/users/delete', { method: 'POST', body: JSON.stringify(body) }),
   rotateKey: () => request<{ kid: string }>('/keys/rotate', { method: 'POST' })
 };

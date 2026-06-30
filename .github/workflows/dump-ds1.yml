@@ -1,0 +1,87 @@
+name: dump-ds1
+
+# Snapshot the LIVE ds1 identity data (tenants + clients) back into version control and open a PR — the
+# write-back half of the operating model (ADR-0011). Changes made through the admin console / /admin API
+# land in Mongo (the system of record); this captures them so they are reviewed and survive a
+# rebuild-from-seed. The inverse of seed-ds1 (which applies committed seed files INTO the live DB).
+#
+# IMPORTANT — secrets are NOT exported (client secrets / user passwords are one-way hashes; see
+# scripts/dump-seed.ts). So the snapshot is written to config/seed.snapshot.yaml — NOT the curated
+# config/seed*.yaml, which carry ${ENV} secret refs and are the actual seed inputs. An operator reviews
+# the PR and reconciles any genuinely-new tenants/clients into the canonical seed files by hand. The PR
+# is deliberately NOT auto-merged: a secret-stripped snapshot must never silently become a seed input.
+#
+# Reuses the seed-ds1 seeder image (docker/seed.Dockerfile already carries scripts/dump-seed.ts + tsx).
+# The ds1 runner is containerised with only the Docker socket, so the file is pulled off the seeder
+# container with `docker cp` (no bind mounts; no stdout/log contamination).
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_users:
+        description: Also dump users (with ${ENV} password placeholders; note emails are PII).
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Never let two snapshots race.
+concurrency:
+  group: dump-ds1
+  cancel-in-progress: false
+
+jobs:
+  dump:
+    runs-on: [self-hosted, ds1]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the seeder image (carries scripts/dump-seed.ts + tsx)
+        run: docker build -f docker/seed.Dockerfile -t ids-seeder:${{ github.sha }} .
+
+      - name: Dump the live ds1 DB to config/seed.snapshot.yaml
+        run: |
+          # Join whatever network the mongo container is actually on, so `mongo` resolves (as seed-ds1 does).
+          NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' identity-service-mongo 2>/dev/null | awk '{print $1}')
+          [ -n "$NET" ] || { echo "::error::identity-service-mongo not running — deploy the stack first"; exit 1; }
+          echo "mongo network: $NET"
+
+          FLAGS=""
+          [ "${{ inputs.include_users }}" = "true" ] && FLAGS="--include-users"
+
+          # Run detached (NOT --rm) so the output file can be copied off after it exits. The script writes
+          # YAML to --out and only logs to stderr, so the file is clean regardless of log level.
+          cid=$(docker run -d --network "$NET" \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB_NAME=identity-service \
+            ids-seeder:${{ github.sha }} \
+            npx tsx scripts/dump-seed.ts --out=/app/seed.snapshot.yaml $FLAGS)
+
+          code=$(docker wait "$cid")
+          echo "::group::dump-seed logs"; docker logs "$cid" 2>&1 || true; echo "::endgroup::"
+          if [ "$code" != "0" ]; then docker rm -f "$cid" >/dev/null 2>&1 || true; echo "::error::dump-seed exited $code"; exit 1; fi
+
+          docker cp "$cid:/app/seed.snapshot.yaml" config/seed.snapshot.yaml
+          docker rm -f "$cid" >/dev/null 2>&1 || true
+          echo "::group::config/seed.snapshot.yaml"; cat config/seed.snapshot.yaml; echo "::endgroup::"
+
+      - name: Open a PR with the snapshot
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/ds1-seed-snapshot
+          base: main
+          add-paths: config/seed.snapshot.yaml
+          commit-message: "chore(seed): snapshot live ds1 tenants/clients (dump-ds1)"
+          title: "chore(seed): ds1 live snapshot"
+          body: |
+            Automated snapshot of the **live ds1** identity data (tenants + clients), captured by the `dump-ds1` workflow.
+
+            - **Secrets are not included** (client secrets / user passwords are one-way hashes) — see `scripts/dump-seed.ts`.
+            - Written to `config/seed.snapshot.yaml`, **not** the curated `config/seed*.yaml` (which carry `${ENV}` secret refs and are the real seed inputs).
+            - **Do not merge blindly.** Review the diff, reconcile any genuinely-new tenants/clients into the canonical seed files (adding `secret: ${ENV}` where a confidential client needs one for a fresh-DB rebuild), then close or repurpose this PR.
+
+            > Note: PRs opened by `GITHUB_TOKEN` do not themselves trigger the DoD workflow.
+          delete-branch: true

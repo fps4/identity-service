@@ -100,6 +100,12 @@ router.delete('/clients/:id', requireAdmin(ADMIN_SCOPES.clients), async (req, re
 
 // --- Users ---
 
+router.get('/tenants/:tenantId/users', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    res.json({ users: await adminService.listUsers(req.params.tenantId) });
+  } catch (e) { handleError(res, e); }
+});
+
 router.post('/users', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const result = await adminService.createUser(req.body ?? {});
@@ -135,6 +141,15 @@ router.post('/users/unlock', requireAdmin(ADMIN_SCOPES.users), async (req, res) 
     await adminService.unlockUser(tenantId, email);
     audit(req, res, 'user.unlock', { type: 'user', id: email }, { tenantId });
     res.json({ ok: true });
+  } catch (e) { handleError(res, e); }
+});
+
+router.post('/users/delete', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const { tenantId, email } = req.body ?? {};
+    const result = await adminService.deleteUser(tenantId, email);
+    audit(req, res, 'user.delete', { type: 'user', id: email }, { tenantId });
+    res.json(result);
   } catch (e) { handleError(res, e); }
 });
 

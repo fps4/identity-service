@@ -11,6 +11,7 @@
     "manage-users": "tsx scripts/manage-users.ts",
     "mcp": "tsx src/mcp/server.ts",
     "seed": "tsx scripts/seed.ts",
+    "dump-seed": "tsx scripts/dump-seed.ts",
     "test": "vitest"
   },
   "dependencies": {

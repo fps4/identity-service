@@ -161,6 +161,12 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   // --- Users (local-credential IdP) ---
 
+  /** List a tenant's local-credential users. Never exposes passwordHash. */
+  async function listUsers(tenantId: string) {
+    const m = await models();
+    return m.User.find({ tenantId }).select('-passwordHash').lean().exec();
+  }
+
   async function createUser(input: CreateUserInput): Promise<{ id: string; email: string; tenantId: string }> {
     const email = (input.email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) throw new AdminServiceError('A valid email is required', 400, 'invalid_email');
@@ -219,6 +225,16 @@ export function createAdminService(deps: AdminServiceDependencies) {
     deps.logger?.info?.({ tenantId, email }, 'admin unlocked user');
   }
 
+  /** Delete a local-credential user. 404 if it does not exist. */
+  async function deleteUser(tenantId: string, email: string): Promise<{ email: string; deleted: true }> {
+    const m = await models();
+    const normalized = email.trim().toLowerCase();
+    const result = await m.User.deleteOne({ tenantId, email: normalized }).exec();
+    if (result.deletedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
+    deps.logger?.info?.({ tenantId, email: normalized }, 'admin deleted user');
+    return { email: normalized, deleted: true };
+  }
+
   // --- Signing keys ---
 
   async function rotateKey() {
@@ -268,7 +284,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
   return {
     listTenants, getTenant, upsertTenant,
     listClients, createClient, rotateClientSecret, deleteClient,
-    createUser, resetUserPassword, setUserStatus, unlockUser,
+    listUsers, createUser, resetUserPassword, setUserStatus, unlockUser, deleteUser,
     rotateKey, keyStatus, getStats
   };
 }
