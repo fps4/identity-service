@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, THead, TBody } from '@/components/ui/table';
@@ -31,12 +32,17 @@ export default async function TenantsPage() {
         <CardContent>
           {error ? <p className="text-sm text-destructive">{error}</p> : (
             <Table>
-              <THead><tr><th>Name</th><th>Id</th><th>Status</th></tr></THead>
+              <THead><tr><th>Name</th><th>Id</th><th>Status</th><th></th></tr></THead>
               <TBody>
                 {tenants?.map((t) => (
-                  <tr key={t._id}><td>{t.name}</td><td className="font-mono text-xs">{t._id}</td><td>{t.status}</td></tr>
+                  <tr key={t._id}>
+                    <td><Link href={`/tenants/${t._id}`} className="font-medium hover:underline">{t.name}</Link></td>
+                    <td className="font-mono text-xs">{t._id}</td>
+                    <td>{t.status}</td>
+                    <td><Link href={`/tenants/${t._id}`} className="text-sm text-muted-foreground hover:underline">Manage clients &amp; users →</Link></td>
+                  </tr>
                 ))}
-                {!tenants?.length && <tr><td colSpan={3} className="text-muted-foreground">No tenants yet.</td></tr>}
+                {!tenants?.length && <tr><td colSpan={4} className="text-muted-foreground">No tenants yet.</td></tr>}
               </TBody>
             </Table>
           )}

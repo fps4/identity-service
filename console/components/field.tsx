@@ -12,3 +12,28 @@ export function Field({ name, label, type = 'text', placeholder, required, defau
     </div>
   );
 }
+
+/** A labelled native <select>, styled to match Field. Used to pick a tenant instead of pasting an id. */
+export function SelectField({ name, label, options, required, defaultValue }: {
+  name: string; label: string; options: { value: string; label: string }[]; required?: boolean; defaultValue?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor={name}>{label}</Label>
+      <select
+        id={name}
+        name={name}
+        required={required}
+        defaultValue={defaultValue}
+        className="flex h-9 w-56 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+/** A hidden form value — used to carry ids (tenantId, clientId, email) into per-row action forms. */
+export function Hidden({ name, value }: { name: string; value: string }) {
+  return <input type="hidden" name={name} value={value} />;
+}
