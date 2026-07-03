@@ -31,6 +31,11 @@ Terms where identity-service's business language and code diverge, or that a con
 - **Local user** — an email/password account in the `users` collection (RQ-0002). Per-tenant unique
   email, salted-scrypt password hash, a stable server-minted `sub`, and brute-force lockout counters.
 
+- **Invite** — an operator-issued, show-once registration code (`invites` collection) gating
+  self-registration on a tenant whose `oauth.registration` is `invite` (RQ-0013). Optionally
+  email-bound, role-stamping, multi-use, expiring, revocable; only a SHA-256 digest is stored.
+  Distributed out-of-band by the operator — the service validates codes, it never sends them.
+
 - **Audience (`aud`)** — the consumer/workspace a user token is bound to (the client's `audience`
   field). A consumer verifies `aud` equals its own configured value; a token for one workspace is
   invalid for another.
