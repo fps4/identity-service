@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type CSSProperties } from 'react';
 import { requestRegistration, RegisterError, type RegisteredUser } from './registration.js';
+import { AuthCard, normalizeCard, type CardOptions } from './authCard.js';
 
 export interface RegisterClassNames {
   form?: string;
@@ -51,6 +52,12 @@ export interface RegisterProps {
   unstyled?: boolean;
   /** override fetch (tests / SSR) */
   fetchImpl?: typeof fetch;
+  /**
+   * Wrap the form in opt-in, centered "card" chrome (Auth0 Universal-Login style), matching <Login/>
+   * (RQ-0016). Off by default (rendered output unchanged). `true` for defaults, or an options object.
+   * In card mode the title moves into the card header and the button goes full-width.
+   */
+  card?: boolean | CardOptions;
 }
 
 // Neutral defaults matching <Login/> so the pair renders consistently unstyled-but-usable; every
@@ -90,10 +97,12 @@ export function Register(props: RegisterProps) {
     baseUrl, tenantId, onSuccess, onError,
     title = 'Create your account', submitLabel = 'Create account',
     emailLabel = 'Email', passwordLabel = 'Password',
-    invite, className, classNames = {}, unstyled = false, fetchImpl
+    invite, className, classNames = {}, unstyled = false, fetchImpl, card
   } = props;
 
   const inviteOpt: InviteOptions | undefined = invite === true ? {} : (invite || undefined);
+  const cardOpt = normalizeCard(card);
+  const inCard = !!cardOpt;
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -108,6 +117,9 @@ export function Register(props: RegisterProps) {
 
   const style = (key: keyof typeof baseStyles): CSSProperties | undefined =>
     unstyled ? undefined : baseStyles[key];
+  // In card mode the form fills the card and the button goes full-width; otherwise identical.
+  const formStyle = unstyled ? undefined : (inCard ? { ...baseStyles.form, maxWidth: '100%' } : baseStyles.form);
+  const buttonStyle = unstyled ? undefined : (inCard ? { ...baseStyles.button, width: '100%' } : baseStyles.button);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -135,9 +147,9 @@ export function Register(props: RegisterProps) {
     }
   }
 
-  return (
-    <form className={className} style={style('form')} onSubmit={handleSubmit} noValidate>
-      {title ? <h2>{title}</h2> : null}
+  const form = (
+    <form className={className} style={formStyle} onSubmit={handleSubmit} noValidate>
+      {!inCard && title ? <h2>{title}</h2> : null}
 
       <div className={classNames.field} style={style('field')}>
         <label className={classNames.label} style={style('label')} htmlFor="identity-service-register-email">{emailLabel}</label>
@@ -188,9 +200,11 @@ export function Register(props: RegisterProps) {
 
       {error ? <div role="alert" className={classNames.error} style={style('error')}>{error}</div> : null}
 
-      <button className={classNames.button} style={style('button')} type="submit" disabled={submitting}>
+      <button className={classNames.button} style={buttonStyle} type="submit" disabled={submitting}>
         {submitting ? '…' : submitLabel}
       </button>
     </form>
   );
+
+  return inCard ? <AuthCard options={cardOpt} title={title ?? undefined}>{form}</AuthCard> : form;
 }

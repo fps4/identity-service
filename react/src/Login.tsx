@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type CSSProperties } from 'react';
 import { requestPasswordToken, LoginError, type UserTokenResponse } from './password.js';
 import { startGoogleLoginRedirect } from './google.js';
+import { AuthCard, normalizeCard, type CardOptions } from './authCard.js';
 
 export interface LoginClassNames {
   form?: string;
@@ -51,6 +52,13 @@ export interface LoginProps {
   google?: GoogleLoginOptions;
   /** hide the email/password form (e.g. Google-only login). Requires `google`. */
   hidePasswordForm?: boolean;
+  /**
+   * Wrap the form in opt-in, centered "card" chrome (Auth0 Universal-Login style) — logo, title,
+   * subtitle, footer, page background (RQ-0016). Off by default (rendered output unchanged). `true`
+   * for defaults, or an options object. Governs page chrome only; fields still follow `classNames` /
+   * `unstyled`. In card mode the title moves into the card header and the buttons go full-width.
+   */
+  card?: boolean | CardOptions;
 }
 
 // Minimal, neutral defaults so the component is usable with zero styling, yet every element takes a
@@ -77,7 +85,7 @@ export function Login(props: LoginProps) {
     title = 'Sign in', submitLabel = 'Sign in',
     emailLabel = 'Email', passwordLabel = 'Password',
     className, classNames = {}, unstyled = false, fetchImpl,
-    google, hidePasswordForm = false
+    google, hidePasswordForm = false, card
   } = props;
 
   const [email, setEmail] = useState('');
@@ -85,8 +93,14 @@ export function Login(props: LoginProps) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const cardOpt = normalizeCard(card);
+  const inCard = !!cardOpt;
+
   const style = (key: keyof typeof baseStyles): CSSProperties | undefined =>
     unstyled ? undefined : baseStyles[key];
+  // In card mode the form fills the card and the primary button goes full-width; otherwise identical.
+  const formStyle = unstyled ? undefined : (inCard ? { ...baseStyles.form, maxWidth: '100%' } : baseStyles.form);
+  const buttonStyle = unstyled ? undefined : (inCard ? { ...baseStyles.button, width: '100%' } : baseStyles.button);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -134,9 +148,9 @@ export function Login(props: LoginProps) {
     </button>
   ) : null;
 
-  return (
-    <form className={className} style={style('form')} onSubmit={handleSubmit} noValidate>
-      {title ? <h2>{title}</h2> : null}
+  const form = (
+    <form className={className} style={formStyle} onSubmit={handleSubmit} noValidate>
+      {!inCard && title ? <h2>{title}</h2> : null}
 
       {hidePasswordForm && google ? (
         <>
@@ -175,7 +189,7 @@ export function Login(props: LoginProps) {
 
       {error ? <div role="alert" className={classNames.error} style={style('error')}>{error}</div> : null}
 
-      <button className={classNames.button} style={style('button')} type="submit" disabled={submitting}>
+      <button className={classNames.button} style={buttonStyle} type="submit" disabled={submitting}>
         {submitting ? '…' : submitLabel}
       </button>
 
@@ -189,4 +203,6 @@ export function Login(props: LoginProps) {
       )}
     </form>
   );
+
+  return inCard ? <AuthCard options={cardOpt} title={title ?? undefined}>{form}</AuthCard> : form;
 }
