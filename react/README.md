@@ -70,6 +70,29 @@ const token = await completeGoogleLoginFromRedirect({
 > the tenant's Google IdP configured, and the deployment's Google app env set. See
 > [tenant-config](../docs/guides/tenant-config.md) and [RQ-0012](../docs/product/RQ-0012-react-google-login.md).
 
+## Signup on an invite-only tenant (RQ-0013)
+
+`<Login/>` handles login only; signup is a small form the host app owns, built on the SDK's
+`registerWithPassword`. On a tenant whose registration policy is `invite`, the operator sends the
+invitee a code (or a link carrying it) — read it from the URL and pass it through:
+
+```tsx
+// app/signup/page.tsx — reached via https://app.example.com/signup?invite=V7QK-3MHP-XA2D
+import { ComponentAuthClient } from '@fps4/identity-service-sdk';
+
+const auth = new ComponentAuthClient({ baseUrl, defaultTenantId: 'tenant-local' });
+const inviteCode = new URLSearchParams(window.location.search).get('invite') ?? undefined;
+
+await auth.registerWithPassword({ email, password, inviteCode });
+// then log in — e.g. render <Login/> or call loginWithPassword directly
+```
+
+Surface `invite_required` / `invalid_invite` (403) as "This signup needs a valid invite code";
+the server deliberately does not reveal *why* a code failed. Note that on invite-only tenants a
+**new** user's first "Continue with Google" is denied (`error=access_denied` on the callback) —
+route new users to this signup form first; their Google account links automatically on the next
+login once the verified email matches (see [tenant-config](../docs/guides/tenant-config.md)).
+
 ## Styling
 
 Works unstyled-but-usable out of the box (neutral inline styles). For Tailwind / shadcn / any design
