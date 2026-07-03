@@ -32,6 +32,7 @@ export interface SeedTenantOAuth {
   allowedGrantTypes: string[];
   allowedScopes?: string[];
   allowedRoles?: string[];
+  registration?: 'open' | 'invite' | 'closed';  // self-registration policy (RQ-0013); default open
   idp?: { provider: 'google' | 'local' };
   limits?: { tokensPerMinute?: number; refreshTokens?: number; clientCap?: number };
 }
@@ -92,6 +93,10 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
       throw new SeedConfigError(`${where} (${t.id}) needs oauth.enabled and oauth.allowedGrantTypes`);
     }
     const grants = new Set(t.oauth.allowedGrantTypes as string[]);
+    const registration = t.oauth.registration;
+    if (registration !== undefined && registration !== 'open' && registration !== 'invite' && registration !== 'closed') {
+      throw new SeedConfigError(`${where} (${t.id}) oauth.registration must be open, invite, or closed`);
+    }
     const idpProvider = isObject(t.oauth.idp) ? t.oauth.idp.provider : undefined;
     const allowedRoles = Array.isArray(t.oauth.allowedRoles) ? (t.oauth.allowedRoles as string[]) : [];
     const roleAllowlist = allowedRoles.length ? new Set(allowedRoles) : null;
@@ -152,6 +157,7 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
         allowedGrantTypes: t.oauth.allowedGrantTypes as string[],
         allowedScopes: Array.isArray(t.oauth.allowedScopes) ? (t.oauth.allowedScopes as string[]) : [],
         allowedRoles,
+        registration: registration as SeedTenantOAuth['registration'],
         idp: idpProvider ? { provider: idpProvider as 'google' | 'local' } : undefined,
         limits: isObject(t.oauth.limits) ? (t.oauth.limits as SeedTenantOAuth['limits']) : undefined
       },

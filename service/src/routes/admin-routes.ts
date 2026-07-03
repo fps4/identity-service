@@ -171,6 +171,35 @@ router.post('/users/delete', requireAdmin(ADMIN_SCOPES.users), async (req, res) 
   } catch (e) { handleError(res, e); }
 });
 
+// --- Invites (RQ-0013) ---
+
+router.post('/tenants/:tenantId/invites', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const result = await adminService.createInvite({
+      ...(req.body ?? {}),
+      tenantId: req.params.tenantId,
+      createdBy: req.admin?.subject ?? req.admin?.clientId
+    });
+    audit(req, res, 'invite.create', { type: 'invite', id: result.inviteId }, { tenantId: req.params.tenantId, maxUses: req.body?.maxUses });
+    // The code is returned ONCE — only its digest is persisted.
+    res.status(201).json(result);
+  } catch (e) { handleError(res, e); }
+});
+
+router.get('/tenants/:tenantId/invites', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    res.json({ invites: await adminService.listInvites(req.params.tenantId) });
+  } catch (e) { handleError(res, e); }
+});
+
+router.post('/invites/:id/revoke', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const result = await adminService.revokeInvite(req.params.id);
+    audit(req, res, 'invite.revoke', { type: 'invite', id: req.params.id });
+    res.json(result);
+  } catch (e) { handleError(res, e); }
+});
+
 // --- Signing keys ---
 
 router.post('/keys/rotate', requireAdmin(ADMIN_SCOPES.keys), async (req, res) => {

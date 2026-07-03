@@ -21,6 +21,10 @@ export interface TenantOAuthConfig {
   allowedGrantTypes?: string[];
   allowedScopes?: string[];
   allowedRoles?: string[];   // optional per-tenant vocabulary for user roles (RQ-0005); empty = any
+  // Self-registration policy (RQ-0013): `open` (default — anyone, as before), `invite` (a valid
+  // operator-issued invite code required), `closed` (no self-registration; admin-plane creation only).
+  // `invite`/`closed` also stop federated logins from JIT-provisioning NEW users (ADR-0013).
+  registration?: 'open' | 'invite' | 'closed';
   limits?: TenantOAuthLimits;
   idp?: TenantIdpConfig | null;
 }
@@ -56,6 +60,7 @@ const oauthConfigSchema = new Schema<TenantOAuthConfig>({
   allowedGrantTypes: { type: [String], default: [] },
   allowedScopes: { type: [String], default: [] },
   allowedRoles: { type: [String], default: [] },
+  registration: { type: String, enum: ['open', 'invite', 'closed'], default: undefined },
   limits: { type: oauthLimitsSchema, default: undefined },
   idp: { type: idpConfigSchema, default: undefined }
 }, { _id: false });

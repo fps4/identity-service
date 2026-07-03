@@ -19,6 +19,10 @@ tenants:
       allowedGrantTypes: [password]      # local email/password login (RQ-0002)
       allowedScopes: []
       allowedRoles: [tenant_admin, member]  # RQ-0005: optional role vocabulary; empty/omitted = any role
+      # registration: invite             # RQ-0013: open (default) | invite (operator-issued code
+      #                                  # required to self-register) | closed (admin-plane only).
+      #                                  # Invites themselves are runtime data — minted via the console
+      #                                  # or /admin/v1, never seeded.
       idp: { provider: local }           # required when the tenant has users
       limits: { tokensPerMinute: 200 }
     clients:

@@ -85,6 +85,36 @@ const TOOLS: ToolDef[] = [
     inputSchema: obj({ tenantId: str, email: str }, ['tenantId', 'email']),
     handler: async (a) => { await adminService.unlockUser(a.tenantId, a.email); return { ok: true }; }
   },
+  // Invites (RQ-0013) are runtime user-onboarding state — operational, not structural — so they
+  // belong on the MCP surface alongside the other user tools (ADR-0011).
+  {
+    name: 'create_invite',
+    description: 'Mint a registration invite for a tenant (RQ-0013). Returns the code ONCE — only its digest is stored. Optional: bind to an email, stamp roles, allow multiple uses, set expiry in hours.',
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({
+      tenantId: str,
+      email: str,
+      roles: strArr,
+      maxUses: { type: 'number' },
+      expiresInHours: { type: 'number' },
+      note: str
+    }, ['tenantId']),
+    handler: (a) => adminService.createInvite(a)
+  },
+  {
+    name: 'list_invites',
+    description: "List a tenant's invites with derived status (pending/redeemed/expired/revoked). Codes are never shown.",
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ tenantId: str }, ['tenantId']),
+    handler: (a) => adminService.listInvites(a.tenantId)
+  },
+  {
+    name: 'revoke_invite',
+    description: 'Revoke an invite so no further redemptions succeed.',
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ inviteId: str }, ['inviteId']),
+    handler: (a) => adminService.revokeInvite(a.inviteId)
+  },
   {
     name: 'rotate_signing_key',
     description: 'Rotate the active RS256 signing key (the previous key stays published in the JWKS).',

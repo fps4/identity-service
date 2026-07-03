@@ -52,6 +52,7 @@ async function main() {
           name: t.name, status: t.status, allowedOrigins: t.allowedOrigins,
           oauth: { enabled: t.oauth.enabled, allowedGrantTypes: t.oauth.allowedGrantTypes,
                    allowedScopes: t.oauth.allowedScopes, allowedRoles: t.oauth.allowedRoles,
+                   ...(t.oauth.registration ? { registration: t.oauth.registration } : {}),
                    idp: t.oauth.idp, limits: t.oauth.limits },
           updatedAt: now
       } },

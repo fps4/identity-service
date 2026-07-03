@@ -446,6 +446,85 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   });
 });
 
+// --- Registration policy gates federated JIT provisioning (RQ-0013, ADR-0013) -----------------
+
+describe('OAuth server – invite-only tenants gate federated sign-up (RQ-0013)', () => {
+  let store: Store;
+  let server: ReturnType<typeof createOAuthServer>;
+  const fixedNow = new Date('2026-06-01T12:00:00.000Z');
+  const verifier = 'test-code-verifier-0123456789-abcdefghijklmnop';
+
+  const startAndCallback = async () => {
+    await server.startAuthorization({
+      clientId: 'client-maestro',
+      redirectUri: 'https://maestro.test/callback',
+      codeChallenge: pkceChallenge(verifier),
+      state: 's'
+    });
+    const authRecord = store.authorizations[store.authorizations.length - 1];
+    const result = await server.handleGoogleCallback({ code: 'google-code', state: authRecord.googleState });
+    return { authRecord, result };
+  };
+
+  const exchange = (code: string) => server.issueAuthorizationCodeToken({
+    code, codeVerifier: verifier, clientId: 'client-maestro', redirectUri: 'https://maestro.test/callback'
+  });
+
+  beforeEach(() => {
+    store = makeStore();
+    seedTenantAndClient(store);
+    store.tenants[0].oauth.registration = 'invite';
+    server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
+  });
+
+  it('redirects a NEW Google identity back with access_denied at the callback (no code, no user)', async () => {
+    const { authRecord, result } = await startAndCallback();
+    expect(result.redirectTo).toContain('error=access_denied');
+    expect(authRecord.code).toBeUndefined();
+    expect(store.users).toHaveLength(0);
+    expect(store.tokens).toHaveLength(0);
+  });
+
+  it('lets an EXISTING linked user log in unchanged on an invite-only tenant', async () => {
+    store.users.push({
+      _id: 'u-existing', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', status: 'active',
+      roles: ['member'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+    });
+    const { authRecord } = await startAndCallback();
+    const token = await exchange(authRecord.code as string);
+    expect(token.accessToken).toBeTruthy();
+    expect(store.users).toHaveLength(1);
+  });
+
+  it('still links Google onto an existing local account via verified email (the invitee path)', async () => {
+    // The invitee registered locally with their code; first Google login must link, not be denied.
+    store.users.push({
+      _id: 'local-1', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
+      status: 'active', roles: ['member'], identities: []
+    });
+    const { authRecord } = await startAndCallback();
+    await exchange(authRecord.code as string);
+    expect(store.users[0].identities).toHaveLength(1);
+    expect(store.users[0].identities[0]).toMatchObject({ provider: 'google', subject: 'google-sub-123' });
+  });
+
+  it('the token exchange re-enforces the gate even if the policy flips mid-flow (authoritative check)', async () => {
+    store.tenants[0].oauth.registration = 'open';       // callback preflight passes...
+    const { authRecord } = await startAndCallback();
+    store.tenants[0].oauth.registration = 'closed';     // ...but the tenant closes before the exchange
+    await expect(exchange(authRecord.code as string)).rejects.toBeInstanceOf(AccessDeniedError);
+    expect(store.users).toHaveLength(0);
+    expect(store.tokens).toHaveLength(0);
+  });
+
+  it('a closed tenant behaves like invite for a new federated identity', async () => {
+    store.tenants[0].oauth.registration = 'closed';
+    const { result } = await startAndCallback();
+    expect(result.redirectTo).toContain('error=access_denied');
+    expect(store.users).toHaveLength(0);
+  });
+});
+
 // --- The real Google id_token verifier (signature / iss / aud / exp / nonce) ------------------
 
 describe('createGoogleIdp.verifyIdToken', () => {

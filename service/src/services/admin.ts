@@ -2,6 +2,7 @@ import { randomUUID, randomBytes } from 'crypto';
 import type { Connection } from 'mongoose';
 import { hashSecret } from '../utils/hash.js';
 import { rotateSigningKey, listPublicKeys } from '../utils/key-store.js';
+import { generateInviteCode, inviteCodeDigest, deriveInviteStatus } from './invites.js';
 import type { ModelsBucket } from '../oauth/types.js';
 import type { Logger } from '../utils/logger.js';
 import type { TenantOAuthConfig } from '../models/tenant.js';
@@ -50,6 +51,18 @@ export interface CreateUserInput {
   password: string;
   roles?: string[];
 }
+
+export interface CreateInviteInput {
+  tenantId: string;
+  email?: string;          // optional binding — redemption then requires this address and vouches it
+  roles?: string[];        // stamped on the redeemed user; validated against tenant allowedRoles
+  maxUses?: number;        // default 1; >1 for cohort codes
+  expiresInHours?: number; // default 7 days
+  note?: string;
+  createdBy?: string;      // acting principal, threaded from the route/MCP layer for the audit trail
+}
+
+const INVITE_DEFAULT_TTL_HOURS = 24 * 7;
 
 function newSecret(): string {
   return randomBytes(32).toString('base64url');
@@ -294,6 +307,87 @@ export function createAdminService(deps: AdminServiceDependencies) {
     return { email: normalized, deleted: true };
   }
 
+  // --- Invites (RQ-0013) ---
+
+  /**
+   * Mint a registration invite. Returns the plaintext code ONCE (only its digest is stored — the
+   * same contract as client secrets). Roles are validated here, at the operator, so a bad vocabulary
+   * fails loud at creation rather than quietly at the invitee's redemption (ADR-0013).
+   */
+  async function createInvite(input: CreateInviteInput): Promise<{ inviteId: string; code: string; expiresAt: Date }> {
+    if (!input.tenantId) throw new AdminServiceError('tenantId is required', 400, 'invalid_input');
+    const m = await models();
+    const tenant = await m.Tenant.findById(input.tenantId).lean().exec() as { oauth?: TenantOAuthConfig } | null;
+    if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
+
+    const email = input.email?.trim().toLowerCase();
+    if (email !== undefined && !EMAIL_RE.test(email)) {
+      throw new AdminServiceError('email must be a valid address', 400, 'invalid_email');
+    }
+    const roles = input.roles ?? [];
+    const allowedRoles = tenant.oauth?.allowedRoles ?? [];
+    if (allowedRoles.length) {
+      const vocabulary = new Set(allowedRoles);
+      const stray = roles.find((r) => !vocabulary.has(r));
+      if (stray) throw new AdminServiceError(`Role "${stray}" is not in the tenant's allowedRoles`, 400, 'invalid_input');
+    }
+    const maxUses = input.maxUses ?? 1;
+    if (!Number.isInteger(maxUses) || maxUses < 1) {
+      throw new AdminServiceError('maxUses must be a positive integer', 400, 'invalid_input');
+    }
+    const ttlHours = input.expiresInHours ?? INVITE_DEFAULT_TTL_HOURS;
+    if (!(ttlHours > 0)) throw new AdminServiceError('expiresInHours must be positive', 400, 'invalid_input');
+
+    const now = nowFn();
+    const inviteId = randomUUID();
+    const code = generateInviteCode();
+    const expiresAt = new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
+    await m.Invite.create({
+      _id: inviteId,
+      tenantId: input.tenantId,
+      codeDigest: inviteCodeDigest(code),
+      email,
+      roles,
+      maxUses,
+      usesRemaining: maxUses,
+      expiresAt,
+      createdBy: input.createdBy,
+      note: input.note,
+      createdAt: now,
+      updatedAt: now
+    });
+    deps.logger?.info?.({ tenantId: input.tenantId, inviteId, maxUses }, 'admin created invite');
+    return { inviteId, code, expiresAt };
+  }
+
+  /** List a tenant's invites with derived status. Never exposes the code or its digest. */
+  async function listInvites(tenantId: string) {
+    const m = await models();
+    const now = nowFn();
+    const invites = await m.Invite.find({ tenantId }).sort({ createdAt: -1 }).lean().exec();
+    return invites.map((invite) => {
+      const { codeDigest: _digest, usesRemaining, ...rest } = invite as typeof invite & { codeDigest?: string };
+      return {
+        ...rest,
+        usedCount: invite.maxUses - invite.usesRemaining,
+        status: deriveInviteStatus(invite, now)
+      };
+    });
+  }
+
+  /** Revoke an invite so no further redemptions succeed. Idempotent on an already-revoked invite. */
+  async function revokeInvite(inviteId: string): Promise<{ inviteId: string; revoked: true }> {
+    const m = await models();
+    const updated = await m.Invite.findByIdAndUpdate(
+      inviteId,
+      { $set: { revokedAt: nowFn(), updatedAt: nowFn() } },
+      { new: true }
+    ).lean().exec();
+    if (!updated) throw new AdminServiceError('Invite not found', 404, 'invite_not_found');
+    deps.logger?.info?.({ inviteId }, 'admin revoked invite');
+    return { inviteId, revoked: true };
+  }
+
   // --- Signing keys ---
 
   async function rotateKey() {
@@ -345,6 +439,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
     listClients, createClient, rotateClientSecret, deleteClient,
     listUsers, createUser, resetUserPassword, setUserStatus, unlockUser, deleteUser,
     linkUserIdentity, unlinkUserIdentity,
+    createInvite, listInvites, revokeInvite,
     rotateKey, keyStatus, getStats
   };
 }

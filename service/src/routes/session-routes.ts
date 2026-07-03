@@ -24,7 +24,8 @@ router.post('/tenants/:tenantId/register', async (req: Request, res: Response) =
     const user = await userService.registerUser({
       tenantId,
       email: typeof req.body?.email === 'string' ? req.body.email : '',
-      password: typeof req.body?.password === 'string' ? req.body.password : ''
+      password: typeof req.body?.password === 'string' ? req.body.password : '',
+      inviteCode: typeof req.body?.inviteCode === 'string' ? req.body.inviteCode : undefined
     });
     return res.status(201).json({ id: user.id, email: user.email, tenantId: user.tenantId });
   } catch (error: any) {
