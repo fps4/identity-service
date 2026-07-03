@@ -40,6 +40,7 @@ export function ActionForm({
   variant = 'default',
   confirm,
   inline = false,
+  onResult,
 }: {
   action: (prev: ActionResult, fd: FormData) => Promise<ActionResult>;
   submitLabel: string;
@@ -47,6 +48,8 @@ export function ActionForm({
   variant?: Variant;
   confirm?: string;
   inline?: boolean;
+  /** Called after a successful action (no show-once material) — e.g. to close a hosting dialog. */
+  onResult?: (state: ActionResult) => void;
 }) {
   const [state, formAction] = useActionState(action, { ok: false });
   const [reveal, setReveal] = useState<{ title: string; value: string; hint?: string } | null>(null);
@@ -56,6 +59,10 @@ export function ActionForm({
     if (state.secret) setReveal({ title: state.message ?? 'Done', value: state.secret, hint: state.secretHint });
     else if (state.ok && state.message) toast.success(state.message);
     else if (!state.ok && state.message) toast.error(state.message);
+    if (state.ok && !state.secret) onResult?.(state);
+    // onResult intentionally omitted from deps: it must fire only on a state change, not on every
+    // re-render (an inline arrow would otherwise re-trigger). Same rationale as the toasts above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
   return (

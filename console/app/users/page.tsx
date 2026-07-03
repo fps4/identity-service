@@ -1,65 +1,42 @@
 import { api } from '@/lib/api';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ActionForm } from '@/components/action-form';
-import { Field, SelectField } from '@/components/field';
-import { createUser, resetPassword, setUserStatus, unlockUser } from '@/app/actions';
+import { UsersDirectory } from '@/components/users-directory';
 
 export const dynamic = 'force-dynamic';
 
-export default async function UsersPage() {
+// The users directory (RQ-0014, ADR-0014). A thin server component: resolve the selected tenant
+// (default = first, carried in ?tenantId=), load that tenant's users via the existing per-tenant read,
+// and hand them to the client directory for search / filter / detail-drawer management. Degrades
+// gracefully — a failed users read still leaves the tenant picker and create action usable.
+export default async function UsersPage({ searchParams }: { searchParams: Promise<{ tenantId?: string }> }) {
+  const { tenantId } = await searchParams;
   const tenants = await api.listTenants().catch(() => []);
-  const tenantOptions = tenants.map((t) => ({ value: t._id, label: `${t.name} (${t._id})` }));
+  const active = tenantId && tenants.some((t) => t._id === tenantId) ? tenantId : tenants[0]?._id;
+
+  let users: Awaited<ReturnType<typeof api.listUsers>> = [];
+  let loadError: string | undefined;
+  if (active) {
+    try { users = await api.listUsers(active); } catch (e) { loadError = (e as Error).message; }
+  }
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Users</h1>
-      <p className="text-sm text-muted-foreground">
-        Tip: open a tenant to see and manage its full user list inline. These forms work by email across any tenant.
-      </p>
+      <div>
+        <h1 className="text-xl font-semibold">Users</h1>
+        <p className="text-sm text-muted-foreground">
+          Find a user, then manage them from their own record. Pick a tenant to see its directory.
+        </p>
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>Create a local-credential user</CardTitle></CardHeader>
-        <CardContent>
-          <ActionForm action={createUser} submitLabel="Create user">
-            <SelectField name="tenantId" label="Tenant" options={tenantOptions} required />
-            <Field name="email" label="Email" type="email" required />
-            <Field name="password" label="Password" type="password" required />
-            <Field name="roles" label="Roles (comma)" placeholder="optional" />
-          </ActionForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Reset password</CardTitle></CardHeader>
-        <CardContent>
-          <ActionForm action={resetPassword} submitLabel="Reset password">
-            <SelectField name="tenantId" label="Tenant" options={tenantOptions} required />
-            <Field name="email" label="Email" type="email" required />
-            <Field name="password" label="New password" type="password" required />
-          </ActionForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Set status (active / disabled)</CardTitle></CardHeader>
-        <CardContent>
-          <ActionForm action={setUserStatus} submitLabel="Set status">
-            <SelectField name="tenantId" label="Tenant" options={tenantOptions} required />
-            <Field name="email" label="Email" type="email" required />
-            <Field name="status" label="Status (active/disabled)" placeholder="disabled" required />
-          </ActionForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Unlock (clear brute-force lockout)</CardTitle></CardHeader>
-        <CardContent>
-          <ActionForm action={unlockUser} submitLabel="Unlock user">
-            <SelectField name="tenantId" label="Tenant" options={tenantOptions} required />
-            <Field name="email" label="Email" type="email" required />
-          </ActionForm>
-        </CardContent>
-      </Card>
+      {tenants.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No tenants yet — onboard one first.</p>
+      ) : (
+        <UsersDirectory
+          tenants={tenants.map((t) => ({ _id: t._id, name: t.name }))}
+          activeTenantId={active as string}
+          users={users}
+          loadError={loadError}
+        />
+      )}
     </div>
   );
 }
