@@ -4,11 +4,12 @@ import { api, ApiError } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, THead, TBody } from '@/components/ui/table';
 import { ActionForm } from '@/components/action-form';
-import { Field, Hidden } from '@/components/field';
+import { Field, Hidden, SelectField } from '@/components/field';
 import {
   createClient, rotateClientSecret, deleteClient,
   createUser, resetPassword, setUserStatus, unlockUser, deleteUser,
   linkIdentity, unlinkIdentity,
+  createInvite, revokeInvite,
   setTenantStatus,
 } from '@/app/actions';
 
@@ -46,10 +47,11 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
     );
   }
 
-  // Clients and users are independent reads — fetch together, tolerate either failing.
-  const [clients, users] = await Promise.all([
+  // Clients, users, and invites are independent reads — fetch together, tolerate any failing.
+  const [clients, users, invites] = await Promise.all([
     api.listClients(id).catch(() => undefined),
     api.listUsers(id).catch(() => undefined),
+    api.listInvites(id).catch(() => undefined),
   ]);
 
   const oauth = tenant.oauth;
@@ -72,6 +74,9 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
             <span className="text-muted-foreground">Status</span><span>{tenant.status}</span>
             <span className="text-muted-foreground">OAuth</span>
             <span>{oauth?.enabled ? 'enabled' : 'disabled'}{oauth?.idp?.provider ? ` · IdP: ${oauth.idp.provider}` : ''}</span>
+            {oauth?.enabled ? (
+              <><span className="text-muted-foreground">Registration</span><span>{oauth.registration ?? 'open'}</span></>
+            ) : null}
             {oauth?.allowedGrantTypes?.length ? (
               <><span className="text-muted-foreground">Grant types</span><span>{oauth.allowedGrantTypes.join(', ')}</span></>
             ) : null}
@@ -202,6 +207,58 @@ export default async function TenantDetailPage({ params }: { params: Promise<{ i
                   );
                 })}
                 {!users.length && <tr><td colSpan={4} className="text-muted-foreground">No users yet.</td></tr>}
+              </TBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* --- Registration invites (RQ-0013) --- */}
+      <Card>
+        <CardHeader><CardTitle>Registration invites</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Codes are shown once and sent to invitees out-of-band; they gate self-registration when the
+            tenant&apos;s registration policy is <span className="font-mono">invite</span>
+            {(oauth?.registration ?? 'open') !== 'invite' ? ` (this tenant is currently ${oauth?.registration ?? 'open'})` : ''}.
+          </p>
+          <ActionForm action={createInvite} submitLabel="Create invite">
+            <Hidden name="tenantId" value={tenant._id} />
+            <Field name="email" label="Bind to email (optional)" type="email" placeholder="invitee@acme.com" />
+            <Field name="roles" label="Roles (comma)" placeholder="optional" />
+            <Field name="maxUses" label="Max uses" type="number" defaultValue="1" />
+            <SelectField name="expiresInHours" label="Expires in" defaultValue="168" options={[
+              { value: '24', label: '1 day' },
+              { value: '72', label: '3 days' },
+              { value: '168', label: '7 days' },
+              { value: '720', label: '30 days' },
+            ]} />
+            <Field name="note" label="Note" placeholder="e.g. March cohort" />
+          </ActionForm>
+
+          {invites === undefined ? <p className="text-sm text-destructive">Failed to load invites.</p> : (
+            <Table>
+              <THead><tr><th>Status</th><th>Email</th><th>Roles</th><th>Uses</th><th>Expires</th><th>Note</th><th>Actions</th></tr></THead>
+              <TBody>
+                {invites.map((inv) => (
+                  <tr key={inv._id}>
+                    <td>{inv.status}</td>
+                    <td>{inv.email ?? <span className="text-muted-foreground">any</span>}</td>
+                    <td>{inv.roles?.join(', ')}</td>
+                    <td>{inv.usedCount}/{inv.maxUses}</td>
+                    <td className="text-xs">{new Date(inv.expiresAt).toLocaleString()}</td>
+                    <td className="text-xs">{inv.note}</td>
+                    <td>
+                      {inv.status === 'pending' && (
+                        <ActionForm action={revokeInvite} submitLabel="Revoke" variant="outline" confirm="Revoke this invite? Its code stops working." inline>
+                          <Hidden name="inviteId" value={inv._id} />
+                          <Hidden name="tenantId" value={tenant._id} />
+                        </ActionForm>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {!invites.length && <tr><td colSpan={7} className="text-muted-foreground">No invites yet.</td></tr>}
               </TBody>
             </Table>
           )}
