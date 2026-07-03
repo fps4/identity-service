@@ -182,7 +182,7 @@ export async function createInvite(_prev: ActionResult, fd: FormData): Promise<A
       expiresInHours: Number(s(fd, 'expiresInHours') || '168') || 168,
       note: s(fd, 'note') || undefined
     });
-    revalidateTenant(tenantId);
+    revalidateInvite(tenantId);
     return {
       ok: true,
       message: 'Invite created',
@@ -195,10 +195,16 @@ export async function createInvite(_prev: ActionResult, fd: FormData): Promise<A
 export async function revokeInvite(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
     await api.revokeInvite(s(fd, 'inviteId'));
-    revalidateTenant(s(fd, 'tenantId'));
+    revalidateInvite(s(fd, 'tenantId'));
     return { ok: true, message: 'Invite revoked' };
   });
 }
+
+// Invite mutations touch the top-level /invites directory (RQ-0017) as well as the tenant drill-down.
+const revalidateInvite = (tenantId?: string) => {
+  revalidatePath('/invites');
+  revalidateTenant(tenantId);
+};
 
 export async function rotateKey(_prev?: ActionResult, _fd?: FormData): Promise<ActionResult> {
   return run(async () => {

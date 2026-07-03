@@ -31,16 +31,17 @@ test('create a client from the tenant detail page — no client-side exception',
   expect(errors, 'no uncaught browser errors').toEqual([]);
 });
 
-test('create a client from the /clients page (SelectField path) — no client-side exception', async ({ context, page, baseURL }) => {
+test('register an application from the /clients page (RQ-0017 dialog path) — no client-side exception', async ({ context, page, baseURL }) => {
   await seedAuth(context, baseURL!);
   const errors = trackErrors(page);
 
   await page.goto('/clients');
-  const addForm = page.locator('form', { has: page.getByRole('button', { name: 'Create client' }) });
-  await addForm.locator('select[name="tenantId"]').selectOption('t1');
-  await addForm.locator('input[name="name"]').fill('repro-svc-2');
-  await addForm.locator('input[name="grantTypes"]').fill('client_credentials');
-  await addForm.getByRole('button', { name: 'Create client' }).click();
+  // Directory loads the first tenant; open the register dialog and submit it.
+  await page.getByRole('button', { name: 'Register application' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Register application' });
+  await dialog.locator('input[name="name"]').fill('repro-svc-2');
+  await dialog.locator('input[name="grantTypes"]').fill('client_credentials');
+  await dialog.getByRole('button', { name: 'Register' }).click();
   await page.waitForTimeout(1500);
 
   await expect(page.getByText(/application error/i)).toHaveCount(0);

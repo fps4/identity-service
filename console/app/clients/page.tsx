@@ -1,64 +1,41 @@
 import { api } from '@/lib/api';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, THead, TBody } from '@/components/ui/table';
-import { ActionForm } from '@/components/action-form';
-import { Field, SelectField } from '@/components/field';
-import { createClient, rotateClientSecret } from '@/app/actions';
+import { ClientsDirectory } from '@/components/clients-directory';
 
 export const dynamic = 'force-dynamic';
 
+// The applications directory (RQ-0017, ADR-0014). Thin server component: resolve the selected tenant
+// (default = first, carried in ?tenantId=), load that tenant's OAuth clients, and hand them to the
+// client directory for search / detail-drawer management. Degrades gracefully on a failed read.
 export default async function ClientsPage({ searchParams }: { searchParams: Promise<{ tenantId?: string }> }) {
   const { tenantId } = await searchParams;
   const tenants = await api.listTenants().catch(() => []);
-  const tenantOptions = tenants.map((t) => ({ value: t._id, label: `${t.name} (${t._id})` }));
-  let clients: Awaited<ReturnType<typeof api.listClients>> | undefined; let error: string | undefined;
-  if (tenantId) {
-    try { clients = await api.listClients(tenantId); } catch (e) { error = (e as Error).message; }
+  const active = tenantId && tenants.some((t) => t._id === tenantId) ? tenantId : tenants[0]?._id;
+
+  let clients: Awaited<ReturnType<typeof api.listClients>> = [];
+  let loadError: string | undefined;
+  if (active) {
+    try { clients = await api.listClients(active); } catch (e) { loadError = (e as Error).message; }
   }
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Clients</h1>
+      <div>
+        <h1 className="text-xl font-semibold">Applications</h1>
+        <p className="text-sm text-muted-foreground">
+          OAuth clients registered per tenant. Rotate a secret from the application’s own record — pick a tenant to see its list.
+        </p>
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>Register a client</CardTitle></CardHeader>
-        <CardContent>
-          <ActionForm action={createClient} submitLabel="Create client">
-            <SelectField name="tenantId" label="Tenant" options={tenantOptions} required defaultValue={tenantId} />
-            <Field name="name" label="Name" placeholder="my-service" required />
-            <Field name="grantTypes" label="Grant types (comma)" placeholder="client_credentials" required />
-            <Field name="scopes" label="Scopes (comma)" placeholder="admin" />
-            <Field name="audience" label="Audience" placeholder="optional" />
-          </ActionForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Rotate a client secret</CardTitle></CardHeader>
-        <CardContent>
-          <ActionForm action={rotateClientSecret} submitLabel="Rotate secret">
-            <Field name="clientId" label="Client id" required />
-          </ActionForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>{tenantId ? `Clients for ${tenantId}` : 'Clients'}</CardTitle></CardHeader>
-        <CardContent>
-          {!tenantId ? <p className="text-sm text-muted-foreground">Append <code>?tenantId=…</code> to list a tenant&apos;s clients.</p>
-            : error ? <p className="text-sm text-destructive">{error}</p> : (
-            <Table>
-              <THead><tr><th>Name</th><th>Client id</th><th>Grants</th><th>Scopes</th></tr></THead>
-              <TBody>
-                {clients?.map((c) => (
-                  <tr key={c._id}><td>{c.name}</td><td className="font-mono text-xs">{c._id}</td><td>{c.grantTypes?.join(', ')}</td><td>{c.scopes?.join(', ')}</td></tr>
-                ))}
-                {!clients?.length && <tr><td colSpan={4} className="text-muted-foreground">No clients.</td></tr>}
-              </TBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      {tenants.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No tenants yet — onboard one first.</p>
+      ) : (
+        <ClientsDirectory
+          tenants={tenants.map((t) => ({ _id: t._id, name: t.name }))}
+          activeTenantId={active as string}
+          clients={clients}
+          loadError={loadError}
+        />
+      )}
     </div>
   );
 }

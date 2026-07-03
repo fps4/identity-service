@@ -51,6 +51,7 @@ work warrants it.
 | [RQ-0014 — Console users directory (list + detail drawer)](./product/RQ-0014-console-users-directory.md) | [ADR-0014](./design/decisions/0014-console-list-detail-interaction-model.md) |
 | [RQ-0015 — Drop-in React `<Register/>` (invite-aware signup)](./product/RQ-0015-react-register-component.md) | [ADR-0015](./design/decisions/0015-react-register-drop-in.md) |
 | [RQ-0016 — Opt-in Auth0-style card chrome for `<Login/>`/`<Register/>`](./product/RQ-0016-react-auth-card-chrome.md) | [ADR-0016](./design/decisions/0016-react-auth-card-opt-in-chrome.md) |
+| [RQ-0017 — Console applications & invites directories](./product/RQ-0017-console-clients-invites-directory.md) | [ADR-0014](./design/decisions/0014-console-list-detail-interaction-model.md) |
 
 The **management plane** (HTTP `/admin/v1` + MCP + admin console) and the repositioning as a standalone
 identity service are decided in [ADR-0007](./design/decisions/0007-management-api-mcp-and-standalone-identity-service.md),

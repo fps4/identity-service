@@ -2,14 +2,15 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Building2, KeyRound, Users, ScrollText } from 'lucide-react';
+import { LayoutDashboard, Building2, KeyRound, Users, Ticket, ScrollText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/tenants', label: 'Tenants', icon: Building2 },
-  { href: '/clients', label: 'Clients', icon: KeyRound },
+  { href: '/clients', label: 'Applications', icon: KeyRound },
   { href: '/users', label: 'Users', icon: Users },
+  { href: '/invites', label: 'Invites', icon: Ticket },
   { href: '/audit', label: 'Audit log', icon: ScrollText },
 ];
 
