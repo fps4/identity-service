@@ -119,6 +119,32 @@ first; their Google account links automatically on the next login once the verif
 > Prefer to build your own form? `requestRegistration({ baseUrl, tenantId, email, password, inviteCode? })`
 > is the underlying fetch-only call (or use the SDK's `registerWithPassword` on the server).
 
+## Card chrome (RQ-0016)
+
+Both `<Login/>` and `<Register/>` take an opt-in `card` prop that wraps the form in centered,
+Auth0-Universal-Login-style chrome — a brand header, an elevated card, an optional footer link, on a
+full-viewport page. It's **off by default** (the bare form is unchanged), and composes with every other
+prop (`google`, `invite`, `classNames`…):
+
+```tsx
+<Login
+  baseUrl={baseUrl}
+  clientId="acme-web"
+  card={{
+    logo: <img src="/acme.svg" alt="Acme" width={40} />,
+    subtitle: 'Sign in to continue to Acme',
+    footer: <span>New here? <a href="/signup">Create an account</a></span>,
+  }}
+  onSuccess={onSuccess}
+/>
+```
+
+`card={true}` uses defaults; `card={{ logo, subtitle, footer, width, fullViewport }}` customizes it.
+In card mode the `title` becomes the card heading and the button goes full-width. Set
+`fullViewport: false` to embed the card in an existing layout. The exported `AuthCard` shell can wrap
+your own auth-adjacent pages for a consistent look. Card chrome styles the page only — field styling
+still follows `classNames` / `unstyled` below.
+
 ## Styling
 
 Works unstyled-but-usable out of the box (neutral inline styles). For Tailwind / shadcn / any design
@@ -136,8 +162,9 @@ system, pass `classNames` per element and `unstyled` to drop the inline defaults
 
 ## API
 
-- `<Login baseUrl clientId onSuccess [onError title submitLabel emailLabel passwordLabel className classNames unstyled fetchImpl google hidePasswordForm] />`
-- `<Register baseUrl tenantId onSuccess [onError title submitLabel emailLabel passwordLabel invite className classNames unstyled fetchImpl] />` — the signup counterpart (RQ-0015); `invite` is `true` or `{ required, defaultCode, label, hint }`.
+- `<Login baseUrl clientId onSuccess [onError title submitLabel emailLabel passwordLabel className classNames unstyled fetchImpl google hidePasswordForm card] />`
+- `<Register baseUrl tenantId onSuccess [onError title submitLabel emailLabel passwordLabel invite className classNames unstyled fetchImpl card] />` — the signup counterpart (RQ-0015); `invite` is `true` or `{ required, defaultCode, label, hint }`.
+- `card` (both) — `true` or `{ logo, subtitle, footer, width, fullViewport }`; opt-in Auth0-style card chrome (RQ-0016). `<AuthCard options title>{children}</AuthCard>` is exported for reuse.
 - `requestPasswordToken({ baseUrl, clientId, username, password, fetchImpl? })` — the underlying call, for custom UIs.
 - `requestRegistration({ baseUrl, tenantId, email, password, inviteCode?, fetchImpl? })` — the underlying signup call, for custom UIs.
 - `RegisterError` — thrown on a rejected registration (carries `status` and the server `code`).

@@ -6,6 +6,8 @@ export { Register } from './Register.js';
 export type { RegisterProps, RegisterClassNames, InviteOptions } from './Register.js';
 export { requestRegistration, RegisterError } from './registration.js';
 export type { RegisteredUser, RegistrationRequest } from './registration.js';
+export { AuthCard, normalizeCard } from './authCard.js';
+export type { CardOptions } from './authCard.js';
 export {
   beginGoogleLogin,
   completeGoogleLogin,
