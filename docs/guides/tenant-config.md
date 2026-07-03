@@ -222,6 +222,31 @@ npm run manage-users -- set-password  --tenant=tenant-local --email=u@x.test --p
 npm run manage-users -- lock|unlock|disable|enable|delete --tenant=tenant-local --email=u@x.test
 ```
 
+### Registration policy & invites (RQ-0013)
+
+Self-registration is governed per tenant by **`oauth.registration`**: `open` (default — anyone may
+register, exactly the pre-policy behaviour), `invite` (a valid operator-issued invite code is
+required), or `closed` (admin-plane creation only). Set it in the seed config
+(`oauth.registration: invite`) or via `POST /admin/v1/tenants`.
+
+On an **invite** tenant, operators mint codes on the management plane —
+`POST /admin/v1/tenants/{tenantId}/invites` (or the `create_invite` MCP tool / the console) — and
+send them out-of-band (email, chat); **no mail provider is needed**. A code can be email-bound,
+stamp roles (validated against `allowedRoles`), allow multiple uses (cohorts), and expires after 7
+days by default. The code is **shown once**; list and revoke via
+`GET /admin/v1/tenants/{tenantId}/invites` and `POST /admin/v1/invites/{id}/revoke`. Invitees pass
+the code as `inviteCode` on the register call; an email-bound redemption also marks the address
+verified (ADR-0013).
+
+Two behaviours to plan for on non-`open` tenants:
+
+- **Google-first sign-in is denied for new people** — a federated login only succeeds for an
+  existing user; a new Google identity is redirected back with `error=access_denied`. The invitee
+  registers locally with their code first; their Google account then auto-links on the verified
+  matching email at next login (ADR-0012). Point your login UI's "sign up" path at the invite form.
+- Invites are **runtime operational data** — minted via the admin plane, audited
+  (`invite.create` / `invite.redeem` / `invite.revoke`), and never part of the seed file.
+
 ## User roles (RQ-0005)
 
 A local user can carry a list of **coarse, tenant-scoped roles** that are stamped into the user

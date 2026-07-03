@@ -316,6 +316,21 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       const { idToken } = await idp.exchangeCode(input.code);
       const identity = await idp.verifyIdToken(idToken, { nonce: record.nonce });
 
+      // Invite-only/closed tenants do not JIT-provision new people (RQ-0013). Pre-empt here so the
+      // user lands back at the consumer with a standard OAuth error instead of a late token-exchange
+      // failure; `provisionFederatedUser` re-enforces this at exchange as the authoritative gate.
+      const tenant = await models.Tenant.findOne({ _id: record.tenantId, status: 'active' }).lean().exec() as TenantDocument | null;
+      const registration = ((tenant as unknown as { oauth?: TenantOAuthConfig } | null)?.oauth)?.registration ?? 'open';
+      if (registration !== 'open') {
+        const existing = await models.User.findOne({
+          tenantId: record.tenantId,
+          $or: [{ 'identities.subject': identity.sub }, { email: identity.email.trim().toLowerCase() }]
+        }).lean().exec();
+        if (!existing) {
+          throw new AccessDeniedError('Sign-up is not open for this tenant');
+        }
+      }
+
       record.status = 'authenticated';
       record.code = randomToken();
       record.email = identity.email;
@@ -361,7 +376,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidGrantError('Authorization has no established identity');
     }
 
-    const { client } = await loadFlowClient(models, record.clientId, GRANT_AUTHORIZATION_CODE);
+    const { client, tenant } = await loadFlowClient(models, record.clientId, GRANT_AUTHORIZATION_CODE);
 
     // Single-use: consume the code before issuing, so a replay cannot mint a second token.
     record.status = 'consumed';
@@ -370,13 +385,15 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     // JIT-provision (or link) the person behind this federated identity and apply the same status +
     // roles rules the password grant enforces (RQ-0011 US-2/US-3/US-4). `provisionFederatedUser`
-    // throws if the account is disabled/locked or an unverified email would collide.
+    // throws if the account is disabled/locked, an unverified email would collide, or the tenant's
+    // registration policy forbids creating a new user (RQ-0013).
     const user = await provisionFederatedUser(models, {
       tenantId: record.tenantId,
       provider: 'google',
       subject: record.sub,
       email: record.email,
-      emailVerified: record.emailVerified === true
+      emailVerified: record.emailVerified === true,
+      registration: ((tenant as unknown as { oauth?: TenantOAuthConfig }).oauth)?.registration ?? 'open'
     });
 
     return issueUserTokens(models, {
@@ -548,13 +565,15 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    *   1. the identity `(provider, subject)` is already linked → returning user (refresh email + login).
    *   2. a user with the same email exists → link this identity onto it, but ONLY if the provider
    *      vouched the email (`email_verified`); an unverified collision is denied, never merged (US-4).
-   *   3. otherwise → create a new federated-only user (no password).
+   *   3. otherwise → create a new federated-only user (no password) — unless the tenant's
+   *      registration policy is `invite`/`closed`, which gates JIT creation too (RQ-0013): an
+   *      invitee registers locally with their code first, then Google links via rule 2.
    * Enforces `status`/lockout on an existing account before issuing (US-3). Idempotent under the
    * concurrent-first-login race via the unique identity index.
    */
   async function provisionFederatedUser(
     models: ModelsBucket,
-    args: { tenantId: string; provider: 'google'; subject: string; email: string; emailVerified: boolean }
+    args: { tenantId: string; provider: 'google'; subject: string; email: string; emailVerified: boolean; registration?: 'open' | 'invite' | 'closed' }
   ): Promise<UserDocument> {
     const now = nowFn();
     const emailNorm = args.email.trim().toLowerCase();
@@ -588,7 +607,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       return byEmail;
     }
 
-    // 3) First sighting of this person — create a federated-only user.
+    // 3) First sighting of this person — create a federated-only user. On an invite-only/closed
+    //    tenant this is exactly the walk-around ADR-0013 closes: deny instead of provisioning.
+    if ((args.registration ?? 'open') !== 'open') {
+      throw new AccessDeniedError('Sign-up is not open for this tenant');
+    }
     try {
       return await models.User.create({
         _id: randomUUID(),

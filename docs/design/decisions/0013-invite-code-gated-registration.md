@@ -1,7 +1,7 @@
 ---
 title: "0013: Invite-code-gated registration — hashed show-once codes, atomic redemption, and an invite gate on federated JIT provisioning"
 summary: "RQ-0013 closes open self-registration behind operator-issued invite codes. Decisions: a per-tenant registration policy ('open'|'invite'|'closed') on the existing oauth block; a first-class invites collection storing only a SHA-256 digest of a high-entropy show-once code (deliberately NOT the salted-scrypt secret scheme — the code must be findable by value); redemption as a single conditional findOneAndUpdate so racing registrations cannot oversubscribe a single-use code; email-bound invites set emailVerified on redemption (the operator vouched for the address — the same trust signal ADR-0012 accepts from Google); one generic invalid_invite error so codes cannot be probed; and, on invite/closed tenants, denial of federated logins that would JIT-provision a new user, closing the bypass ADR-0012's provisioning would otherwise open. No mail provider is required or introduced — out-of-band distribution is the point."
-status: proposed
+status: accepted
 last_updated: 2026-07-03
 date: 2026-07-03
 related:

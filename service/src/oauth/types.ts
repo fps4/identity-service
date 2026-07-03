@@ -6,8 +6,10 @@ import type {
   OAuthTokenDocument,
   OAuthAuthorizationDocument,
   UserDocument,
+  InviteDocument,
   KeyStoreDocument,
-  SessionDocument
+  SessionDocument,
+  AuditLogDocument
 } from '../models/index.js';
 import type { GoogleIdp } from './google.js';
 
@@ -17,8 +19,10 @@ export interface ModelsBucket {
   OAuthToken: Model<OAuthTokenDocument>;
   OAuthAuthorization: Model<OAuthAuthorizationDocument>;
   User: Model<UserDocument>;
+  Invite: Model<InviteDocument>;
   KeyStore: Model<KeyStoreDocument>;
   Session: Model<SessionDocument>;
+  AuditLog: Model<AuditLogDocument>;
 }
 
 export interface OAuthServerDependencies {

@@ -174,11 +174,22 @@ JWTs remain valid until `exp` (≤ 15 min) — they are stateless and not checke
 Self-service local-credential registration (RQ-0002). Creates a user under a tenant that has the
 **local** IdP enabled. Login is the separate `password` grant; registration does not return a token.
 
+Gated by the tenant's **registration policy** (`oauth.registration`, RQ-0013): `open` (default —
+anyone may register, as before), `invite` (a valid operator-issued invite code is required), or
+`closed` (no self-registration). Policies other than `open` also stop federated (Google) logins from
+JIT-provisioning **new** users — the browser is redirected back with `error=access_denied`; existing
+users log in unchanged.
+
 ### Request Body
 
 ```json
-{ "email": "reviewer@example.com", "password": "at-least-10-chars" }
+{ "email": "reviewer@example.com", "password": "at-least-10-chars", "inviteCode": "V7QK-3MHP-XA2D" }
 ```
+
+`inviteCode` is required on an `invite` tenant and ignored otherwise. Entry is forgiving: case and
+dashes don't matter. Redeeming a code stamps the invite's `roles` onto the user; an **email-bound**
+invite additionally requires the matching address and sets `emailVerified: true` (the operator sent
+the code there — ADR-0013).
 
 ### Response (`201`)
 
@@ -192,9 +203,13 @@ Self-service local-credential registration (RQ-0002). Creates a user under a ten
 
 - `400 invalid_email` / `400 weak_password` – fails validation (password shorter than the configured minimum).
 - `400 local_idp_disabled` – tenant has not enabled the local IdP / `password` grant.
+- `403 registration_closed` – the tenant does not allow self-registration.
+- `403 invite_required` – the tenant is invite-only and no code was presented.
+- `403 invalid_invite` – the code is unknown, expired, revoked, exhausted, **or bound to a different
+  email** — deliberately one generic answer, so codes cannot be probed for state (ADR-0013).
 - `404 tenant_not_found` – tenant missing or inactive.
 - `409 email_taken` – an account with this email already exists for the tenant.
-- `429 slow_down` – per-tenant registration rate limit exceeded.
+- `429 slow_down` – per-tenant registration rate limit exceeded (checked before any invite use is consumed).
 
 > **Password reset** has no email channel yet: an operator resets credentials via the
 > `service/scripts/manage-users.ts` CLI (`set-password`, `lock`, `unlock`, `disable`).
@@ -360,6 +375,9 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 | `POST /users/unlock` | `admin:users` | Clear brute-force lockout counters. |
 | `POST /users/link-identity` | `admin:users` | Link a federated identity onto a user (`{ tenantId, email, provider:"google", subject, identityEmail?, emailVerified? }`); `409 identity_linked` if already owned (RQ-0011). |
 | `POST /users/unlink-identity` | `admin:users` | Remove a linked federated identity (`{ tenantId, email, provider:"google", subject }`) (RQ-0011). |
+| `POST /tenants/{tenantId}/invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ email?, roles?, maxUses?, expiresInHours?, note? }`. **The code is returned once** — only its digest is persisted. Roles are validated against the tenant's `allowedRoles`. Defaults: single-use, 7-day expiry. |
+| `GET /tenants/{tenantId}/invites` | `admin:users` | List a tenant's invites with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
+| `POST /invites/{id}/revoke` | `admin:users` | Revoke an invite so no further redemptions succeed. |
 | `POST /keys/rotate` | `admin:keys` | Mint a new active signing key; demote the previous to `inactive`. |
 | `GET /keys` | `admin:keys` | Inspect `key_store` status. |
 | `GET /stats` | `admin:stats` | Aggregate counts for the dashboards (see below). |
