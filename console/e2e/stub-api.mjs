@@ -24,6 +24,7 @@ const AUDIT = [
 // In-memory per-tenant stores so the detail page (and create flows) have something to render.
 const CLIENTS = { t1: [{ _id: 'c1', tenantId: 't1', name: 'existing-svc', grantTypes: ['client_credentials'], scopes: ['admin'] }] };
 const USERS = { t1: [{ _id: 'u1', tenantId: 't1', email: 'user@acme.com', status: 'active', roles: ['member'], identities: [{ provider: 'google', subject: 'g-seed-1', email: 'user@acme.com', emailVerified: true }] }] };
+const INVITES = { t1: [] };
 
 function send(res, code, body) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -65,6 +66,9 @@ const server = createServer(async (req, res) => {
   if (method === 'GET' && (m = path.match(/^\/tenants\/([^/]+)\/users$/))) {
     return send(res, 200, { users: USERS[m[1]] ?? [] });
   }
+  if (method === 'GET' && (m = path.match(/^\/tenants\/([^/]+)\/invites$/))) {
+    return send(res, 200, { invites: INVITES[m[1]] ?? [] });
+  }
 
   // --- Mutations ---
   if (method === 'POST' && path === '/clients') {
@@ -90,6 +94,23 @@ const server = createServer(async (req, res) => {
     if (!u) return send(res, 404, { error: 'user_not_found', error_description: 'User not found' });
     (u.identities ??= []).push({ provider: 'google', subject: body.subject, email: body.identityEmail, emailVerified: !!body.emailVerified });
     return send(res, 200, { email: body.email, provider: 'google', subject: body.subject, linked: true });
+  }
+  if (method === 'POST' && (m = path.match(/^\/tenants\/([^/]+)\/invites$/))) {
+    const body = await readBody(req);
+    const id = `inv-${(INVITES[m[1]]?.length ?? 0) + 1}`;
+    const expiresAt = new Date(Date.now() + (body.expiresInHours ?? 168) * 3600_000).toISOString();
+    (INVITES[m[1]] ??= []).push({
+      _id: id, tenantId: m[1], email: body.email ?? null, roles: body.roles ?? [],
+      maxUses: body.maxUses ?? 1, usedCount: 0, expiresAt, note: body.note, status: 'pending'
+    });
+    return send(res, 201, { inviteId: id, code: 'STUB-C0DE-SH0W', expiresAt });
+  }
+  if (method === 'POST' && (m = path.match(/^\/invites\/([^/]+)\/revoke$/))) {
+    for (const list of Object.values(INVITES)) {
+      const inv = list.find((i) => i._id === m[1]);
+      if (inv) inv.status = 'revoked';
+    }
+    return send(res, 200, { inviteId: m[1], revoked: true });
   }
   if (method === 'POST' && path === '/users/unlink-identity') {
     const body = await readBody(req);

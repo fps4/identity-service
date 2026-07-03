@@ -3,7 +3,13 @@
 import { revalidatePath } from 'next/cache';
 import { api, ApiError } from '@/lib/api';
 
-export interface ActionResult { ok: boolean; message?: string; secret?: string; }
+export interface ActionResult {
+  ok: boolean;
+  message?: string;
+  /** Show-once material (a client secret, an invite code) — surfaced in a copyable dialog, never persisted. */
+  secret?: string;
+  secretHint?: string;
+}
 
 const run = async (fn: () => Promise<ActionResult>): Promise<ActionResult> => {
   try { return await fn(); }
@@ -25,8 +31,14 @@ const revalidateTenant = (tenantId?: string) => {
 export async function onboardTenant(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
     const provider = s(fd, 'provider'); // '' | 'local' | 'google'
+    const registration = s(fd, 'registration'); // '' (open default) | 'open' | 'invite' | 'closed' (RQ-0013)
     const oauth = provider
-      ? { enabled: true, allowedGrantTypes: provider === 'local' ? ['password'] : ['authorization_code'], idp: { provider } }
+      ? {
+          enabled: true,
+          allowedGrantTypes: provider === 'local' ? ['password'] : ['authorization_code'],
+          idp: { provider },
+          ...(registration ? { registration } : {})
+        }
       : undefined;
     const tenant = await api.upsertTenant({ id: s(fd, 'id') || undefined, name: s(fd, 'name'), oauth });
     revalidateTenant(tenant._id);
@@ -158,6 +170,35 @@ const revalidateUser = (tenantId?: string) => {
   revalidatePath('/users');
   if (tenantId) revalidatePath(`/tenants/${tenantId}`);
 };
+
+/** Mint a registration invite (RQ-0013). The code comes back once and is shown via the dialog. */
+export async function createInvite(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
+  return run(async () => {
+    const tenantId = s(fd, 'tenantId');
+    const res = await api.createInvite(tenantId, {
+      email: s(fd, 'email') || undefined,
+      roles: list(fd, 'roles'),
+      maxUses: Math.max(1, Number(s(fd, 'maxUses') || '1') || 1),
+      expiresInHours: Number(s(fd, 'expiresInHours') || '168') || 168,
+      note: s(fd, 'note') || undefined
+    });
+    revalidateTenant(tenantId);
+    return {
+      ok: true,
+      message: 'Invite created',
+      secret: res.code,
+      secretHint: `Shown once — send it to the invitee out-of-band (email, chat). Expires ${new Date(res.expiresAt).toLocaleString()}.`
+    };
+  });
+}
+
+export async function revokeInvite(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
+  return run(async () => {
+    await api.revokeInvite(s(fd, 'inviteId'));
+    revalidateTenant(s(fd, 'tenantId'));
+    return { ok: true, message: 'Invite revoked' };
+  });
+}
 
 export async function rotateKey(_prev?: ActionResult, _fd?: FormData): Promise<ActionResult> {
   return run(async () => {
