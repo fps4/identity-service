@@ -48,7 +48,8 @@ export interface Stats {
   at: string;
 }
 export interface Tenant { _id: string; name: string; status: string; region?: string; oauth?: TenantOAuth }
-export interface TenantOAuth { enabled?: boolean; allowedGrantTypes?: string[]; allowedScopes?: string[]; idp?: { provider?: string } }
+export interface TenantOAuth { enabled?: boolean; allowedGrantTypes?: string[]; allowedScopes?: string[]; allowedRoles?: string[]; registration?: 'open' | 'invite' | 'closed'; idp?: { provider?: string } }
+export interface Invite { _id: string; tenantId: string; email?: string | null; roles?: string[]; maxUses: number; usedCount: number; expiresAt: string; note?: string; status: 'pending' | 'redeemed' | 'expired' | 'revoked'; createdAt?: string; createdBy?: string }
 export interface Client { _id: string; tenantId: string; name: string; grantTypes: string[]; scopes: string[]; audience?: string; isConfidential?: boolean; redirectUris?: string[] }
 export interface FederatedIdentity { provider: string; subject: string; email?: string; emailVerified?: boolean; linkedAt?: string }
 export interface User { _id: string; tenantId: string; email: string; status: string; roles?: string[]; emailVerified?: boolean; lockedUntil?: string | null; failedAttempts?: number; identities?: FederatedIdentity[] }
@@ -73,5 +74,8 @@ export const api = {
   deleteUser: (body: Record<string, unknown>) => request<{ email: string; deleted: true }>('/users/delete', { method: 'POST', body: JSON.stringify(body) }),
   linkIdentity: (body: Record<string, unknown>) => request<{ email: string; provider: string; subject: string; linked: true }>('/users/link-identity', { method: 'POST', body: JSON.stringify(body) }),
   unlinkIdentity: (body: Record<string, unknown>) => request<{ email: string; provider: string; subject: string; unlinked: true }>('/users/unlink-identity', { method: 'POST', body: JSON.stringify(body) }),
+  listInvites: (tenantId: string) => request<{ invites: Invite[] }>(`/tenants/${tenantId}/invites`).then((r) => r.invites),
+  createInvite: (tenantId: string, body: Record<string, unknown>) => request<{ inviteId: string; code: string; expiresAt: string }>(`/tenants/${tenantId}/invites`, { method: 'POST', body: JSON.stringify(body) }),
+  revokeInvite: (inviteId: string) => request<{ inviteId: string; revoked: true }>(`/invites/${inviteId}/revoke`, { method: 'POST' }),
   rotateKey: () => request<{ kid: string }>('/keys/rotate', { method: 'POST' })
 };

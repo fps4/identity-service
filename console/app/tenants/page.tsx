@@ -3,7 +3,7 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, THead, TBody } from '@/components/ui/table';
 import { ActionForm } from '@/components/action-form';
-import { Field } from '@/components/field';
+import { Field, SelectField } from '@/components/field';
 import { onboardTenant } from '@/app/actions';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +23,11 @@ export default async function TenantsPage() {
             <Field name="name" label="Name" placeholder="Acme Inc" required />
             <Field name="id" label="Tenant id (blank = new)" placeholder="optional" />
             <Field name="provider" label="IdP provider (local/google/blank)" placeholder="local" />
+            <SelectField name="registration" label="Registration (RQ-0013)" options={[
+              { value: '', label: 'open (default)' },
+              { value: 'invite', label: 'invite — code required' },
+              { value: 'closed', label: 'closed — admin only' },
+            ]} />
           </ActionForm>
         </CardContent>
       </Card>

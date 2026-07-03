@@ -74,6 +74,34 @@ test('link and unlink a federated identity from the tenant detail page (RQ-0011)
   expect(errors, 'no uncaught browser errors').toEqual([]);
 });
 
+test('create an invite: the code appears in a show-once dialog, the invite lists, revoke works (RQ-0013)', async ({ context, page, baseURL }) => {
+  await seedAuth(context, baseURL!);
+  const errors = trackErrors(page);
+
+  await page.goto('/tenants/t1');
+  await expect(page.getByText('Registration invites')).toBeVisible();
+
+  const inviteForm = page.locator('form', { has: page.getByRole('button', { name: 'Create invite' }) });
+  await inviteForm.locator('input[name="note"]').fill('e2e cohort');
+  await inviteForm.getByRole('button', { name: 'Create invite' }).click();
+
+  // The code is presented in the blocking show-once dialog, not a transient toast.
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('show-once-value')).toHaveText('STUB-C0DE-SH0W');
+  await dialog.getByRole('button', { name: "I've stored it" }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  // The invite is listed as pending; revoke flips it (native confirm auto-accepted).
+  const row = page.locator('tr', { has: page.getByText('e2e cohort') });
+  await expect(row.getByText('pending')).toBeVisible();
+  page.on('dialog', (d) => d.accept());
+  await row.getByRole('button', { name: 'Revoke' }).click();
+  await expect(row.getByText('revoked')).toBeVisible();
+
+  await expect(page.getByText(/application error/i)).toHaveCount(0);
+  expect(errors, 'no uncaught browser errors').toEqual([]);
+});
+
 test('a backend failure renders a readable card, not an opaque crash', async ({ context, page, baseURL }) => {
   await seedAuth(context, baseURL!);
   const errors = trackErrors(page);

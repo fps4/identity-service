@@ -11,6 +11,8 @@ const { apiMock } = vi.hoisted(() => ({
     createUser: vi.fn(),
     linkIdentity: vi.fn(),
     unlinkIdentity: vi.fn(),
+    createInvite: vi.fn(),
+    revokeInvite: vi.fn(),
   },
 }));
 
@@ -95,6 +97,30 @@ describe('console server actions', () => {
 
     expect(res.ok).toBe(false);
     expect(res.message).toBe('Identity is already linked to another user');
+  });
+
+  it('createInvite returns the one-time code as show-once material (RQ-0013)', async () => {
+    apiMock.createInvite.mockResolvedValue({ inviteId: 'i-1', code: 'V7QK-3MHP-XA2D', expiresAt: '2026-07-10T12:00:00.000Z' });
+    const { createInvite } = await import('@/app/actions');
+
+    const res = await createInvite({ ok: false }, form({ tenantId: 't1', email: 'new@acme.com', roles: 'member', maxUses: '2', expiresInHours: '168', note: 'cohort' }));
+
+    expect(res.ok).toBe(true);
+    expect(res.secret).toBe('V7QK-3MHP-XA2D');
+    expect(res.secretHint).toContain('Shown once');
+    expect(apiMock.createInvite).toHaveBeenCalledWith('t1',
+      expect.objectContaining({ email: 'new@acme.com', roles: ['member'], maxUses: 2, expiresInHours: 168, note: 'cohort' }),
+    );
+  });
+
+  it('revokeInvite forwards the id and reports success (RQ-0013)', async () => {
+    apiMock.revokeInvite.mockResolvedValue({ inviteId: 'i-1', revoked: true });
+    const { revokeInvite } = await import('@/app/actions');
+
+    const res = await revokeInvite({ ok: false }, form({ inviteId: 'i-1', tenantId: 't1' }));
+
+    expect(res.ok).toBe(true);
+    expect(apiMock.revokeInvite).toHaveBeenCalledWith('i-1');
   });
 
   it('returns ok:false with the ApiError message on failure', async () => {
