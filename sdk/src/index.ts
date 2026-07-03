@@ -94,6 +94,8 @@ export interface RegisterWithPasswordParams {
   tenantId?: string;
   email: string;
   password: string;
+  /** Operator-issued invite code — required when the tenant's registration policy is 'invite' (RQ-0013). */
+  inviteCode?: string;
   headers?: Record<string, string>;
 }
 
@@ -314,7 +316,11 @@ export class ComponentAuthClient {
     });
   }
 
-  /** Self-service local-credential registration (RQ-0002). Login is a separate `loginWithPassword`. */
+  /**
+   * Self-service local-credential registration (RQ-0002). Login is a separate `loginWithPassword`.
+   * On an invite-only tenant (RQ-0013) pass the operator-issued `inviteCode`; the server rejects
+   * with `invite_required` / `invalid_invite` (403) otherwise.
+   */
   async registerWithPassword(params: RegisterWithPasswordParams): Promise<RegisteredUser> {
     const tenantId = params.tenantId ?? this.defaultTenantId;
     if (!tenantId) {
@@ -324,7 +330,11 @@ export class ComponentAuthClient {
     return this.request<RegisteredUser>(url, {
       method: 'POST',
       headers: params.headers,
-      body: JSON.stringify({ email: params.email, password: params.password })
+      body: JSON.stringify({
+        email: params.email,
+        password: params.password,
+        ...(params.inviteCode ? { inviteCode: params.inviteCode } : {})
+      })
     });
   }
 
