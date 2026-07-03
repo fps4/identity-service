@@ -48,6 +48,7 @@ work warrants it.
 | [RQ-0011 — Federated user identity view](./product/RQ-0011-federated-user-identity-view.md) | [ADR-0012](./design/decisions/0012-federated-identity-and-account-linking.md) |
 | [RQ-0012 — "Continue with Google" in the drop-in `<Login/>`](./product/RQ-0012-react-google-login.md) | [ADR-0002](./design/decisions/0002-optional-react-ui-package.md) |
 | [RQ-0013 — Invite-only self-registration](./product/RQ-0013-invite-only-registration.md) | [ADR-0013](./design/decisions/0013-invite-code-gated-registration.md) |
+| [RQ-0014 — Console users directory (list + detail drawer)](./product/RQ-0014-console-users-directory.md) | [ADR-0014](./design/decisions/0014-console-list-detail-interaction-model.md) |
 
 The **management plane** (HTTP `/admin/v1` + MCP + admin console) and the repositioning as a standalone
 identity service are decided in [ADR-0007](./design/decisions/0007-management-api-mcp-and-standalone-identity-service.md),

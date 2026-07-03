@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>identity-service console — Auth0-pattern UX prototype</title>
+<style>
+/* ---- Palette: identity-service console tokens (console/app/globals.css), Auth0 UX patterns ---- */
+:root{
+  --background:210 16% 90%; --foreground:240 10% 3.9%;
+  --card:0 0% 100%; --card-foreground:240 10% 3.9%;
+  --primary:240 5.9% 10%; --primary-foreground:0 0% 98%;
+  --secondary:240 4.8% 95.9%; --secondary-foreground:240 5.9% 10%;
+  --muted:240 4.8% 95.9%; --muted-foreground:240 3.8% 46.1%;
+  --accent:240 4.8% 95.9%; --accent-foreground:240 5.9% 10%;
+  --destructive:0 72% 46%; --destructive-foreground:0 0% 98%;
+  --success:142 71% 40%; --warning:38 92% 45%; --info:217 91% 55%;
+  --border:240 5.9% 88%; --input:240 5.9% 90%; --ring:240 10% 3.9%;
+  --radius:0.5rem;
+}
+:root[data-theme="dark"]{
+  --background:240 10% 3.9%; --foreground:0 0% 98%;
+  --card:240 8% 7%; --card-foreground:0 0% 98%;
+  --primary:0 0% 98%; --primary-foreground:240 5.9% 10%;
+  --secondary:240 3.7% 15.9%; --secondary-foreground:0 0% 98%;
+  --muted:240 3.7% 13%; --muted-foreground:240 5% 64.9%;
+  --accent:240 3.7% 15.9%; --accent-foreground:0 0% 98%;
+  --border:240 3.7% 16%; --input:240 3.7% 18%; --ring:240 4.9% 83.9%;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:hsl(var(--background)); color:hsl(var(--foreground)); font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;font-size:inherit}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* ---- App shell ---- */
+.app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+.sidebar{border-right:1px solid hsl(var(--border));background:hsl(var(--card));display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:18px 18px 14px}
+.brand .logo{width:28px;height:28px;border-radius:7px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));display:grid;place-items:center;font-weight:700}
+.brand .name{font-weight:600;letter-spacing:-.01em}
+.brand .env{margin-left:auto;font-size:11px;color:hsl(var(--muted-foreground));border:1px solid hsl(var(--border));border-radius:999px;padding:1px 8px}
+.navgroup{padding:6px 10px}
+.navgroup .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:hsl(var(--muted-foreground));padding:10px 10px 4px}
+.navitem{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:8px;color:hsl(var(--muted-foreground));cursor:pointer;transition:background .12s,color .12s;font-weight:500}
+.navitem:hover{background:hsl(var(--accent))}
+.navitem.active{background:hsl(var(--secondary));color:hsl(var(--foreground))}
+.navitem svg{width:17px;height:17px;flex:none}
+.navitem .count{margin-left:auto;font-size:11px;color:hsl(var(--muted-foreground))}
+.sidebar .spacer{flex:1}
+.sidebar .foot{padding:12px;border-top:1px solid hsl(var(--border));font-size:12px;color:hsl(var(--muted-foreground))}
+
+/* ---- Top bar ---- */
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{height:56px;border-bottom:1px solid hsl(var(--border));background:hsl(var(--card));display:flex;align-items:center;gap:14px;padding:0 22px}
+.search{flex:1;max-width:520px;position:relative}
+.search input{width:100%;height:34px;border:1px solid hsl(var(--input));background:hsl(var(--background));border-radius:8px;padding:0 12px 0 34px;color:inherit}
+.search input:focus{outline:2px solid hsl(var(--ring)/.35);outline-offset:0}
+.search svg{position:absolute;left:10px;top:9px;width:16px;height:16px;color:hsl(var(--muted-foreground))}
+.search kbd{position:absolute;right:8px;top:7px;font-size:11px;color:hsl(var(--muted-foreground));border:1px solid hsl(var(--border));border-radius:5px;padding:1px 6px}
+.topbar .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.iconbtn{width:34px;height:34px;border-radius:8px;border:1px solid hsl(var(--border));background:hsl(var(--card));display:grid;place-items:center;cursor:pointer;color:hsl(var(--muted-foreground))}
+.iconbtn:hover{background:hsl(var(--accent))}
+.avatar{width:32px;height:32px;border-radius:999px;background:hsl(var(--info)/.16);color:hsl(var(--info));display:grid;place-items:center;font-weight:600;cursor:pointer}
+
+/* ---- Content ---- */
+.content{padding:28px 32px;overflow:auto}
+.pagehead{display:flex;align-items:flex-start;gap:16px;margin-bottom:22px}
+.pagehead h1{font-size:22px;font-weight:650;letter-spacing:-.02em;margin:0}
+.pagehead p{margin:4px 0 0;color:hsl(var(--muted-foreground));font-size:13px;max-width:60ch}
+.pagehead .actions{margin-left:auto;display:flex;gap:8px}
+
+/* ---- Buttons ---- */
+.btn{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 14px;border-radius:8px;border:1px solid transparent;cursor:pointer;font-weight:500;transition:background .12s,border-color .12s;white-space:nowrap}
+.btn svg{width:15px;height:15px}
+.btn-primary{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+.btn-primary:hover{background:hsl(var(--primary)/.9)}
+.btn-outline{background:hsl(var(--card));border-color:hsl(var(--border));color:hsl(var(--foreground))}
+.btn-outline:hover{background:hsl(var(--accent))}
+.btn-ghost{background:transparent;color:hsl(var(--muted-foreground))}
+.btn-ghost:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.btn-danger{background:hsl(var(--destructive));color:hsl(var(--destructive-foreground))}
+.btn-danger:hover{background:hsl(var(--destructive)/.9)}
+.btn-sm{height:30px;padding:0 10px;font-size:13px}
+
+/* ---- Cards / stats ---- */
+.grid{display:grid;gap:16px}
+.stats{grid-template-columns:repeat(4,1fr)}
+.card{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius)}
+.card .ch{padding:16px 18px 0}
+.card .cb{padding:16px 18px}
+.card h3{margin:0;font-size:14px;font-weight:600}
+.stat .k{font-size:12px;color:hsl(var(--muted-foreground));display:flex;align-items:center;gap:7px}
+.stat .k svg{width:15px;height:15px}
+.stat .v{font-size:28px;font-weight:650;letter-spacing:-.02em;margin-top:6px}
+.stat .h{font-size:12px;color:hsl(var(--muted-foreground));margin-top:2px}
+.stat .h .up{color:hsl(var(--success));font-weight:600}
+
+/* ---- Table ---- */
+.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.filter{height:34px;border:1px solid hsl(var(--input));background:hsl(var(--card));border-radius:8px;padding:0 30px 0 12px;color:inherit;appearance:none;cursor:pointer;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center}
+.tablewrap{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);overflow:hidden}
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:hsl(var(--muted-foreground));font-weight:600;padding:11px 16px;border-bottom:1px solid hsl(var(--border));background:hsl(var(--muted)/.5)}
+tbody td{padding:13px 16px;border-bottom:1px solid hsl(var(--border));vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.clickable{cursor:pointer;transition:background .1s}
+tbody tr.clickable:hover{background:hsl(var(--accent)/.6)}
+.u-id{display:flex;align-items:center;gap:11px}
+.u-av{width:30px;height:30px;border-radius:999px;display:grid;place-items:center;font-weight:600;font-size:12px;flex:none}
+.u-em{font-weight:500}
+.u-sub{font-size:12px;color:hsl(var(--muted-foreground))}
+.empty{padding:48px;text-align:center;color:hsl(var(--muted-foreground))}
+.rowact{display:flex;justify-content:flex-end}
+
+/* ---- Badges ---- */
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;padding:2px 9px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
+.badge .dot{width:6px;height:6px;border-radius:999px;background:currentColor}
+.b-active{color:hsl(var(--success));background:hsl(var(--success)/.12)}
+.b-locked{color:hsl(var(--warning));background:hsl(var(--warning)/.14)}
+.b-disabled{color:hsl(var(--muted-foreground));background:hsl(var(--muted)/.9)}
+.b-google{color:hsl(var(--info));background:hsl(var(--info)/.12)}
+.b-local{color:hsl(var(--muted-foreground));background:hsl(var(--muted))}
+.b-invite{color:hsl(var(--info));background:hsl(var(--info)/.1)}
+.b-open{color:hsl(var(--success));background:hsl(var(--success)/.1)}
+.b-closed{color:hsl(var(--warning));background:hsl(var(--warning)/.12)}
+.b-ok{color:hsl(var(--success));background:hsl(var(--success)/.1)}
+.b-fail{color:hsl(var(--destructive));background:hsl(var(--destructive)/.12)}
+.chip{font-size:11px;padding:1px 7px;border-radius:6px;background:hsl(var(--secondary));color:hsl(var(--secondary-foreground));margin-right:4px}
+
+/* ---- Drawer ---- */
+.scrim{position:fixed;inset:0;background:hsl(240 10% 4%/.45);opacity:0;pointer-events:none;transition:opacity .18s;z-index:40}
+.scrim.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;height:100vh;width:440px;max-width:92vw;background:hsl(var(--card));border-left:1px solid hsl(var(--border));z-index:50;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;box-shadow:-16px 0 40px hsl(240 10% 4%/.14)}
+.drawer.on{transform:translateX(0)}
+.drawer .dh{padding:20px 22px;border-bottom:1px solid hsl(var(--border));display:flex;align-items:flex-start;gap:12px}
+.drawer .db{padding:20px 22px;overflow:auto;flex:1}
+.drawer .df{padding:16px 22px;border-top:1px solid hsl(var(--border));display:flex;gap:8px;flex-wrap:wrap}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:8px 14px;font-size:13px;margin:8px 0}
+.kv dt{color:hsl(var(--muted-foreground))}
+.kv dd{margin:0;font-weight:500}
+.section-t{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:hsl(var(--muted-foreground));font-weight:600;margin:22px 0 8px}
+.x{margin-left:auto;cursor:pointer;color:hsl(var(--muted-foreground));width:30px;height:30px;border-radius:7px;display:grid;place-items:center;border:1px solid transparent}
+.x:hover{background:hsl(var(--accent))}
+
+/* ---- Modal / show-once ---- */
+.modal{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:20px}
+.modal.on{display:flex}
+.modal .box{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:12px;width:100%;max-width:480px;box-shadow:0 24px 60px hsl(240 10% 4%/.3);z-index:61;position:relative}
+.modal .box.wide{max-width:540px}
+.modal .mh{padding:22px 24px 4px}
+.modal .mh h2{margin:0;font-size:17px;font-weight:650}
+.modal .mh p{margin:8px 0 0;color:hsl(var(--muted-foreground));font-size:13px}
+.modal .mb{padding:16px 24px}
+.modal .mf{padding:14px 24px 20px;display:flex;gap:8px;justify-content:flex-end}
+.reveal{display:flex;gap:8px;align-items:center;background:hsl(var(--muted));border:1px solid hsl(var(--border));border-radius:8px;padding:10px 12px}
+.reveal code{flex:1;word-break:break-all;font-size:13px}
+.warn{display:flex;gap:10px;align-items:flex-start;background:hsl(var(--warning)/.1);border:1px solid hsl(var(--warning)/.3);color:hsl(38 60% 30%);border-radius:8px;padding:10px 12px;font-size:13px;margin-top:14px}
+:root[data-theme="dark"] .warn{color:hsl(var(--warning))}
+.warn svg{width:18px;height:18px;flex:none;color:hsl(var(--warning))}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
+.field input,.field select{width:100%;height:36px;border:1px solid hsl(var(--input));background:hsl(var(--background));border-radius:8px;padding:0 11px;color:inherit}
+.field input:focus,.field select:focus{outline:2px solid hsl(var(--ring)/.3)}
+.hint{font-size:12px;color:hsl(var(--muted-foreground));margin-top:5px}
+
+/* ---- Toast ---- */
+.toasts{position:fixed;bottom:20px;right:20px;z-index:80;display:flex;flex-direction:column;gap:10px}
+.toast{background:hsl(var(--card));border:1px solid hsl(var(--border));border-left:3px solid hsl(var(--success));border-radius:9px;padding:12px 14px;min-width:260px;box-shadow:0 12px 30px hsl(240 10% 4%/.18);display:flex;gap:10px;align-items:flex-start;animation:slidein .2s ease}
+.toast.err{border-left-color:hsl(var(--destructive))}
+.toast .tt{font-weight:600;font-size:13px}
+.toast .td{font-size:12px;color:hsl(var(--muted-foreground));margin-top:1px}
+@keyframes slidein{from{transform:translateX(20px);opacity:0}to{transform:none;opacity:1}}
+
+/* ---- Chart ---- */
+.bars{display:flex;align-items:flex-end;gap:20px;height:180px;padding:8px 4px 0}
+.bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;justify-content:flex-end;height:100%}
+.bar .col{width:100%;max-width:80px;border-radius:6px 6px 0 0;background:hsl(var(--info));transition:height .5s ease}
+.bar .cap{font-size:12px;color:hsl(var(--muted-foreground))}
+.bar .num{font-size:13px;font-weight:600}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.actlist{display:flex;flex-direction:column}
+.actrow{display:flex;gap:11px;align-items:center;padding:11px 0;border-bottom:1px solid hsl(var(--border))}
+.actrow:last-child{border-bottom:none}
+.actrow .ic{width:30px;height:30px;border-radius:999px;background:hsl(var(--muted));display:grid;place-items:center;flex:none;color:hsl(var(--muted-foreground))}
+.actrow .txt{flex:1;min-width:0}
+.actrow .txt b{font-weight:600}
+.actrow .when{font-size:12px;color:hsl(var(--muted-foreground))}
+/* ---- Surface switcher + end-user auth (Auth0 Universal Login pattern) ---- */
+.switcher{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:90;display:flex;gap:4px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:999px;padding:4px;box-shadow:0 8px 24px hsl(240 10% 4%/.18)}
+.switcher button{border:none;background:transparent;color:hsl(var(--muted-foreground));padding:7px 16px;border-radius:999px;cursor:pointer;font-weight:500;font-size:13px}
+.switcher button.on{background:hsl(var(--secondary));color:hsl(var(--foreground))}
+.enduser{position:fixed;inset:0;z-index:35;background:radial-gradient(120% 120% at 50% -10%, hsl(var(--muted)) 0%, hsl(var(--background)) 55%);display:none;align-items:flex-start;justify-content:center;padding:72px 24px;overflow:auto}
+.enduser.on{display:flex}
+.auth-card{width:100%;max-width:400px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:14px;box-shadow:0 24px 60px hsl(240 10% 4%/.16);padding:32px 34px 26px}
+.auth-brand{display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:20px}
+.auth-brand .logo{width:46px;height:46px;border-radius:12px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));display:grid;place-items:center;font-weight:700;font-size:18px}
+.auth-brand .tnt{font-size:12px;color:hsl(var(--muted-foreground))}
+.auth-h1{font-size:20px;font-weight:650;text-align:center;margin:0;letter-spacing:-.01em}
+.auth-sub{font-size:13px;color:hsl(var(--muted-foreground));text-align:center;margin:6px 0 22px;line-height:1.5}
+.btn-block{width:100%;justify-content:center;height:40px}
+.btn-social{width:100%;justify-content:center;height:40px;background:hsl(var(--card));border:1px solid hsl(var(--border));color:hsl(var(--foreground));gap:10px}
+.btn-social:hover{background:hsl(var(--accent))}
+.divider{display:flex;align-items:center;gap:12px;color:hsl(var(--muted-foreground));font-size:12px;margin:16px 0}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:hsl(var(--border))}
+.auth-foot{text-align:center;font-size:13px;color:hsl(var(--muted-foreground));margin-top:18px}
+.auth-foot a{color:hsl(var(--info));font-weight:500;cursor:pointer}
+.auth-link{font-size:12px;color:hsl(var(--info));cursor:pointer;font-weight:500}
+.secured{text-align:center;font-size:12px;color:hsl(var(--muted-foreground));margin-top:18px}
+.pw-req{font-size:12px;color:hsl(var(--muted-foreground));margin-top:9px;display:flex;flex-direction:column;gap:4px}
+.pw-req .ok{color:hsl(var(--success))}
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:hsl(var(--muted-foreground));cursor:pointer;margin-bottom:14px}
+.back:hover{color:hsl(var(--foreground))}
+.steps{display:flex;gap:6px;justify-content:center;margin-bottom:20px}
+.steps .s{width:28px;height:4px;border-radius:999px;background:hsl(var(--border))}
+.steps .s.on{background:hsl(var(--primary))}
+.success-ic{width:56px;height:56px;border-radius:999px;background:hsl(var(--success)/.14);color:hsl(var(--success));display:grid;place-items:center;margin:2px auto 16px}
+.field-err{color:hsl(var(--destructive));font-size:12px;margin-top:6px}
+.spinner{width:34px;height:34px;border-radius:999px;border:3px solid hsl(var(--border));border-top-color:hsl(var(--info));margin:6px auto 16px;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hidden{display:none!important}
+@media(max-width:820px){.app{grid-template-columns:1fr}.sidebar{display:none}.stats{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">id</div>
+      <div class="name">identity-service</div>
+      <div class="env">ds1 · dev</div>
+    </div>
+    <div class="navgroup">
+      <div class="lbl">Overview</div>
+      <div class="navitem active" data-nav="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+        Dashboard
+      </div>
+    </div>
+    <div class="navgroup">
+      <div class="lbl">Directory</div>
+      <div class="navitem" data-nav="tenants">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M6 21V7l6-4 6 4v14M10 9h.01M14 9h.01M10 13h.01M14 13h.01"/></svg>
+        Tenants <span class="count">4</span>
+      </div>
+      <div class="navitem" data-nav="clients">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 8.4-8.4M18 5l2 2M15 8l2 2"/></svg>
+        Applications <span class="count">7</span>
+      </div>
+      <div class="navitem" data-nav="users">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Users <span class="count">6</span>
+      </div>
+    </div>
+    <div class="navgroup">
+      <div class="lbl">Security</div>
+      <div class="navitem" data-nav="audit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+        Audit log
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="foot">Management plane · <span class="mono">/admin/v1</span><br/>Prototype — data is mocked.</div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="global-search" placeholder="Search users, applications, tenants…" />
+        <kbd>⌘K</kbd>
+      </div>
+      <div class="right">
+        <button class="iconbtn" id="theme-btn" title="Toggle theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </button>
+        <div class="avatar" title="ops@fps4">OP</div>
+      </div>
+    </div>
+    <div class="content" id="content"><!-- pages injected --></div>
+  </div>
+</div>
+
+<!-- End-user auth surface (Universal Login + invite signup) -->
+<div class="enduser" id="enduser">
+  <div class="auth-card" id="eu-card"></div>
+</div>
+
+<!-- Surface switcher (prototype affordance) -->
+<div class="switcher">
+  <button data-surf="console" class="on">Operator console</button>
+  <button data-surf="enduser">End-user login &amp; signup</button>
+</div>
+
+<!-- Drawer -->
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer"></div>
+
+<!-- Modal -->
+<div class="modal" id="modal">
+  <div class="scrim on" id="modal-scrim" style="position:absolute"></div>
+  <div class="box" id="modal-box"></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+/* ============================ MOCK DATA ============================ */
+const TENANTS = [
+  { id:'tnt_acme',    name:'Acme Inc',        status:'active', idp:'local',  registration:'invite', clients:3, users:4 },
+  { id:'tnt_globex',  name:'Globex',          status:'active', idp:'google', registration:'open',   clients:2, users:1 },
+  { id:'tnt_initech', name:'Initech',         status:'active', idp:'local',  registration:'closed', clients:1, users:1 },
+  { id:'tnt_umbrella',name:'Umbrella (paused)',status:'suspended', idp:'local', registration:'closed', clients:1, users:0 },
+];
+const USERS = [
+  { sub:'usr_a1f9', email:'dana@acme.example',   tenant:'tnt_acme',   idp:'local',  status:'active',   roles:['tenant_admin'], created:'2026-02-11', lastLogin:'2026-07-02 09:14', failed:0 },
+  { sub:'usr_b204', email:'sam@acme.example',    tenant:'tnt_acme',   idp:'local',  status:'locked',   roles:['member'],       created:'2026-03-02', lastLogin:'2026-06-28 17:40', failed:5 },
+  { sub:'usr_c7d1', email:'lee@acme.example',    tenant:'tnt_acme',   idp:'local',  status:'active',   roles:['member'],       created:'2026-05-19', lastLogin:'2026-07-01 11:02', failed:0 },
+  { sub:'usr_c993', email:'kim@acme.example',    tenant:'tnt_acme',   idp:'local',  status:'disabled', roles:['member'],       created:'2026-01-08', lastLogin:'2026-04-14 08:20', failed:0 },
+  { sub:'usr_d556', email:'rob@globex.example',  tenant:'tnt_globex', idp:'google', status:'active',   roles:['tenant_admin','member'], created:'2026-04-22', lastLogin:'2026-07-03 07:55', failed:0 },
+  { sub:'usr_e8a0', email:'ana@initech.example', tenant:'tnt_initech',idp:'local',  status:'active',   roles:['member'],       created:'2026-06-10', lastLogin:'2026-06-30 13:31', failed:2 },
+];
+const CLIENTS = [
+  { id:'cli_core_9f', name:'core-api',        tenant:'tnt_acme',   grants:['client_credentials'], scopes:['telemetry:write','admin'], confidential:true,  audience:'—' },
+  { id:'cli_web_2b',  name:'acme-web',        tenant:'tnt_acme',   grants:['authorization_code'], scopes:['openid'], confidential:false, audience:'acme-web' },
+  { id:'cli_mob_71',  name:'acme-mobile',     tenant:'tnt_acme',   grants:['authorization_code'], scopes:['openid'], confidential:false, audience:'acme-mobile' },
+  { id:'cli_gx_44',   name:'globex-portal',   tenant:'tnt_globex', grants:['authorization_code'], scopes:['openid'], confidential:false, audience:'globex-portal' },
+  { id:'cli_gx_svc',  name:'globex-ingest',   tenant:'tnt_globex', grants:['client_credentials'], scopes:['ingest:write'], confidential:true, audience:'—' },
+  { id:'cli_it_web',  name:'initech-web',     tenant:'tnt_initech',grants:['authorization_code'], scopes:['openid'], confidential:false, audience:'initech-web' },
+  { id:'cli_um_bt',   name:'umbrella-batch',  tenant:'tnt_umbrella',grants:['client_credentials'], scopes:['batch:run'], confidential:true, audience:'—' },
+];
+const AUDIT = [
+  { at:'2026-07-03 09:41', action:'user.reset_password', principal:'ops@fps4', target:'sam@acme.example', status:'ok' },
+  { at:'2026-07-03 08:12', action:'client.rotate_secret',principal:'ops@fps4', target:'cli_core_9f',       status:'ok' },
+  { at:'2026-07-02 22:03', action:'user.lockout',        principal:'system',   target:'sam@acme.example',  status:'ok' },
+  { at:'2026-07-02 15:30', action:'invite.create',       principal:'ops@fps4', target:'tnt_acme',          status:'ok' },
+  { at:'2026-07-02 11:47', action:'user.set_status',     principal:'ops@fps4', target:'kim@acme.example',  status:'ok' },
+  { at:'2026-07-01 19:10', action:'signing_key.rotate',  principal:'ops@fps4', target:'ds1',               status:'ok' },
+  { at:'2026-07-01 09:02', action:'client.create',       principal:'ops@fps4', target:'cli_gx_svc',        status:'ok' },
+  { at:'2026-06-30 16:44', action:'user.set_status',     principal:'ops@fps4', target:'kim@acme.example',  status:'fail' },
+];
+const STATS = { tenants:4, tenantsActive:3, clients:7, users:6, locked:1, disabled:1, keys:2, tok1h:184, tok24h:3120, refresh:212 };
+
+const tenantName = id => (TENANTS.find(t=>t.id===id)||{}).name || id;
+const AV_COLORS=['217 91% 55%','142 60% 42%','38 85% 48%','280 60% 55%','0 72% 55%','190 70% 42%'];
+const avatarColor = s => { let h=0; for(const c of s) h=(h*31+c.charCodeAt(0))>>>0; return AV_COLORS[h%AV_COLORS.length]; };
+const initials = e => e.slice(0,2).toUpperCase();
+
+/* ============================ HELPERS ============================ */
+const el = document.getElementById.bind(document);
+const content = el('content');
+function h(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstChild; }
+function statusBadge(s){
+  const m={active:['b-active','Active'],locked:['b-locked','Locked'],disabled:['b-disabled','Disabled'],suspended:['b-locked','Suspended']};
+  const [c,l]=m[s]||['b-disabled',s]; return `<span class="badge ${c}"><span class="dot"></span>${l}</span>`;
+}
+function idpBadge(i){ return i==='google'?`<span class="badge b-google">Google SSO</span>`:`<span class="badge b-local">Local password</span>`; }
+function regBadge(r){ const m={invite:['b-invite','Invite-only'],open:['b-open','Open'],closed:['b-closed','Closed']}; const[c,l]=m[r]||['b-local',r]; return `<span class="badge ${c}">${l}</span>`; }
+
+function toast(title, desc, kind){
+  const t=h(`<div class="toast ${kind==='err'?'err':''}"><div><div class="tt">${title}</div>${desc?`<div class="td">${desc}</div>`:''}</div></div>`);
+  el('toasts').appendChild(t); setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .3s';setTimeout(()=>t.remove(),300)},3200);
+}
+
+/* ============================ DRAWER ============================ */
+function openDrawer(html){ el('drawer').innerHTML=html; el('drawer').classList.add('on'); el('scrim').classList.add('on'); }
+function closeDrawer(){ el('drawer').classList.remove('on'); el('scrim').classList.remove('on'); }
+el('scrim').onclick=closeDrawer;
+
+/* ============================ MODAL ============================ */
+function openModal(html){ el('modal-box').innerHTML=html; el('modal').classList.add('on'); }
+function closeModal(){ el('modal').classList.remove('on'); }
+el('modal-scrim').onclick=closeModal;
+
+function showOnce(title, value, hint){
+  openModal(`
+    <div class="mh"><h2>${title}</h2><p>${hint||'Shown once — it is never stored server-side. Copy it now; if lost, it must be rotated.'}</p></div>
+    <div class="mb">
+      <div class="reveal"><code id="so-val">${value}</code>
+        <button class="btn btn-outline btn-sm" id="so-copy">Copy</button></div>
+      <div class="warn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+        This value will not be shown again.
+      </div>
+    </div>
+    <div class="mf"><button class="btn btn-primary" id="so-done">I've stored it</button></div>`);
+  el('so-copy').onclick=()=>{ navigator.clipboard?.writeText(value).catch(()=>{}); el('so-copy').textContent='Copied ✓'; setTimeout(()=>el('so-copy').textContent='Copy',1500); };
+  el('so-done').onclick=closeModal;
+}
+
+/* ============================ PAGES ============================ */
+const PAGES={};
+
+/* ---- Dashboard ---- */
+PAGES.dashboard=()=>{
+  const max=Math.max(STATS.tok1h,STATS.tok24h);
+  content.innerHTML=`
+  <div class="pagehead"><div><h1>Dashboard</h1><p>Health of the identity plane for <b>ds1 · dev</b>. Read-only overview — destructive actions live in Security.</p></div>
+    <div class="actions"><button class="btn btn-outline" id="rotate-key"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>Rotate signing key</button></div>
+  </div>
+  <div class="grid stats" style="margin-bottom:16px">
+    ${statCard('Tenants',STATS.tenants,`${STATS.tenantsActive} active`)}
+    ${statCard('Applications',STATS.clients,'across 4 tenants')}
+    ${statCard('Users',STATS.users,`<span style="color:hsl(var(--warning))">${STATS.locked} locked</span> · ${STATS.disabled} disabled`)}
+    ${statCard('Active signing keys',STATS.keys,'RS256')}
+  </div>
+  <div class="two">
+    <div class="card"><div class="ch"><h3>Access token issuance</h3></div><div class="cb">
+      <div class="bars">
+        <div class="bar"><div class="num">${STATS.tok1h}</div><div class="col" style="height:${STATS.tok1h/max*100}%"></div><div class="cap">last hour</div></div>
+        <div class="bar"><div class="num">${STATS.tok24h.toLocaleString()}</div><div class="col" style="height:${STATS.tok24h/max*100}%;background:hsl(var(--info)/.55)"></div><div class="cap">last 24h</div></div>
+      </div>
+      <div class="hint" style="margin-top:12px">Active refresh tokens: <b>${STATS.refresh}</b></div>
+    </div></div>
+    <div class="card"><div class="ch"><h3>Recent activity</h3></div><div class="cb"><div class="actlist">
+      ${AUDIT.slice(0,5).map(a=>`<div class="actrow"><div class="ic">${auditIcon(a.action)}</div>
+        <div class="txt"><div><b>${a.action}</b> → <span class="mono">${a.target}</span></div><div class="when">${a.principal} · ${a.at}</div></div>
+        <span class="badge ${a.status==='ok'?'b-ok':'b-fail'}">${a.status}</span></div>`).join('')}
+    </div></div></div>
+  </div>`;
+  el('rotate-key').onclick=()=>confirmModal('Rotate signing key?',
+    'A new RS256 key becomes the active signer. The previous key stays in JWKS so existing tokens still verify until they expire.',
+    'Rotate key',()=>{ showOnce('New signing key active','kid: k_'+Math.random().toString(36).slice(2,10),'The key id is now published in <span class="mono">/.well-known/jwks.json</span>. No secret to copy — this is the public kid.'); toast('Signing key rotated','New active kid published to JWKS'); });
+};
+const statCard=(k,v,h)=>`<div class="card stat"><div class="cb"><div class="k">${k}</div><div class="v">${v}</div><div class="h">${h}</div></div></div>`;
+function auditIcon(a){ const s='viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"';
+  if(a.includes('key'))return `<svg ${s}><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 8.4-8.4M18 5l2 2"/></svg>`;
+  if(a.includes('password')||a.includes('lockout'))return `<svg ${s}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
+  if(a.includes('invite'))return `<svg ${s}><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z"/></svg>`;
+  return `<svg ${s}><path d="M20 6 9 17l-5-5"/></svg>`;
+}
+
+/* ---- Users (list → search → drawer, Auth0 pattern) ---- */
+let userFilterTenant='', userFilterStatus='', userQuery='';
+PAGES.users=()=>{
+  content.innerHTML=`
+  <div class="pagehead"><div><h1>Users</h1><p>Every local &amp; federated identity across your tenants. Search, then act from the user's own record — no blind by-email forms.</p></div>
+    <div class="actions"><button class="btn btn-primary" id="new-user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Create user</button></div>
+  </div>
+  <div class="toolbar">
+    <div class="search" style="max-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="uq" placeholder="Search email or subject…" value="${userQuery}"></div>
+    <select class="filter" id="uft"><option value="">All tenants</option>${TENANTS.map(t=>`<option value="${t.id}" ${userFilterTenant===t.id?'selected':''}>${t.name}</option>`).join('')}</select>
+    <select class="filter" id="ufs"><option value="">Any status</option><option value="active">Active</option><option value="locked">Locked</option><option value="disabled">Disabled</option></select>
+    <div style="margin-left:auto;color:hsl(var(--muted-foreground));font-size:13px" id="ucount"></div>
+  </div>
+  <div class="tablewrap"><table><thead><tr><th>User</th><th>Tenant</th><th>Identity</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody id="ubody"></tbody></table></div>`;
+  const draw=()=>{
+    const rows=USERS.filter(u=>
+      (!userFilterTenant||u.tenant===userFilterTenant)&&
+      (!userFilterStatus||u.status===userFilterStatus)&&
+      (!userQuery||u.email.includes(userQuery.toLowerCase())||u.sub.includes(userQuery.toLowerCase())));
+    el('ucount').textContent=`${rows.length} of ${USERS.length}`;
+    el('ubody').innerHTML= rows.length? rows.map(u=>`
+      <tr class="clickable" data-sub="${u.sub}">
+        <td><div class="u-id"><div class="u-av" style="background:hsl(${avatarColor(u.email)}/.15);color:hsl(${avatarColor(u.email)})">${initials(u.email)}</div>
+          <div><div class="u-em">${u.email}</div><div class="u-sub mono">${u.sub}</div></div></div></td>
+        <td>${tenantName(u.tenant)}</td>
+        <td>${idpBadge(u.idp)}</td>
+        <td>${statusBadge(u.status)}${u.failed>=5?` <span class="hint">5 failed</span>`:''}</td>
+        <td class="hint">${u.lastLogin}</td>
+        <td class="rowact"><button class="btn btn-ghost btn-sm" data-sub="${u.sub}">Manage →</button></td>
+      </tr>`).join('') : `<tr><td colspan="6"><div class="empty">No users match. Try clearing filters.</div></td></tr>`;
+    el('ubody').querySelectorAll('[data-sub]').forEach(n=>n.onclick=e=>{e.stopPropagation();userDrawer(n.getAttribute('data-sub'));});
+  };
+  draw();
+  el('uq').oninput=e=>{userQuery=e.target.value;draw();};
+  el('uft').onchange=e=>{userFilterTenant=e.target.value;draw();};
+  el('ufs').onchange=e=>{userFilterStatus=e.target.value;draw();};
+  el('new-user').onclick=createUserModal;
+};
+
+function userDrawer(sub){
+  const u=USERS.find(x=>x.sub===sub); if(!u)return;
+  openDrawer(`
+    <div class="dh">
+      <div class="u-av" style="width:44px;height:44px;font-size:15px;background:hsl(${avatarColor(u.email)}/.15);color:hsl(${avatarColor(u.email)})">${initials(u.email)}</div>
+      <div><div style="font-weight:600;font-size:16px">${u.email}</div><div class="u-sub mono">${u.sub}</div></div>
+      <div class="x" id="dclose"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+    </div>
+    <div class="db">
+      <div>${statusBadge(u.status)} ${idpBadge(u.idp)}</div>
+      <div class="section-t">Identity</div>
+      <dl class="kv">
+        <dt>Tenant</dt><dd>${tenantName(u.tenant)} <span class="mono hint">${u.tenant}</span></dd>
+        <dt>Subject</dt><dd class="mono">${u.sub}</dd>
+        <dt>Roles</dt><dd>${u.roles.map(r=>`<span class="chip">${r}</span>`).join('')||'—'}</dd>
+        <dt>Created</dt><dd>${u.created}</dd>
+        <dt>Last login</dt><dd>${u.lastLogin}</dd>
+        <dt>Failed attempts</dt><dd>${u.failed} ${u.failed>=5?'<span class="badge b-locked" style="margin-left:6px">Lockout tripped</span>':''}</dd>
+      </dl>
+      <div class="section-t">Notes</div>
+      <p class="hint">identity-service asserts roles; each product maps them to its own permissions (ADR-0005). This record proves <i>who</i> the user is, not what they may do.</p>
+    </div>
+    <div class="df">
+      ${u.status==='locked'?`<button class="btn btn-outline" id="a-unlock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>Unlock</button>`:''}
+      <button class="btn btn-outline" id="a-reset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8"/></svg>Reset password</button>
+      ${u.status==='disabled'
+        ? `<button class="btn btn-outline" id="a-toggle">Enable account</button>`
+        : `<button class="btn btn-danger" id="a-toggle" style="margin-left:auto">Disable account</button>`}
+    </div>`);
+  el('dclose').onclick=closeDrawer;
+  const un=el('a-unlock'); if(un)un.onclick=()=>{u.status='active';u.failed=0;closeDrawer();PAGES.users();toast('User unlocked',`${u.email} — lockout counters cleared`);};
+  el('a-reset').onclick=()=>{ showOnce('Temporary password for '+u.email, 'Tmp-'+Math.random().toString(36).slice(2,8)+'!'+Math.floor(Math.random()*90+10),'Share out-of-band. The user must change it on next sign-in.'); toast('Password reset',`${u.email} — temporary credential issued`); };
+  el('a-toggle').onclick=()=>{
+    if(u.status==='disabled'){ u.status='active'; closeDrawer();PAGES.users(); toast('Account enabled',u.email); }
+    else confirmModal('Disable '+u.email+'?','The user can no longer obtain tokens. Existing sessions are unaffected until they expire. Reversible.','Disable',()=>{u.status='disabled';closeDrawer();PAGES.users();toast('Account disabled',u.email);});
+  };
+}
+
+function createUserModal(){
+  openModal(`
+    <div class="mh"><h2>Create local-credential user</h2><p>Issues an email/password identity in the selected tenant.</p></div>
+    <div class="mb">
+      <div class="field"><label>Tenant</label><select id="cu-t">${TENANTS.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select></div>
+      <div class="field"><label>Email</label><input id="cu-e" type="email" placeholder="person@acme.example"></div>
+      <div class="field"><label>Password</label><input id="cu-p" type="password" placeholder="Set an initial password"></div>
+      <div class="field"><label>Roles <span class="hint">(comma-separated, optional)</span></label><input id="cu-r" placeholder="member"></div>
+    </div>
+    <div class="mf"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="cu-go">Create user</button></div>`);
+  el('cu-go').onclick=()=>{
+    const email=el('cu-e').value||'new.user@acme.example', t=el('cu-t').value;
+    const roles=(el('cu-r').value||'member').split(',').map(s=>s.trim()).filter(Boolean);
+    USERS.unshift({sub:'usr_'+Math.random().toString(36).slice(2,6),email,tenant:t,idp:'local',status:'active',roles,created:'2026-07-03',lastLogin:'—',failed:0});
+    closeModal();PAGES.users();toast('User created',`${email} in ${tenantName(t)}`);
+  };
+}
+
+/* ---- Applications (clients) ---- */
+let cliTenant='';
+PAGES.clients=()=>{
+  content.innerHTML=`
+  <div class="pagehead"><div><h1>Applications</h1><p>OAuth clients registered per tenant. Rotate secrets from the application's own record — no pasting client ids.</p></div>
+    <div class="actions"><button class="btn btn-primary" id="new-cli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Register application</button></div>
+  </div>
+  <div class="toolbar">
+    <select class="filter" id="cft"><option value="">All tenants</option>${TENANTS.map(t=>`<option value="${t.id}" ${cliTenant===t.id?'selected':''}>${t.name}</option>`).join('')}</select>
+  </div>
+  <div class="tablewrap"><table><thead><tr><th>Application</th><th>Tenant</th><th>Type</th><th>Grants</th><th>Scopes</th><th></th></tr></thead><tbody id="cbody"></tbody></table></div>`;
+  const draw=()=>{
+    const rows=CLIENTS.filter(c=>!cliTenant||c.tenant===cliTenant);
+    el('cbody').innerHTML=rows.map(c=>`
+      <tr class="clickable" data-id="${c.id}">
+        <td><div class="u-em">${c.name}</div><div class="u-sub mono">${c.id}</div></td>
+        <td>${tenantName(c.tenant)}</td>
+        <td>${c.confidential?'<span class="badge b-local">Confidential</span>':'<span class="badge b-google">Public / PKCE</span>'}</td>
+        <td>${c.grants.map(g=>`<span class="chip">${g}</span>`).join('')}</td>
+        <td class="hint">${c.scopes.join(', ')}</td>
+        <td class="rowact"><button class="btn btn-ghost btn-sm">Manage →</button></td>
+      </tr>`).join('');
+    el('cbody').querySelectorAll('tr').forEach(tr=>tr.onclick=()=>clientDrawer(tr.getAttribute('data-id')));
+  };
+  draw();
+  el('cft').onchange=e=>{cliTenant=e.target.value;draw();};
+  el('new-cli').onclick=()=>toast('Prototype','Register-application form omitted from this mock','err');
+};
+function clientDrawer(id){
+  const c=CLIENTS.find(x=>x.id===id); if(!c)return;
+  openDrawer(`
+    <div class="dh"><div><div style="font-weight:600;font-size:16px">${c.name}</div><div class="u-sub mono">${c.id}</div></div>
+      <div class="x" id="dclose"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div></div>
+    <div class="db">
+      <div>${c.confidential?'<span class="badge b-local">Confidential</span>':'<span class="badge b-google">Public / PKCE</span>'}</div>
+      <div class="section-t">Configuration</div>
+      <dl class="kv">
+        <dt>Tenant</dt><dd>${tenantName(c.tenant)}</dd>
+        <dt>Client id</dt><dd class="mono">${c.id}</dd>
+        <dt>Grant types</dt><dd>${c.grants.map(g=>`<span class="chip">${g}</span>`).join('')}</dd>
+        <dt>Scopes</dt><dd>${c.scopes.map(s=>`<span class="chip">${s}</span>`).join('')}</dd>
+        <dt>Audience</dt><dd class="mono">${c.audience}</dd>
+      </dl>
+      ${c.confidential?`<div class="section-t">Secret</div><p class="hint">Only a hash is stored. Rotating issues a new secret shown exactly once and invalidates the old one immediately.</p>`:`<div class="section-t">PKCE</div><p class="hint">Public client — no secret. Login is proven with PKCE (S256).</p>`}
+    </div>
+    <div class="df">${c.confidential?`<button class="btn btn-danger" id="a-rot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8"/></svg>Rotate secret</button>`:''}</div>`);
+  el('dclose').onclick=closeDrawer;
+  const r=el('a-rot'); if(r)r.onclick=()=>confirmModal('Rotate secret for '+c.name+'?','The current secret stops working immediately. Any service using it must be updated with the new value shown next.','Rotate secret',()=>{ showOnce('New client secret — '+c.name,'cs_'+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2)); toast('Secret rotated',c.name); });
+}
+
+/* ---- Tenants ---- */
+PAGES.tenants=()=>{
+  content.innerHTML=`
+  <div class="pagehead"><div><h1>Tenants</h1><p>Each product/organization registered in the identity plane, with its IdP and self-registration policy.</p></div>
+    <div class="actions"><button class="btn btn-primary" id="new-t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Onboard tenant</button></div>
+  </div>
+  <div class="tablewrap"><table><thead><tr><th>Tenant</th><th>Status</th><th>IdP</th><th>Registration</th><th>Apps</th><th>Users</th></tr></thead><tbody>
+    ${TENANTS.map(t=>`<tr class="clickable" data-id="${t.id}">
+      <td><div class="u-em">${t.name}</div><div class="u-sub mono">${t.id}</div></td>
+      <td>${statusBadge(t.status)}</td><td>${idpBadge(t.idp)}</td><td>${regBadge(t.registration)}</td>
+      <td>${t.clients}</td><td>${t.users}</td></tr>`).join('')}
+  </tbody></table></div>`;
+  content.querySelectorAll('tr[data-id]').forEach(tr=>tr.onclick=()=>tenantDrawer(tr.getAttribute('data-id')));
+  el('new-t').onclick=()=>toast('Prototype','Onboard-tenant form omitted from this mock','err');
+};
+function tenantDrawer(id){
+  const t=TENANTS.find(x=>x.id===id); if(!t)return;
+  openDrawer(`
+    <div class="dh"><div><div style="font-weight:600;font-size:16px">${t.name}</div><div class="u-sub mono">${t.id}</div></div>
+      <div class="x" id="dclose"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div></div>
+    <div class="db">
+      <div>${statusBadge(t.status)} ${idpBadge(t.idp)} ${regBadge(t.registration)}</div>
+      <dl class="kv" style="margin-top:16px"><dt>Applications</dt><dd>${t.clients}</dd><dt>Users</dt><dd>${t.users}</dd></dl>
+      ${t.registration==='invite'?`<div class="section-t">Self-registration</div><p class="hint">Sign-up requires an operator-issued invite code (RQ-0013). Codes are show-once and stored only as a hash.</p>`:''}
+    </div>
+    <div class="df">
+      ${t.registration==='invite'?`<button class="btn btn-primary" id="a-inv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z"/></svg>Create invite</button>`:''}
+      <button class="btn btn-outline" onclick="go('clients')">View applications</button>
+    </div>`);
+  el('dclose').onclick=closeDrawer;
+  const iv=el('a-inv'); if(iv)iv.onclick=()=>showOnce('Invite code for '+t.name,'inv_'+Math.random().toString(36).slice(2,10).toUpperCase(),'Distribute out-of-band. The service validates it at sign-up but never emails it.');
+}
+
+/* ---- Audit ---- */
+PAGES.audit=()=>{
+  content.innerHTML=`
+  <div class="pagehead"><div><h1>Audit log</h1><p>Append-only record of every management-plane action. Filter by outcome.</p></div></div>
+  <div class="toolbar"><select class="filter" id="afs"><option value="">All outcomes</option><option value="ok">Success</option><option value="fail">Failure</option></select></div>
+  <div class="tablewrap"><table><thead><tr><th>When</th><th>Action</th><th>Principal</th><th>Target</th><th>Outcome</th></tr></thead><tbody id="abody"></tbody></table></div>`;
+  const draw=f=>{ el('abody').innerHTML=AUDIT.filter(a=>!f||a.status===f).map(a=>`
+    <tr><td class="hint">${a.at}</td><td class="mono">${a.action}</td><td class="mono">${a.principal}</td><td class="mono">${a.target}</td>
+    <td><span class="badge ${a.status==='ok'?'b-ok':'b-fail'}">${a.status}</span></td></tr>`).join(''); };
+  draw('');
+  el('afs').onchange=e=>draw(e.target.value);
+};
+
+/* ---- confirm modal ---- */
+function confirmModal(title,body,cta,onOk){
+  openModal(`<div class="mh"><h2>${title}</h2><p>${body}</p></div>
+    <div class="mf"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-danger" id="cf-go">${cta}</button></div>`);
+  el('cf-go').onclick=()=>{closeModal();onOk();};
+}
+
+/* ============================ ROUTER ============================ */
+function go(name){
+  document.querySelectorAll('.navitem').forEach(n=>n.classList.toggle('active',n.getAttribute('data-nav')===name));
+  closeDrawer(); (PAGES[name]||PAGES.dashboard)();
+  content.scrollTop=0;
+}
+window.go=go; window.closeModal=closeModal;
+document.querySelectorAll('.navitem').forEach(n=>n.onclick=()=>go(n.getAttribute('data-nav')));
+
+/* theme + shortcuts */
+el('theme-btn').onclick=()=>{ const r=document.documentElement; r.setAttribute('data-theme', r.getAttribute('data-theme')==='dark'?'light':'dark'); };
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();el('global-search').focus();}
+  if(e.key==='Escape'){closeModal();closeDrawer();}
+});
+el('global-search').addEventListener('input',e=>{ const q=e.target.value.trim(); if(q){ go('users'); const u=el('uq'); if(u){u.value=q;userQuery=q;u.dispatchEvent(new Event('input'));} } });
+
+/* ============================ END-USER SURFACE ============================ */
+const GOOGLE_SVG=`<svg width="16" height="16" viewBox="0 0 48 48"><path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17Z"/><path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46Z"/><path fill="#FBBC05" d="M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24s.85 6.91 2.34 9.88l7.35-5.7Z"/><path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07Z"/></svg>`;
+const eucard=html=>{ el('eu-card').innerHTML=html; };
+const brand=()=>`<div class="auth-brand"><div class="logo">A</div><div class="tnt">Acme · secured by identity-service</div></div>`;
+const secured=()=>`<div class="secured">Secured by <b>identity-service</b> · tenant <span class="mono">tnt_acme</span></div>`;
+const EU={};
+
+// Universal Login: password + Google + sign-up link (mirrors react/<Login/>)
+EU.login=()=>{ eucard(`
+  ${brand()}
+  <h1 class="auth-h1">Log in</h1>
+  <p class="auth-sub">to continue to Acme</p>
+  <div class="field"><label>Email</label><input id="li-e" type="email" value="dana@acme.example"></div>
+  <div class="field"><label style="display:flex;justify-content:space-between;align-items:center">Password <span class="auth-link" id="li-forgot">Forgot password?</span></label><input id="li-p" type="password" value="correct-horse"></div>
+  <button class="btn btn-primary btn-block" id="li-go">Continue</button>
+  <div class="divider">or</div>
+  <button class="btn btn-social" id="li-g">${GOOGLE_SVG} Continue with Google</button>
+  <div class="auth-foot">Don't have an account? <a id="li-signup">Sign up</a></div>
+  ${secured()}`);
+  el('li-go').onclick=()=>EU.welcome(el('li-e').value||'dana@acme.example','local',false);
+  el('li-g').onclick=EU.google;
+  el('li-signup').onclick=EU.invite;
+  el('li-forgot').onclick=()=>toast('Reset link sent','A password-reset email would be sent (prototype)');
+};
+
+// Google leg — redirect stub, then federated success
+EU.google=()=>{ eucard(`
+  ${brand()}
+  <div style="text-align:center;padding:26px 0 6px">
+    <div class="spinner"></div>
+    <h1 class="auth-h1">Redirecting to Google…</h1>
+    <p class="auth-sub">You'll return to Acme after choosing your account.</p>
+  </div>
+  ${secured()}`);
+  setTimeout(()=>EU.welcome('rob@globex.example','google',false),1500);
+};
+
+// Invite-gated signup — step 1: the code (RQ-0013)
+EU.invite=()=>{ eucard(`
+  <div class="back" id="s-back"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg> Back to log in</div>
+  <div class="steps"><span class="s on"></span><span class="s"></span><span class="s"></span></div>
+  <h1 class="auth-h1">Create your account</h1>
+  <p class="auth-sub">Acme requires an invite code to sign up.</p>
+  <div class="field"><label>Invite code</label><input id="iv-c" placeholder="inv_XXXXXXXX" value="inv_ACME24">
+    <div class="field-err hidden" id="iv-err">That code isn't valid or has expired.</div>
+    <div class="hint">Your operator sends this out-of-band. Try an empty code to see the error state.</div></div>
+  <button class="btn btn-primary btn-block" id="iv-go">Continue</button>
+  <div class="auth-foot">Already have an account? <a id="iv-login">Log in</a></div>
+  ${secured()}`);
+  el('s-back').onclick=EU.login;
+  el('iv-login').onclick=EU.login;
+  el('iv-go').onclick=()=>{
+    const c=el('iv-c').value.trim();
+    if(!c){ el('iv-err').classList.remove('hidden'); return; }
+    // Simulate an email-bound invite: an "acme" code binds a specific address.
+    EU.setpw(c.toLowerCase().includes('acme')?'newhire@acme.example':'');
+  };
+};
+
+// Signup — step 2: set the password (email pre-bound if the invite was email-bound)
+EU.setpw=(bound)=>{ eucard(`
+  <div class="back" id="s-back"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg> Back</div>
+  <div class="steps"><span class="s on"></span><span class="s on"></span><span class="s"></span></div>
+  <h1 class="auth-h1">Set up your account</h1>
+  <p class="auth-sub">Invite verified. Choose a password to finish.</p>
+  <div class="field"><label>Email</label><input id="sp-e" type="email" value="${bound}" ${bound?'readonly style="opacity:.65;cursor:not-allowed"':'placeholder="you@acme.example"'}>${bound?'<div class="hint">Bound to this invite — cannot be changed.</div>':''}</div>
+  <div class="field"><label>Password</label><input id="sp-p" type="password" placeholder="Create a password">
+    <div class="pw-req"><span id="r-len">•  At least 8 characters</span><span id="r-num">•  Contains a number</span></div></div>
+  <button class="btn btn-primary btn-block" id="sp-go">Create account</button>
+  ${secured()}`);
+  el('s-back').onclick=EU.invite;
+  const p=el('sp-p');
+  p.oninput=()=>{
+    const okL=p.value.length>=8, okN=/\d/.test(p.value);
+    el('r-len').className=okL?'ok':''; el('r-len').textContent=(okL?'✓ ':'•  ')+'At least 8 characters';
+    el('r-num').className=okN?'ok':''; el('r-num').textContent=(okN?'✓ ':'•  ')+'Contains a number';
+  };
+  el('sp-go').onclick=()=>EU.welcome(el('sp-e').value||bound||'newhire@acme.example','local',true);
+};
+
+// Terminal success — the issued token handed back to the host app
+EU.welcome=(email,idp,isNew)=>{ eucard(`
+  ${isNew?'<div class="steps"><span class="s on"></span><span class="s on"></span><span class="s on"></span></div>':''}
+  <div class="success-ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg></div>
+  <h1 class="auth-h1">${isNew?'Account created':'Signed in'}</h1>
+  <p class="auth-sub">${idp==='google'?'Authenticated with Google. ':''}You're signed in to Acme as<br><b>${email}</b></p>
+  <div class="reveal" style="margin-bottom:16px"><code style="font-size:12px;color:hsl(var(--muted-foreground))">id_token · aud=acme-web · idp=${idp} · roles=[member]</code></div>
+  <button class="btn btn-primary btn-block" id="wc-go">Continue to app</button>
+  <div class="auth-foot"><a id="wc-out">Use a different account</a></div>`);
+  el('wc-go').onclick=()=>{ toast('onSuccess(token)','Host app receives the user token and routes on'); EU.login(); };
+  el('wc-out').onclick=EU.login;
+};
+
+/* ---- surface switch ---- */
+function surface(which){
+  el('enduser').classList.toggle('on',which==='enduser');
+  document.querySelectorAll('.switcher button').forEach(b=>b.classList.toggle('on',b.getAttribute('data-surf')===which));
+  if(which==='enduser'){ closeModal(); closeDrawer(); EU.login(); }
+}
+document.querySelectorAll('.switcher button').forEach(b=>b.onclick=()=>surface(b.getAttribute('data-surf')));
+
+go('dashboard');
+</script>
+</body>
+</html>
