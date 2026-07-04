@@ -78,3 +78,18 @@ Machine + legacy:
 - `updateSession(options)` – Wraps `PATCH /v1/sessions/{sessionId}` (legacy, in migration).
 
 Custom headers can be supplied per call (`headers` option) or globally (`defaultHeaders` when constructing the client). If you run the service behind an API gateway, pass credentials using these headers.
+
+## Publishing (maintainers)
+
+Published to **GitHub Packages** (`npm.pkg.github.com`, `fps4` org) by the `publish-sdk` workflow. To
+cut a release: bump `version` in `sdk/package.json`, merge to `main`, then push a matching tag:
+
+```bash
+git tag sdk-v0.1.0 && git push origin sdk-v0.1.0
+```
+
+The workflow verifies the tag matches `package.json`, builds, and publishes (a fresh `dist/` is rebuilt
+by `prepublishOnly`), authenticating with the workflow's built-in `GITHUB_TOKEN` (`packages: write`) —
+GitHub Packages' npm registry rejects fine-grained PATs. A manual `workflow_dispatch` (with an optional
+dry-run) is also available. Consumers install with an `.npmrc` mapping `@fps4` to
+`https://npm.pkg.github.com` and a token with `read:packages`.

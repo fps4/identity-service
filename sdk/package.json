@@ -7,10 +7,19 @@
   "files": [
     "dist"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fps4/identity-service.git",
+    "directory": "sdk"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -w",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "dependencies": {},
   "devDependencies": {
