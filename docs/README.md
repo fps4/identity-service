@@ -24,7 +24,7 @@ Start at [`overview.md`](./overview.md) — the product landing.
 | **Product** | [`product/`](./product) | Intent + functional specs (`RQ-*`) — the *what & why*. |
 | **Design** | [`design/`](./design) | [`architecture.md`](./design/architecture.md) + ADRs ([`decisions/`](./design/decisions)) — the *how & why-decided*. |
 | **Reference** | [`reference/`](./reference) | The exact lookup surface — [`api.md`](./reference/api.md) (OAuth + `/admin/v1` endpoints, token contract, JWKS) and [`product-runtime-credential.md`](./reference/product-runtime-credential.md). The [`GLOSSARY.md`](../GLOSSARY.md) lives at the repo root. |
-| **Guides** | [`guides/`](./guides) | How-to / operations / onboarding — [`tenant-config.md`](./guides/tenant-config.md), [`deployment.md`](./guides/deployment.md) (deploy + nightly backups & recovery), [`resource-server-integration.md`](./guides/resource-server-integration.md). |
+| **Guides** | [`guides/`](./guides) | How-to / operations / onboarding — [`tenant-config.md`](./guides/tenant-config.md), [`deployment.md`](./guides/deployment.md) (deploy + nightly backups & recovery), [`resource-server-integration.md`](./guides/resource-server-integration.md), [`ds1-delivery-pipeline-findings.md`](./guides/ds1-delivery-pipeline-findings.md) (why deploy-ds1/seed-ds1 are red — rework findings). |
 
 ## Delivery plane — work (you track)
 
