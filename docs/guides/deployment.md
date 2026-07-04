@@ -87,7 +87,7 @@ git, and no `age` master key.
   secrets or an operator shell), from `service/`, against ds1's Mongo on its published port `27019`:
 
   ```bash
-  IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_COMPONENTS_DS1_SECRET=… SEED_ADMIN_PASSWORD=… \
+  IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… \
     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
   ```
 

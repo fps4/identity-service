@@ -3,8 +3,9 @@
 //
 // identity-service is itself the IdP, so the runtime JWT is obtained by a `client_credentials` exchange
 // against this service's OWN token endpoint (loopback) — no external bootstrap. The principal
-// (`components-ds1`, aud=maestro-workspace, role=product_runtime, email=runtime@components.fps4.nl) is
-// seeded from config/seed.yaml; maestro resolves that identity to the `components/ds1` deployment.
+// (`identity-service-ds1-runtime`, aud=maestro-workspace, role=product_runtime,
+// email=runtime@identity-service.fps4.nl) is seeded from config/seed.yaml; maestro resolves that
+// identity to the `identity-service/ds1` deployment.
 //
 // The SDK degrades safely (queues + flush) when maestro is unreachable, and the whole loop stays INERT
 // when MAESTRO_API_URL (or the runtime secret) is unset — so local dev, tests, and the CI build never
