@@ -25,7 +25,7 @@ describe('createRuntimeTokenProvider', () => {
     let t = 0;
     const provider = createRuntimeTokenProvider({
       tokenEndpoint: 'http://127.0.0.1:7305/oauth2/token',
-      clientId: 'components-ds1',
+      clientId: 'identity-service-ds1-runtime',
       clientSecret: 'secret',
       fetchImpl: impl,
       now: () => t
@@ -37,7 +37,7 @@ describe('createRuntimeTokenProvider', () => {
     expect(calls).toHaveLength(1);
     // The exchange is a client_credentials POST carrying the client id.
     expect(calls[0].body).toContain('grant_type=client_credentials');
-    expect(calls[0].body).toContain('client_id=components-ds1');
+    expect(calls[0].body).toContain('client_id=identity-service-ds1-runtime');
   });
 
   it('re-mints once the cached token is within the expiry skew', async () => {
@@ -48,7 +48,7 @@ describe('createRuntimeTokenProvider', () => {
     let t = 0;
     const provider = createRuntimeTokenProvider({
       tokenEndpoint: 'http://127.0.0.1:7305/oauth2/token',
-      clientId: 'components-ds1',
+      clientId: 'identity-service-ds1-runtime',
       clientSecret: 'secret',
       fetchImpl: impl,
       now: () => t
@@ -64,7 +64,7 @@ describe('createRuntimeTokenProvider', () => {
     const { impl } = fakeFetch([{ access_token: 'unused' }], false);
     const provider = createRuntimeTokenProvider({
       tokenEndpoint: 'http://127.0.0.1:7305/oauth2/token',
-      clientId: 'components-ds1',
+      clientId: 'identity-service-ds1-runtime',
       clientSecret: 'bad',
       fetchImpl: impl
     });

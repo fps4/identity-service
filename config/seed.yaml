@@ -7,7 +7,7 @@
 # in git. For the rare bootstrap of an empty DB, supply the ${ENV} values from the environment (CI/Actions
 # secrets or an operator shell), e.g. from service/:
 #
-#     IDENTITY_ADMIN_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… MAESTRO_COMPONENTS_DS1_SECRET=… \
+#     IDENTITY_ADMIN_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… MAESTRO_RUNTIME_CLIENT_SECRET=… \
 #       MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
 #
 # Disaster recovery is a RESTORE from the nightly off-host backup (docker/backup.sh — ADR-0008), which
@@ -116,18 +116,21 @@ tenants:
           role: product_runtime
           email: runtime@sovereign-copilot.fps4.nl
       # identity-service's own runtime: it reports its fleet health/telemetry to maestro under the
-      # "components" (Shared Components) product, whose ds1 deployment maestro's register keys to this
-      # identity (runtime@components.fps4.nl). Self-minted via this service's own token endpoint.
-      - id: components-ds1
-        name: components@ds1 runtime
+      # "identity-service" product (maestro/config/products.yaml — formerly the generic "Shared
+      # Components" bucket, since renamed), whose ds1 deployment maestro keys to
+      # runtime@identity-service.fps4.nl. Self-minted via this service's own token endpoint. The stored
+      # secret is ${MAESTRO_RUNTIME_CLIENT_SECRET} — the SAME value the running service presents to
+      # self-mint (deploy-ds1.yml / compose), so seed and runtime can never drift.
+      - id: identity-service-ds1-runtime
+        name: identity-service@ds1 runtime
         grantTypes: [client_credentials]
         isConfidential: true
-        secret: ${MAESTRO_COMPONENTS_DS1_SECRET}
+        secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}
         audience: maestro-workspace
-        subject: runtime@components.fps4.nl
+        subject: runtime@identity-service.fps4.nl
         claims:
           role: product_runtime
-          email: runtime@components.fps4.nl
+          email: runtime@identity-service.fps4.nl
       # skills-coach's ds1 runtime reports fleet telemetry to maestro under the
       # "skills-coach" product (registered in maestro/config/products.yaml with this exact
       # runtime subject). The secret MUST equal the coach repo's MAESTRO_RUNTIME_CLIENT_SECRET Actions secret.
