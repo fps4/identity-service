@@ -1,0 +1,72 @@
+# Publish @fps4/identity-service-react to GitHub Packages (npm.pkg.github.com).
+#
+# Trigger: push a tag `react-v<version>` (e.g. react-v0.3.0) — the version must match
+# react/package.json. Or run manually via workflow_dispatch (with an optional dry-run).
+#
+# Auth: NODE_AUTH_TOKEN prefers a repo secret NPM_PUBLISH_TOKEN (a fine-grained PAT with
+# Packages: read/write on this repo, or a classic PAT with write:packages) and falls back to the
+# automatic GITHUB_TOKEN (which can publish to this repo's org packages given `packages: write`).
+# The committed react/.npmrc maps @fps4 -> GitHub Packages and reads this env var.
+name: publish-react
+
+on:
+  push:
+    tags:
+      - 'react-v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build + pack, no upload)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+# Never let two publishes race; don't cancel one in flight.
+concurrency:
+  group: publish-react
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish @fps4/identity-service-react
+    runs-on: [self-hosted, ds1]
+    defaults:
+      run:
+        working-directory: react
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+      - run: npm test -- --run
+
+      # On a tag push, the tag's version must match package.json (react-v0.3.0 -> 0.3.0) so a
+      # release can never publish a different version than it claims.
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/react-v')
+        run: |
+          tag="${GITHUB_REF_NAME#react-v}"
+          pkg="$(node -p "require('./package.json').version")"
+          echo "tag=$tag package.json=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag react-v$tag does not match react/package.json version $pkg"
+            exit 1
+          fi
+
+      # prepublishOnly (clean + build) runs automatically before publish, so dist is always fresh.
+      - name: Publish to GitHub Packages
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "Dry run — packing without uploading."
+            npm publish --dry-run
+          else
+            npm publish
+            echo "::notice::Published @fps4/identity-service-react@$(node -p "require('./package.json').version") to GitHub Packages"
+          fi

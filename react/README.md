@@ -160,6 +160,21 @@ system, pass `classNames` per element and `unstyled` to drop the inline defaults
 />
 ```
 
+## Publishing (maintainers)
+
+Published to **GitHub Packages** (`npm.pkg.github.com`, `fps4` org) by the `publish-react` workflow.
+To cut a release: bump `version` in `react/package.json`, merge to `main`, then push a matching tag:
+
+```bash
+git tag react-v0.3.0 && git push origin react-v0.3.0
+```
+
+The workflow verifies the tag matches `package.json`, runs the tests, and publishes (a fresh `dist/`
+is rebuilt by `prepublishOnly`). It authenticates with the `NPM_PUBLISH_TOKEN` repo secret (a
+fine-grained PAT with Packages: read/write) or falls back to the automatic `GITHUB_TOKEN`. A manual
+`workflow_dispatch` (with an optional dry-run) is also available. Consumers install with an `.npmrc`
+mapping `@fps4` to `https://npm.pkg.github.com` and a token with `read:packages`.
+
 ## API
 
 - `<Login baseUrl clientId onSuccess [onError title submitLabel emailLabel passwordLabel className classNames unstyled fetchImpl google hidePasswordForm card] />`
