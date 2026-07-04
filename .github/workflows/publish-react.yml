@@ -3,10 +3,11 @@
 # Trigger: push a tag `react-v<version>` (e.g. react-v0.3.0) — the version must match
 # react/package.json. Or run manually via workflow_dispatch (with an optional dry-run).
 #
-# Auth: NODE_AUTH_TOKEN prefers a repo secret NPM_PUBLISH_TOKEN (a fine-grained PAT with
-# Packages: read/write on this repo, or a classic PAT with write:packages) and falls back to the
-# automatic GITHUB_TOKEN (which can publish to this repo's org packages given `packages: write`).
-# The committed react/.npmrc maps @fps4 -> GitHub Packages and reads this env var.
+# Auth: the automatic GITHUB_TOKEN (with `packages: write` below) publishes @fps4 packages to THIS
+# repo's org — the reliable path for GitHub Packages' npm registry. A fine-grained PAT is deliberately
+# NOT used: that registry rejects it ("token does not match expected scopes"). If cross-repo publishing
+# is ever needed, use a *classic* PAT with write:packages via a secret. The committed react/.npmrc maps
+# @fps4 -> GitHub Packages and reads NODE_AUTH_TOKEN.
 name: publish-react
 
 on:
@@ -37,7 +38,7 @@ jobs:
       run:
         working-directory: react
     env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN || secrets.GITHUB_TOKEN }}
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

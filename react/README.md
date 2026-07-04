@@ -170,10 +170,11 @@ git tag react-v0.3.0 && git push origin react-v0.3.0
 ```
 
 The workflow verifies the tag matches `package.json`, runs the tests, and publishes (a fresh `dist/`
-is rebuilt by `prepublishOnly`). It authenticates with the `NPM_PUBLISH_TOKEN` repo secret (a
-fine-grained PAT with Packages: read/write) or falls back to the automatic `GITHUB_TOKEN`. A manual
-`workflow_dispatch` (with an optional dry-run) is also available. Consumers install with an `.npmrc`
-mapping `@fps4` to `https://npm.pkg.github.com` and a token with `read:packages`.
+is rebuilt by `prepublishOnly`). It authenticates with the workflow's built-in `GITHUB_TOKEN`
+(`packages: write`) — GitHub Packages' npm registry rejects fine-grained PATs, and the automatic token
+publishes an `@fps4` package to this repo's org cleanly. A manual `workflow_dispatch` (with an optional
+dry-run) is also available. Consumers install with an `.npmrc` mapping `@fps4` to
+`https://npm.pkg.github.com` and a token with `read:packages`.
 
 ## API
 
