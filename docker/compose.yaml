@@ -62,6 +62,12 @@ services:
       # Operator-login (ADR-0010): user tokens whose `roles` include one of these are accepted by the
       # management plane as a per-actor operator principal. Matches the `operators` tenant in seed.yaml.
       ADMIN_OPERATOR_ROLES: ${ADMIN_OPERATOR_ROLES:-platform_admin}
+      # Remote MCP transport (ADR-0009). MCP_RESOURCE_URL overrides the default (AUTH_JWT_ISSUER/mcp) with
+      # the dedicated origin (auth-mcp.fps4.nl on ds1); audience-binding (RFC 8707) then requires a token
+      # minted for that resource. Empty MCP_RESOURCE_URL falls back to the app default.
+      MCP_HTTP_ENABLED: ${MCP_HTTP_ENABLED:-true}
+      MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-}
+      MCP_REQUIRE_AUDIENCE: ${MCP_REQUIRE_AUDIENCE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_PRETTY: ${LOG_PRETTY:-false}
       # Outbound fleet monitoring to maestro. Empty MAESTRO_API_URL keeps the channel inert (default).

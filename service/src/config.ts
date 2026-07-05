@@ -75,9 +75,11 @@ export const CONFIG = {
   // canonical resource identifier advertised in the protected-resource metadata (Phase 1: this origin +
   // basePath; Phase 2 moves it to the dedicated auth-mcp.fps4.nl origin).
   mcp: {
-    enabled: (process.env.MCP_HTTP_ENABLED ?? 'true') !== 'false',
-    basePath: process.env.MCP_HTTP_BASE_PATH ?? '/mcp',
-    resourceUrl: process.env.MCP_RESOURCE_URL ?? `${process.env.AUTH_JWT_ISSUER ?? 'http://localhost:7305'}/mcp`,
+    enabled: (process.env.MCP_HTTP_ENABLED || 'true') !== 'false',
+    basePath: process.env.MCP_HTTP_BASE_PATH || '/mcp',
+    // `||` (not `??`) so an empty string threaded by compose falls back to the default rather than
+    // becoming an empty resource identifier.
+    resourceUrl: process.env.MCP_RESOURCE_URL || `${process.env.AUTH_JWT_ISSUER || 'http://localhost:7305'}/mcp`,
     // Audience-binding (RFC 8707, ADR-0009 Phase 2): require the presented token's `aud` to include the
     // MCP resource, so a token minted for another resource (e.g. a generic admin token) can't be replayed
     // here. Clients obtain a bound token by passing `resource=<resourceUrl>` to /oauth2/token. Default on;
