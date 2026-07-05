@@ -204,6 +204,36 @@ issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, injected by the deploy).
 
    The secret never leaves the ds1 host; the laptop config holds only the SSH command.
 
+#### Remote transport — MCP over HTTP, no SSH (ADR-0009)
+
+The stdio-over-SSH path above needs a shell account on ds1 and drops when the SSH tunnel times out.
+[ADR-0009](../design/decisions/0009-remote-authenticated-mcp-service.md) adds a network-reachable
+transport: the same MCP server, over **MCP Streamable HTTP**, as an OAuth-protected resource on the
+running service (`POST {AUTH_JWT_ISSUER}/mcp`) — verified through the same admin-auth + audit path.
+
+1. **Mint an admin token** from the service's own token endpoint (the same credential the stdio launcher
+   uses), then point any MCP client at the endpoint with it as a bearer:
+
+   ```bash
+   TOKEN=$(curl -s -XPOST https://auth.fps4.nl/oauth2/token \
+     -d grant_type=client_credentials -d client_id=identity-admin-mcp \
+     -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin | jq -r .access_token)
+
+   claude mcp add --scope user --transport http identity-service-admin https://auth.fps4.nl/mcp \
+     --header "Authorization: Bearer $TOKEN"
+   ```
+
+2. **Discovery** (for MCP clients that run the OAuth flow themselves): the endpoint answers an
+   unauthenticated request with `401 WWW-Authenticate: Bearer resource_metadata=…`, and the app serves
+   `/.well-known/oauth-protected-resource` (→ the authorization server) and
+   `/.well-known/oauth-authorization-server` (token endpoint, JWKS). identity-service is the authorization
+   server for its own MCP resource.
+
+Authentication is any admin-plane principal (a machine token with an admin scope, or a `platform_admin`
+operator token — ADR-0010); per-tool authorization is enforced identically to the stdio + HTTP paths.
+Toggle with `MCP_HTTP_ENABLED` (default on); Phase 2 (ADR-0009) moves it to a dedicated, hardened
+`auth-mcp.fps4.nl` origin with sender-constrained tokens. stdio-over-SSH stays as break-glass.
+
 ## Verify
 
 - `GET /health` returns `{ "status": "ok" }`.
