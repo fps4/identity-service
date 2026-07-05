@@ -84,7 +84,12 @@ export const CONFIG = {
     // MCP resource, so a token minted for another resource (e.g. a generic admin token) can't be replayed
     // here. Clients obtain a bound token by passing `resource=<resourceUrl>` to /oauth2/token. Default on;
     // set MCP_REQUIRE_AUDIENCE=false to soft-launch before clients are updated.
-    requireAudience: (process.env.MCP_REQUIRE_AUDIENCE ?? 'true') !== 'false'
+    requireAudience: (process.env.MCP_REQUIRE_AUDIENCE || 'true') !== 'false',
+    // DNS-rebinding defence (MCP spec, ADR-0009 Phase 2): a browser request carrying an `Origin` is only
+    // accepted if the origin is on this allow-list — stricter than the service-wide CORS policy (which has
+    // permissive fallbacks not appropriate for high-privilege admin tooling). Non-browser agent clients
+    // send no `Origin` and are unaffected. Empty (default) → no browser origins accepted.
+    allowedOrigins: parseOrigins(process.env.MCP_ALLOWED_ORIGINS)
   },
   // Upstream Google OIDC app (RQ-0001). A single Google app per deployment federates user login;
   // the issued user token's `aud` is still per-consumer (oauth_clients.audience), not Google's.
