@@ -35,6 +35,14 @@ export class RateLimitExceededError extends OAuthError {
   }
 }
 
+/** The requested `resource` (RFC 8707 resource indicator) is not a protected resource this
+ *  authorization server issues tokens for. RFC 8707 §2 `invalid_target`. */
+export class InvalidTargetError extends OAuthError {
+  constructor(description?: string) {
+    super('Invalid target', 400, 'invalid_target', description);
+  }
+}
+
 /** A presented grant artefact (authorization code, PKCE verifier, or refresh token) was invalid,
  *  expired, already used, or did not match the request. RFC 6749 §5.2 `invalid_grant`. */
 export class InvalidGrantError extends OAuthError {
