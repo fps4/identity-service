@@ -93,6 +93,21 @@ function bearer(req: Request): string | null {
   return h && h.startsWith('Bearer ') ? h.slice(7).trim() : null;
 }
 
+/**
+ * DNS-rebinding defence (MCP spec, ADR-0009 Phase 2): reject a browser request whose `Origin` is not on
+ * the MCP allow-list. Stricter than the service-wide CORS (no private-network / empty-allowlist fallbacks
+ * for this high-privilege resource). A request with no `Origin` (a non-browser agent client) is allowed —
+ * it carries no ambient credentials a malicious page could abuse.
+ */
+function checkOrigin(req: Request, res: Response, next: NextFunction): void {
+  const origin = req.headers.origin;
+  if (origin && !CONFIG.mcp.allowedOrigins.includes(origin)) {
+    res.status(403).json({ error: 'origin_not_allowed', error_description: `Origin '${origin}' is not permitted for the MCP endpoint` });
+    return;
+  }
+  next();
+}
+
 /** Authenticate the MCP caller as an admin-plane principal, or emit a discovery-bearing challenge. */
 async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = bearer(req);
@@ -126,7 +141,7 @@ const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.
 export function createMcpRouter(): Router {
   const router = Router();
 
-  router.post('/', authenticate, async (req, res) => {
+  router.post('/', checkOrigin, authenticate, async (req, res) => {
     const principal = (req as Request & { mcpPrincipal?: AdminPrincipal }).mcpPrincipal!;
     const body = req.body;
     // MVP: a single JSON-RPC message per POST (batch arrays are optional in the spec and not needed here).
@@ -139,7 +154,7 @@ export function createMcpRouter(): Router {
     res.json(response);
   });
 
-  router.get('/', authenticate, (_req, res) => {
+  router.get('/', checkOrigin, authenticate, (_req, res) => {
     res.setHeader('Allow', 'POST');
     res.status(405).json({ error: 'method_not_allowed', error_description: 'This MCP endpoint offers no server-initiated SSE stream; use POST.' });
   });

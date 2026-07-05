@@ -54,10 +54,10 @@ beforeAll(async () => {
 });
 afterAll(() => { server?.close(); });
 
-async function rpc(token: string | null, body: unknown) {
+async function rpc(token: string | null, body: unknown, extraHeaders: Record<string, string> = {}) {
   const res = await fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { 'content-type': 'application/json', ...extraHeaders, ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body)
   });
   const text = await res.text();
@@ -139,6 +139,20 @@ describe('MCP HTTP transport — JSON-RPC over POST', () => {
     const r = await rpc(token, { not: 'json-rpc' });
     expect(r.status).toBe(400);
     expect(r.json.error.code).toBe(-32600);
+  });
+});
+
+describe('MCP HTTP transport — Origin (DNS-rebinding defence)', () => {
+  it('rejects a browser request with a disallowed Origin before auth (403)', async () => {
+    const r = await rpc(null, { jsonrpc: '2.0', id: 1, method: 'ping' }, { origin: 'https://evil.example' });
+    expect(r.status).toBe(403);
+    expect(r.json.error).toBe('origin_not_allowed');
+  });
+
+  it('allows a request with no Origin (non-browser agent client) through to auth', async () => {
+    // No Origin, no token → falls through checkOrigin to authenticate → 401 (not 403).
+    const r = await rpc(null, { jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(r.status).toBe(401);
   });
 });
 
