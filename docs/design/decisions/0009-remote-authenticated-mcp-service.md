@@ -1,13 +1,14 @@
 ---
 title: "0009: A remotely-reachable, OAuth-authenticated MCP service — Streamable HTTP on a dedicated resource origin (auth-mcp.fps4.nl), sender-constrained tokens, with identity-service as its own authorization server"
 summary: "Expose the management MCP server over the network as an OAuth 2.1 protected resource at https://auth-mcp.fps4.nl (a dedicated origin, distinct from the authorization server auth.fps4.nl) using the MCP Streamable HTTP transport. identity-service is the authorization server for its own MCP resource. Tokens are audience-bound and sender-constrained (DPoP/mTLS), admin scopes are role-derived and step-up-gated, clients self-register via gated dynamic registration, and every call flows through the existing admin-auth + audit path — so any MCP client connects with the standard remote-MCP flow instead of SSH+stdio."
-status: proposed
-last_updated: 2026-06-24
+status: accepted
+last_updated: 2026-07-05
 date: 2026-06-24
 related:
   - ./0001-local-credential-idp.md
   - ./0005-decentralized-authorization.md
   - ./0007-management-api-mcp-and-standalone-identity-service.md
+  - ../../product/RQ-0019-remote-authenticated-mcp.md
   - ../../guides/deployment.md
   - ../architecture.md
 ---
@@ -347,3 +348,27 @@ not frozen here.
   hash-chaining; the **maestro contracts** (credential custody/DCR handshake, audit emission schema, runbook
   remediation scopes); CORS specifics for browser MCP clients; refresh-token rotation tuning for long-lived
   MCP sessions; and load/abuse testing of the public MCP surface.
+
+## Status & phased implementation (accepted 2026-07-05)
+
+Accepted and tracked by [RQ-0019](../../product/RQ-0019-remote-authenticated-mcp.md). The trigger was
+operational: the stdio-over-SSH transport (`ssh ds1 docker/mcp-admin.sh`) dropped mid-session during the
+ds1 fleet-telemetry work (SSH idle timeout), stranding the management plane — exactly the fragility this
+ADR removes. Delivered in phases so "remote, no-SSH" lands early and the hardening follows:
+
+- **Phase 0 — transport-agnostic core (no behaviour change).** Split `service/src/mcp/server.ts` into a
+  transport-agnostic JSON-RPC/tool handler + a thin stdio transport over it, so a second transport can be
+  added without duplicating tool logic (Decision §1, "lifted unchanged"). Prerequisite for everything
+  below; ships on its own with handler-level tests.
+- **Phase 1 — MVP remote transport.** Add the MCP **Streamable HTTP** transport in-process on the existing
+  Express app, as an OAuth 2.1 protected resource verified through the same `verifyAdminToken` + scope gate
+  and audit path. Publish `/.well-known/oauth-protected-resource`. Delivers "connect remotely with the
+  standard MCP OAuth flow, no SSH, no prod shell account."
+- **Phase 2 — hardening.** Dedicated `auth-mcp.fps4.nl` resource origin, audience-binding (RFC 8707),
+  sender-constraint (DPoP / mTLS), role-derived scopes with a step-up assurance claim, gated dynamic client
+  registration, and the maestro contracts (§10). stdio-over-SSH is kept as documented break-glass.
+
+Related enabler: [ADR-0017](0017-product-runtime-self-registration-invites.md)'s self-registration and the
+management plane's `create_client` both need the client to carry `claims` (e.g.
+`role: product_runtime`); the admin `createClient` is extended to accept/persist `claims` alongside this
+work so product-runtime clients can be created wholly through the management plane.
