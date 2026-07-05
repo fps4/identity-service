@@ -12,6 +12,7 @@ import adminRoutes from './routes/admin-routes.js';
 import { refreshTenantOrigins, scheduleTenantCorsRefresh } from './utils/tenant-cors.js';
 import { buildCorsOptions, corsErrorHandler } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
+import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from './mcp/http-transport.js';
 
 async function bootstrap() {
   const app = express();
@@ -66,6 +67,16 @@ async function bootstrap() {
   if (CONFIG.admin.enabled) {
     app.use(CONFIG.admin.basePath, adminRoutes);
     logger.info({ basePath: CONFIG.admin.basePath }, 'management API enabled');
+  }
+
+  // Remote MCP transport (ADR-0009 Phase 1): the management MCP server over MCP Streamable HTTP, as an
+  // OAuth-protected resource verified through the SAME admin-auth + audit path as /admin/v1. The two
+  // discovery documents let a standard MCP client find the authorization server and obtain a token.
+  if (CONFIG.mcp.enabled) {
+    app.get('/.well-known/oauth-protected-resource', (_req, res) => { res.json(protectedResourceMetadata()); });
+    app.get('/.well-known/oauth-authorization-server', (_req, res) => { res.json(authorizationServerMetadata()); });
+    app.use(CONFIG.mcp.basePath, createMcpRouter());
+    logger.info({ basePath: CONFIG.mcp.basePath, resource: CONFIG.mcp.resourceUrl }, 'MCP HTTP transport enabled');
   }
 
   // A disallowed CORS Origin reaches here as a tagged error; return a clean 403 JSON (OAuth-style)

@@ -69,6 +69,16 @@ export const CONFIG = {
     operatorRoles: (process.env.ADMIN_OPERATOR_ROLES ?? 'platform_admin')
       .split(',').map((r) => r.trim()).filter(Boolean)
   },
+  // Remote MCP transport (ADR-0009 Phase 1): the management MCP server exposed in-process over MCP
+  // Streamable HTTP as an OAuth-protected resource, so agents connect with a bearer admin token instead
+  // of SSH+stdio. Same admin-auth + audit path as /admin/v1 and the stdio server. `resourceUrl` is the
+  // canonical resource identifier advertised in the protected-resource metadata (Phase 1: this origin +
+  // basePath; Phase 2 moves it to the dedicated auth-mcp.fps4.nl origin).
+  mcp: {
+    enabled: (process.env.MCP_HTTP_ENABLED ?? 'true') !== 'false',
+    basePath: process.env.MCP_HTTP_BASE_PATH ?? '/mcp',
+    resourceUrl: process.env.MCP_RESOURCE_URL ?? `${process.env.AUTH_JWT_ISSUER ?? 'http://localhost:7305'}/mcp`
+  },
   // Upstream Google OIDC app (RQ-0001). A single Google app per deployment federates user login;
   // the issued user token's `aud` is still per-consumer (oauth_clients.audience), not Google's.
   // Endpoints are overridable so tests can inject a stub IdP with no network.
