@@ -20,13 +20,16 @@ vi.mock('../src/utils/key-store.js', () => ({
 import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from '../src/mcp/http-transport.js';
 import { CONFIG } from '../src/config.js';
 
-const sign = (claims: Record<string, unknown>) =>
-  new SignJWT(claims)
+// Tokens are bound to the MCP resource by default (RFC 8707) — sign with that aud unless a test overrides.
+const sign = (claims: Record<string, unknown>, aud: string | null = CONFIG.mcp.resourceUrl) => {
+  let builder = new SignJWT(claims)
     .setProtectedHeader({ alg: 'RS256', kid: 'test-kid', typ: 'JWT' })
     .setIssuer(CONFIG.auth.jwtIssuer)
     .setIssuedAt()
-    .setExpirationTime('5m')
-    .sign(createPrivateKey(testPrivateKeyPem));
+    .setExpirationTime('5m');
+  if (aud) builder = builder.setAudience(aud);
+  return builder.sign(createPrivateKey(testPrivateKeyPem));
+};
 
 function makeApp() {
   const app = express();
@@ -85,10 +88,24 @@ describe('MCP HTTP transport — authentication', () => {
   });
 
   it('rejects a valid token that lacks any admin scope (403 insufficient_scope)', async () => {
-    const token = await sign({ cid: 'runtime-x' }); // machine token, no scope
+    const token = await sign({ cid: 'runtime-x' }); // machine token, no scope, correct aud
     const r = await rpc(token, { jsonrpc: '2.0', id: 1, method: 'ping' });
     expect(r.status).toBe(403);
     expect(r.json.error).toBe('insufficient_scope');
+  });
+
+  it('rejects a token not bound to the MCP resource — no aud (401 invalid_token, RFC 8707)', async () => {
+    const token = await sign({ cid: 'admin-client', scope: 'admin' }, null);
+    const r = await rpc(token, { jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(r.status).toBe(401);
+    expect(r.json.error).toBe('invalid_token');
+  });
+
+  it('rejects a token bound to a DIFFERENT resource (401 invalid_token)', async () => {
+    const token = await sign({ cid: 'admin-client', scope: 'admin' }, 'https://someone-else.example/mcp');
+    const r = await rpc(token, { jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(r.status).toBe(401);
+    expect(r.json.error).toBe('invalid_token');
   });
 });
 

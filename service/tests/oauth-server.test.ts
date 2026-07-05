@@ -8,6 +8,7 @@ import {
 } from '../src/oauth/errors.js';
 import { decodeJwt } from 'jose';
 import { generateKeyPairSync } from 'crypto';
+import { CONFIG } from '../src/config.js';
 import type { OAuthServerDependencies } from '../src/oauth/types.js';
 import type { TenantDocument, TenantOAuthConfig } from '../src/models/tenant.js';
 
@@ -221,6 +222,28 @@ describe('OAuth server – client credentials grant', () => {
     expect(claims.tid).toBe('tenant-123');
     expect(claims.cid).toBe('client-1');
     expect(claims.scope).toBe('telemetry:read');
+  });
+
+  it('binds aud to a recognized resource and rejects an unknown one (RFC 8707, ADR-0009 Phase 2)', async () => {
+    state.tenants.push({
+      _id: 'tenant-123', name: 'Test Tenant', status: 'active',
+      oauth: { enabled: true, allowedGrantTypes: ['client_credentials'], allowedScopes: ['admin'] }
+    } as any);
+    state.clients.push({
+      _id: 'admin-client', tenantId: 'tenant-123', name: 'admin', secretHash: hashSecret('top-secret'),
+      grantTypes: ['client_credentials'], scopes: ['admin'], redirectUris: [], isConfidential: true
+    } as any);
+
+    // A recognized resource binds the token's aud to it (not the service-wide default).
+    const bound = await oauthServer.issueClientCredentialsToken({
+      clientId: 'admin-client', clientSecret: 'top-secret', scope: ['admin'], resource: CONFIG.mcp.resourceUrl
+    });
+    expect(decodeJwt(bound.accessToken).aud).toBe(CONFIG.mcp.resourceUrl);
+
+    // An unrecognized resource is rejected rather than issuing a mis-scoped token.
+    await expect(oauthServer.issueClientCredentialsToken({
+      clientId: 'admin-client', clientSecret: 'top-secret', scope: ['admin'], resource: 'https://not-a-resource.example/x'
+    })).rejects.toMatchObject({ error: 'invalid_target' });
   });
 
   it('mints a product_runtime credential with per-client audience, subject and additive claims (US-0086)', () => {

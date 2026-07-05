@@ -41,6 +41,12 @@ export interface ClientCredentialsInput {
   tenantId?: string;
   subject?: string;
   sessionId?: string;
+  /**
+   * RFC 8707 resource indicator — the protected resource the token is for. When present and recognized,
+   * the minted token's `aud` is bound to it (audience-binding, ADR-0009 Phase 2), so a token issued for
+   * one resource cannot be replayed at another. An unrecognized resource is rejected (`invalid_target`).
+   */
+  resource?: string;
 }
 
 export interface TokenResponse {

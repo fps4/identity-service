@@ -77,7 +77,12 @@ export const CONFIG = {
   mcp: {
     enabled: (process.env.MCP_HTTP_ENABLED ?? 'true') !== 'false',
     basePath: process.env.MCP_HTTP_BASE_PATH ?? '/mcp',
-    resourceUrl: process.env.MCP_RESOURCE_URL ?? `${process.env.AUTH_JWT_ISSUER ?? 'http://localhost:7305'}/mcp`
+    resourceUrl: process.env.MCP_RESOURCE_URL ?? `${process.env.AUTH_JWT_ISSUER ?? 'http://localhost:7305'}/mcp`,
+    // Audience-binding (RFC 8707, ADR-0009 Phase 2): require the presented token's `aud` to include the
+    // MCP resource, so a token minted for another resource (e.g. a generic admin token) can't be replayed
+    // here. Clients obtain a bound token by passing `resource=<resourceUrl>` to /oauth2/token. Default on;
+    // set MCP_REQUIRE_AUDIENCE=false to soft-launch before clients are updated.
+    requireAudience: (process.env.MCP_REQUIRE_AUDIENCE ?? 'true') !== 'false'
   },
   // Upstream Google OIDC app (RQ-0001). A single Google app per deployment federates user login;
   // the issued user token's `aud` is still per-consumer (oauth_clients.audience), not Google's.

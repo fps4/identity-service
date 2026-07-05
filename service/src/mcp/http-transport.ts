@@ -17,6 +17,7 @@
  * step-up, and dynamic client registration.
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { decodeJwt } from 'jose';
 import { verifyAdminToken, principalHasScope, AdminTokenError, ADMIN_SCOPES, type AdminPrincipal } from '../core/admin-auth.js';
 import { CONFIG } from '../config.js';
 import logger from '../utils/logger.js';
@@ -27,6 +28,22 @@ const ADMIN_AREA_SCOPES = Object.values(ADMIN_SCOPES);
 /** True for any admin-plane principal: the `admin` superscope, or any `admin:<area>` scope, or an operator. */
 function isAdminPlanePrincipal(principal: AdminPrincipal): boolean {
   return ADMIN_AREA_SCOPES.some((s) => principalHasScope(principal, s));
+}
+
+/**
+ * Audience-binding (RFC 8707, ADR-0009 Phase 2): the token must be bound to THIS MCP resource, so a
+ * generic admin token (or one minted for another resource) cannot be replayed here. The client obtains a
+ * bound token by passing `resource=<resourceUrl>` to /oauth2/token. Disabled by `MCP_REQUIRE_AUDIENCE=false`.
+ */
+function hasResourceAudience(token: string): boolean {
+  if (!CONFIG.mcp.requireAudience) return true;
+  try {
+    const aud = decodeJwt(token).aud; // signature already verified by verifyAdminToken
+    const auds = Array.isArray(aud) ? aud : aud ? [aud] : [];
+    return auds.includes(CONFIG.mcp.resourceUrl);
+  } catch {
+    return false;
+  }
 }
 
 /** RFC 9728 protected-resource metadata: tells an MCP client which authorization server guards this resource. */
@@ -82,6 +99,9 @@ async function authenticate(req: Request, res: Response, next: NextFunction): Pr
   if (!token) return challenge(res, 401, 'unauthorized', 'Bearer admin token required');
   try {
     const principal = await verifyAdminToken(token);
+    if (!hasResourceAudience(token)) {
+      return challenge(res, 401, 'invalid_token', `Token audience must include the MCP resource ${CONFIG.mcp.resourceUrl} (request it via a resource parameter at /oauth2/token)`);
+    }
     if (!isAdminPlanePrincipal(principal)) return challenge(res, 403, 'insufficient_scope', 'Token lacks an admin scope');
     (req as Request & { mcpPrincipal?: AdminPrincipal }).mcpPrincipal = principal;
     next();

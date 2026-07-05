@@ -208,18 +208,20 @@ issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, injected by the deploy).
 
 The stdio-over-SSH path above needs a shell account on ds1 and drops when the SSH tunnel times out.
 [ADR-0009](../design/decisions/0009-remote-authenticated-mcp-service.md) adds a network-reachable
-transport: the same MCP server, over **MCP Streamable HTTP**, as an OAuth-protected resource on the
-running service (`POST {AUTH_JWT_ISSUER}/mcp`) — verified through the same admin-auth + audit path.
+transport: the same MCP server, over **MCP Streamable HTTP**, as an OAuth-protected resource on its own
+origin **`https://auth-mcp.fps4.nl/mcp`** (a Cloudflare hostname pointing at the same `:7305` service,
+isolated from the token-issuing `auth.fps4.nl`) — verified through the same admin-auth + audit path.
 
-1. **Mint an admin token** from the service's own token endpoint (the same credential the stdio launcher
-   uses), then point any MCP client at the endpoint with it as a bearer:
+1. **Mint an admin token *bound to the MCP resource*** (RFC 8707 audience-binding — the token is accepted
+   only at `/mcp`, and a generic admin token is not), then point any MCP client at the endpoint:
 
    ```bash
    TOKEN=$(curl -s -XPOST https://auth.fps4.nl/oauth2/token \
      -d grant_type=client_credentials -d client_id=identity-admin-mcp \
-     -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin | jq -r .access_token)
+     -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin \
+     -d resource=https://auth-mcp.fps4.nl/mcp | jq -r .access_token)
 
-   claude mcp add --scope user --transport http identity-service-admin https://auth.fps4.nl/mcp \
+   claude mcp add --scope user --transport http identity-service-admin https://auth-mcp.fps4.nl/mcp \
      --header "Authorization: Bearer $TOKEN"
    ```
 
@@ -230,9 +232,11 @@ running service (`POST {AUTH_JWT_ISSUER}/mcp`) — verified through the same adm
    server for its own MCP resource.
 
 Authentication is any admin-plane principal (a machine token with an admin scope, or a `platform_admin`
-operator token — ADR-0010); per-tool authorization is enforced identically to the stdio + HTTP paths.
-Toggle with `MCP_HTTP_ENABLED` (default on); Phase 2 (ADR-0009) moves it to a dedicated, hardened
-`auth-mcp.fps4.nl` origin with sender-constrained tokens. stdio-over-SSH stays as break-glass.
+operator token — ADR-0010) whose `aud` includes the MCP resource; per-tool authorization is enforced
+identically to the stdio + HTTP paths. Toggles: `MCP_HTTP_ENABLED` (default on), `MCP_RESOURCE_URL` (the
+resource identifier), `MCP_REQUIRE_AUDIENCE` (default on — set `false` to soft-launch before clients pass
+`resource`). Remaining Phase 2 hardening (DPoP/mTLS sender-constraint, step-up, dynamic registration) is
+tracked in ADR-0009/RQ-0019; stdio-over-SSH stays as break-glass.
 
 ## Verify
 

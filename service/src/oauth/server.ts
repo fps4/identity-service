@@ -23,7 +23,8 @@ import {
   InvalidRequestError,
   RateLimitExceededError,
   InvalidGrantError,
-  AccessDeniedError
+  AccessDeniedError,
+  InvalidTargetError
 } from './errors.js';
 import { verifySecret, sha256Hex } from '../utils/hash.js';
 import { getActiveKeyPair } from '../utils/key-store.js';
@@ -169,7 +170,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // Per-client audience when configured (US-0086) — a machine principal is audience-bound to one
     // workspace (e.g. `maestro-workspace`) exactly like a user token, falling back to the service-wide
     // default for an unscoped client.
-    const audience = client.audience ?? CONFIG.auth.jwtAudience;
+    //
+    // RFC 8707 resource indicator (ADR-0009 Phase 2): if the caller names a recognized protected
+    // resource, bind the token's `aud` to it instead — so the token is only accepted at that resource.
+    // An unrecognized resource is rejected rather than silently issuing a broadly-scoped token.
+    let audience = client.audience ?? CONFIG.auth.jwtAudience;
+    if (input.resource) {
+      const allowedResources = [CONFIG.mcp.resourceUrl];
+      if (!allowedResources.includes(input.resource)) {
+        throw new InvalidTargetError(`Unknown resource: ${input.resource}`);
+      }
+      audience = input.resource;
+    }
 
     const token = await new SignJWT(payload)
       .setProtectedHeader({ alg: 'RS256', kid: keyPair.kid, typ: 'JWT' })

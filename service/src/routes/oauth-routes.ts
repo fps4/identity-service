@@ -95,10 +95,12 @@ async function handleClientCredentials(req: Request, res: Response) {
   if (!credentials.clientId || !credentials.clientSecret) {
     return handleError(res, new InvalidClientError('Client credentials missing'));
   }
+  const resourceParam = req.body?.resource ?? req.query?.resource;
   const token = await oauthServer.issueClientCredentialsToken({
     clientId: credentials.clientId,
     clientSecret: credentials.clientSecret,
-    scope: parseScope(req.body?.scope ?? req.query?.scope)
+    scope: parseScope(req.body?.scope ?? req.query?.scope),
+    resource: resourceParam ? String(resourceParam) : undefined
   });
   return res.status(200).json({
     access_token: token.accessToken,
