@@ -372,3 +372,24 @@ Related enabler: [ADR-0017](0017-product-runtime-self-registration-invites.md)'s
 management plane's `create_client` both need the client to carry `claims` (e.g.
 `role: product_runtime`); the admin `createClient` is extended to accept/persist `claims` alongside this
 work so product-runtime clients can be created wholly through the management plane.
+
+### Delivery status (updated 2026-07-05)
+
+| Increment | Status | Ref |
+| --- | --- | --- |
+| `createClient` accepts/persists `claims` (enabler) | **Done** | #66 |
+| Phase 0 — transport-agnostic core + handler tests | **Done** | #66 |
+| Phase 1 — Streamable HTTP transport, OAuth-protected, discovery metadata | **Done** (live-verified) | #67 |
+| Phase 2 — dedicated `auth-mcp.fps4.nl` origin + config threading | **Done** (live-verified) | #68, #69 |
+| Phase 2 — audience-binding (RFC 8707) | **Done** (live-proven: bound→200, unbound→401) | #68 |
+| Phase 2 — Origin / DNS-rebinding allow-list on `/mcp` | **Done** | #70 |
+| Phase 2 — **DPoP / mTLS sender-constraint** | **Backlog** | — |
+| Phase 2 — **step-up assurance** (acr/amr on the riskiest tools) | **Backlog** | — |
+| Phase 2 — **gated dynamic client registration** (RFC 7591) | **Backlog** | — |
+| Phase 2 — **browser-client `Origin` allow-listing** (populate `MCP_ALLOWED_ORIGINS`) | **Backlog** | — |
+| **maestro contracts** (§10: DCR custody, audit emission, remediation scopes) | **Backlog** (cross-repo) | — |
+
+The remote, no-SSH transport is in production and hardened for the machine/agent case (audience-bound
+bearer + `Origin` allow-list + per-tool scope + audit, on an isolated origin). The backlog items above are
+refinements that chiefly benefit interactive/browser clients or add sender-constraint; they are deferred,
+not blocking, and `stdio`-over-SSH remains the break-glass path throughout.

@@ -1,6 +1,6 @@
 ---
 title: "RQ-0019 — Remote, OAuth-authenticated MCP management service (no SSH)"
-status: proposed
+status: in-progress
 last_updated: 2026-07-05
 owners: [architect]
 related:
@@ -28,12 +28,27 @@ maestro:
 
 # RQ-0019 — Remote, OAuth-authenticated MCP management service
 
-- **Status:** proposed
+- **Status:** in-progress — Phases 0, 1, and the audience-binding + origin + Origin-check parts of Phase 2
+  are delivered and live; the remaining Phase 2 hardening is backlog (see below).
 - **Raised:** 2026-07-05
 - **Owner:** @farid (architect)
 - **Decision:** [ADR-0009](../design/decisions/0009-remote-authenticated-mcp-service.md) — Streamable HTTP
   transport, dedicated resource origin, identity-service as its own authorization server, sender-constrained
   tokens, and the phased rollout.
+
+## Delivery status
+
+**Done (in production, live-verified):** Phase 0 transport-agnostic core (#66); Phase 1 Streamable HTTP
+transport + OAuth discovery (#67); Phase 2 dedicated `auth-mcp.fps4.nl` origin (#68/#69), audience-binding
+RFC 8707 (#68), and `/mcp` Origin/DNS-rebinding allow-list (#70); plus the `createClient` `claims` enabler
+(#66). An agent now connects to `https://auth-mcp.fps4.nl/mcp` with a resource-bound admin bearer — no SSH.
+
+**Backlog (deferred, not blocking — tracked here + in the ADR-0009 delivery-status table):** DPoP/mTLS
+sender-constraint; step-up assurance on the riskiest tools; gated dynamic client registration (RFC 7591);
+browser-client `Origin` allow-listing (`MCP_ALLOWED_ORIGINS`); and the cross-repo maestro contracts. These
+chiefly benefit interactive/browser clients or add sender-constraint; the current posture (audience-bound
+bearer + Origin allow-list + per-tool scope + audit, isolated origin) is a reasonable bar for the
+machine/agent consumers in use today. `stdio`-over-SSH remains the documented break-glass path.
 
 ## Why
 
