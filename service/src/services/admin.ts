@@ -43,6 +43,13 @@ export interface CreateClientInput {
   audience?: string;
   subject?: string;
   isConfidential?: boolean;
+  /**
+   * Additive token claims (US-0086) merged into this client's `client_credentials` token — e.g. a
+   * product_runtime credential's `{ role: 'product_runtime', email: 'runtime@…' }`. Registered claims
+   * (`iss`/`aud`/`exp`/`sub`) are always set by the signer and cannot be overridden. Lets a
+   * product_runtime client be created wholly through the management plane (ADR-0017), not a DB patch.
+   */
+  claims?: Record<string, unknown>;
 }
 
 export interface CreateUserInput {
@@ -119,6 +126,9 @@ export function createAdminService(deps: AdminServiceDependencies) {
     if (!Array.isArray(input.grantTypes) || input.grantTypes.length === 0) {
       throw new AdminServiceError('grantTypes must be a non-empty array', 400, 'invalid_input');
     }
+    if (input.claims !== undefined && (typeof input.claims !== 'object' || input.claims === null || Array.isArray(input.claims))) {
+      throw new AdminServiceError('claims must be an object', 400, 'invalid_input');
+    }
     const m = await models();
     const tenant = await m.Tenant.findById(input.tenantId).lean().exec();
     if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
@@ -136,7 +146,8 @@ export function createAdminService(deps: AdminServiceDependencies) {
         redirectUris: input.redirectUris ?? [],
         audience: input.audience,
         subject: input.subject,
-        isConfidential: input.isConfidential ?? true
+        isConfidential: input.isConfidential ?? true,
+        claims: input.claims
       });
     } catch (err) {
       // Duplicate _id when an explicit id is reused — surface a clean conflict rather than a raw Mongo error.

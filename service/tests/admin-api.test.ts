@@ -120,6 +120,24 @@ describe('admin service', () => {
     expect(verifySecret(secret, stored.secretHash)).toBe(true);
   });
 
+  it('persists additive token claims on the created client (product_runtime, ADR-0017)', async () => {
+    const admin = makeAdmin(state);
+    const { clientId } = await admin.createClient({
+      tenantId: 't1', id: 'skills-coach-ds1', name: 'skills-coach@ds1 runtime',
+      grantTypes: ['client_credentials'], audience: 'maestro-workspace',
+      subject: 'runtime@skills-coach.fps4.nl',
+      claims: { role: 'product_runtime', email: 'runtime@skills-coach.fps4.nl' }
+    });
+    const stored = state.OAuthClient._items.find((c) => c._id === clientId);
+    expect(stored.claims).toEqual({ role: 'product_runtime', email: 'runtime@skills-coach.fps4.nl' });
+  });
+
+  it('rejects non-object claims', async () => {
+    const admin = makeAdmin(state);
+    await expect(admin.createClient({ tenantId: 't1', name: 'x', grantTypes: ['client_credentials'], claims: ['nope'] as any }))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
+  });
+
   it('honors an explicit client id and rejects reusing it', async () => {
     const admin = makeAdmin(state);
     const { clientId } = await admin.createClient({ tenantId: 't1', id: 'coach-web', name: 'Coach Web', grantTypes: ['password'], audience: 'coach-workspace' });
