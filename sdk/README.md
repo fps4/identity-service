@@ -20,7 +20,6 @@ import { ComponentAuthClient } from '@fps4/identity-service-sdk';
 
 const auth = new ComponentAuthClient({
   baseUrl: process.env.CORE_AUTH_URL!,
-  defaultTenantId: 'tenant-123',
   defaultClientId: process.env.CORE_AUTH_CLIENT_ID,
   defaultClientSecret: process.env.CORE_AUTH_CLIENT_SECRET
 });
@@ -44,7 +43,7 @@ console.log(accessToken);
 
 ## Self-service signup (invite-aware, RQ-0013)
 
-Register a local email/password user, then log in with the `password` grant. On a tenant whose
+Register a local email/password user, then log in with the `password` grant. When the deployment's
 registration policy is `invite`, pass the operator-issued code (typically read from the signup
 link's `?invite=` parameter):
 
@@ -57,7 +56,7 @@ await auth.registerWithPassword({
 const token = await auth.loginWithPassword({ username: 'new@acme.com', password: '…' });
 ```
 
-Failure codes to surface in the signup form: `invite_required` (the tenant is invite-only and no
+Failure codes to surface in the signup form: `invite_required` (the deployment is invite-only and no
 code was given), `invalid_invite` (unknown / expired / revoked / exhausted / wrong email — the
 server deliberately does not say which), `registration_closed`, `email_taken`, `weak_password`.
 
@@ -65,7 +64,7 @@ server deliberately does not say which), `registration_closed`, `email_taken`, `
 
 User authentication:
 
-- `registerWithPassword(options)` – `POST /v1/tenants/{tenantId}/register` (self-service signup; optional `inviteCode`, RQ-0013).
+- `registerWithPassword(options)` – `POST /v1/register` (self-service signup; optional `inviteCode`, RQ-0013).
 - `loginWithPassword(options)` – `POST /oauth2/token` (`password` grant, RQ-0002).
 - `beginGoogleLogin(options)` / `completeGoogleLogin(options)` – Google SSO with PKCE (RQ-0001).
 - `refreshUserToken(options)` – `POST /oauth2/token` (`refresh_token` grant, rotating).
@@ -74,7 +73,7 @@ User authentication:
 Machine + legacy:
 
 - `requestClientCredentialsToken(options)` – `POST /oauth2/token` (client credentials grant).
-- `createSession(options)` – Wraps `POST /v1/tenants/{tenantId}/sessions` (legacy, in migration).
+- `createSession(options)` – Wraps `POST /v1/sessions` (legacy, in migration).
 - `updateSession(options)` – Wraps `PATCH /v1/sessions/{sessionId}` (legacy, in migration).
 
 Custom headers can be supplied per call (`headers` option) or globally (`defaultHeaders` when constructing the client). If you run the service behind an API gateway, pass credentials using these headers.

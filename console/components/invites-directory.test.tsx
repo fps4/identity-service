@@ -1,27 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { InvitesDirectory } from '@/components/invites-directory';
 
 vi.mock('@/app/actions', () => ({ createInvite: vi.fn(), revokeInvite: vi.fn() }));
-const push = vi.fn();
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-const tenants = [{ _id: 't1', name: 'Acme' }, { _id: 't2', name: 'Globex' }];
 const invites = [
-  { _id: 'inv_p', tenantId: 't1', email: 'newhire@acme.example', roles: ['member'], maxUses: 1, usedCount: 0, expiresAt: future, status: 'pending', note: 'March cohort' },
-  { _id: 'inv_r', tenantId: 't1', email: null, roles: [], maxUses: 5, usedCount: 2, expiresAt: future, status: 'redeemed' },
-  { _id: 'inv_x', tenantId: 't1', email: null, roles: [], maxUses: 1, usedCount: 0, expiresAt: future, status: 'expired' },
+  { _id: 'inv_p', email: 'newhire@acme.example', roles: ['member'], maxUses: 1, usedCount: 0, expiresAt: future, status: 'pending', note: 'March cohort' },
+  { _id: 'inv_r', email: null, roles: [], maxUses: 5, usedCount: 2, expiresAt: future, status: 'redeemed' },
+  { _id: 'inv_x', email: null, roles: [], maxUses: 1, usedCount: 0, expiresAt: future, status: 'expired' },
 ];
 
 const renderDirectory = () =>
-  render(<InvitesDirectory tenants={tenants} activeTenantId="t1" invites={invites as never} />);
+  render(<InvitesDirectory invites={invites as never} />);
 
 describe('InvitesDirectory', () => {
-  beforeEach(() => push.mockReset());
-
   it('lists invites with status badges and a count', () => {
     renderDirectory();
     expect(screen.getByText('newhire@acme.example')).toBeInTheDocument();
@@ -43,12 +38,6 @@ describe('InvitesDirectory', () => {
     fireEvent.change(screen.getByLabelText('Search invites'), { target: { value: 'march' } });
     expect(screen.getByText('newhire@acme.example')).toBeInTheDocument();
     expect(screen.getByText('1 of 3')).toBeInTheDocument();
-  });
-
-  it('navigates to ?tenantId= when the tenant is switched', () => {
-    renderDirectory();
-    fireEvent.change(screen.getByLabelText('Tenant'), { target: { value: 't2' } });
-    expect(push).toHaveBeenCalledWith('/invites?tenantId=t2');
   });
 
   it('offers Revoke only for a pending invite', () => {

@@ -26,8 +26,6 @@ export interface InviteOptions {
 export interface RegisterProps {
   /** identity-service base URL, e.g. https://auth-dev.example.com */
   baseUrl: string;
-  /** the tenant to register into (local IdP enabled) */
-  tenantId: string;
   /** called with the created user on success. Registration does NOT log the user in — that is a
    *  separate step (render <Login/> or call loginWithPassword), matching the SDK split. */
   onSuccess: (user: RegisteredUser) => void;
@@ -38,10 +36,10 @@ export interface RegisterProps {
   emailLabel?: string;
   passwordLabel?: string;
   /**
-   * Render an invite-code field for invite-only tenants (RQ-0013). `true` shows an optional field;
+   * Render an invite-code field for invite-only registration (RQ-0013). `true` shows an optional field;
    * pass options to require it, prefill it (e.g. from `?invite=`), or relabel/annotate it. Even when
    * omitted, an `invite_required` response from the server auto-reveals the field so the user can
-   * recover without the developer having pre-known the tenant's policy.
+   * recover without the developer having pre-known the registration policy.
    */
   invite?: boolean | InviteOptions;
   /** className on the root <form> */
@@ -89,12 +87,12 @@ function messageFor(err: RegisterError): string {
 /**
  * Drop-in email/password signup for identity-service's local IdP (RQ-0015) — the counterpart to
  * <Login/>. Renders a small form, performs the registration, and hands the created user back via
- * `onSuccess`. On invite-only tenants (RQ-0013) it collects and submits an invite code. Token
+ * `onSuccess`. On invite-only registration (RQ-0013) it collects and submits an invite code. Token
  * storage, "then log them in", and route guarding are intentionally the host app's concern.
  */
 export function Register(props: RegisterProps) {
   const {
-    baseUrl, tenantId, onSuccess, onError,
+    baseUrl, onSuccess, onError,
     title = 'Create your account', submitLabel = 'Create account',
     emailLabel = 'Email', passwordLabel = 'Password',
     invite, className, classNames = {}, unstyled = false, fetchImpl, card
@@ -107,7 +105,7 @@ export function Register(props: RegisterProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [inviteCode, setInviteCode] = useState(inviteOpt?.defaultCode ?? '');
-  // Flipped true when the server answers invite_required for a tenant the developer didn't mark invite-only.
+  // Flipped true when the server answers invite_required though the developer didn't mark it invite-only.
   const [autoInviteRequired, setAutoInviteRequired] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -132,7 +130,7 @@ export function Register(props: RegisterProps) {
     setSubmitting(true);
     try {
       const user = await requestRegistration({
-        baseUrl, tenantId, email, password,
+        baseUrl, email, password,
         inviteCode: inviteCode.trim() || undefined,
         fetchImpl
       });

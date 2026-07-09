@@ -30,15 +30,14 @@ const matches = (item: any, query: any): boolean =>
   Object.entries(query).every(([k, v]) => (v && typeof v === 'object' && '$gte' in (v as any)) ? item[k] >= (v as any).$gte : item[k] === v);
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
-interface Store { tenants: any[]; clients: any[]; users: any[]; tokens: any[]; sessions: any[]; }
-const makeStore = (): Store => ({ tenants: [], clients: [], users: [], tokens: [], sessions: [] });
+interface Store { clients: any[]; users: any[]; tokens: any[]; sessions: any[]; }
+const makeStore = (): Store => ({ clients: [], users: [], tokens: [], sessions: [] });
 
 function makeDeps(store: Store, now: () => Date) {
   return {
     getMasterConnection: async () => ({}) as any,
     now,
     makeModels: () => ({
-      Tenant: { findOne: (q: any) => ({ lean: () => ({ exec: async () => store.tenants.find((t) => matches(t, q)) ?? null }) }) },
       OAuthClient: { findById: (id: string) => ({ lean: () => ({ exec: async () => store.clients.find((c) => c._id === id) ?? null }) }) },
       User: {
         findOne: (q: any) => ({
@@ -59,13 +58,9 @@ function makeDeps(store: Store, now: () => Date) {
   };
 }
 
-function seedLocalTenant(store: Store) {
-  store.tenants.push({
-    _id: 'tenant-local', name: 'local', status: 'active',
-    oauth: { enabled: true, allowedGrantTypes: ['password'], allowedScopes: [], idp: { provider: 'local' } }
-  });
+function seedLocalClient(store: Store) {
   store.clients.push({
-    _id: 'client-local', tenantId: 'tenant-local', name: 'local web',
+    _id: 'client-local', name: 'local web',
     grantTypes: ['password'], redirectUris: [], scopes: [], audience: 'maestro-workspace', isConfidential: false, secretHash: ''
   });
 }
@@ -77,12 +72,12 @@ describe('Local password IdP — registration (RQ-0002)', () => {
 
   beforeEach(() => {
     store = makeStore();
-    seedLocalTenant(store);
+    seedLocalClient(store);
     users = createUserService(makeDeps(store, now));
   });
 
   it('registers a user with a stable subject id', async () => {
-    const user = await users.registerUser({ tenantId: 'tenant-local', email: 'Reviewer@FPS4.test', password: 'correct-horse-battery' });
+    const user = await users.registerUser({ email: 'Reviewer@FPS4.test', password: 'correct-horse-battery' });
     expect(user.email).toBe('reviewer@fps4.test'); // normalized
     expect(user.id).toBeTruthy();
     expect(store.users).toHaveLength(1);
@@ -90,25 +85,30 @@ describe('Local password IdP — registration (RQ-0002)', () => {
   });
 
   it('rejects a duplicate email (409)', async () => {
-    await users.registerUser({ tenantId: 'tenant-local', email: 'dup@fps4.test', password: 'correct-horse-battery' });
-    await expect(users.registerUser({ tenantId: 'tenant-local', email: 'dup@fps4.test', password: 'another-strong-pass' }))
+    await users.registerUser({ email: 'dup@fps4.test', password: 'correct-horse-battery' });
+    await expect(users.registerUser({ email: 'dup@fps4.test', password: 'another-strong-pass' }))
       .rejects.toMatchObject({ status: 409, code: 'email_taken' });
   });
 
   it('rejects a weak password (400)', async () => {
-    await expect(users.registerUser({ tenantId: 'tenant-local', email: 'weak@fps4.test', password: 'short' }))
+    await expect(users.registerUser({ email: 'weak@fps4.test', password: 'short' }))
       .rejects.toMatchObject({ status: 400, code: 'weak_password' });
   });
 
   it('rejects an invalid email (400)', async () => {
-    await expect(users.registerUser({ tenantId: 'tenant-local', email: 'not-an-email', password: 'correct-horse-battery' }))
+    await expect(users.registerUser({ email: 'not-an-email', password: 'correct-horse-battery' }))
       .rejects.toBeInstanceOf(UserServiceError);
   });
 
-  it('refuses when the tenant has not enabled the local IdP', async () => {
-    store.tenants[0].oauth.idp = { provider: 'google' };
-    await expect(users.registerUser({ tenantId: 'tenant-local', email: 'x@fps4.test', password: 'correct-horse-battery' }))
-      .rejects.toMatchObject({ status: 400, code: 'local_idp_disabled' });
+  it('refuses when the local IdP is disabled deployment-wide (AUTH_LOCAL_IDP_ENABLED)', async () => {
+    const saved = CONFIG.auth.localIdpEnabled;
+    (CONFIG.auth as any).localIdpEnabled = false;
+    try {
+      await expect(users.registerUser({ email: 'x@fps4.test', password: 'correct-horse-battery' }))
+        .rejects.toMatchObject({ status: 400, code: 'local_idp_disabled' });
+    } finally {
+      (CONFIG.auth as any).localIdpEnabled = saved;
+    }
   });
 });
 
@@ -120,9 +120,9 @@ describe('Local password IdP — login (RQ-0002)', () => {
 
   beforeEach(() => {
     store = makeStore();
-    seedLocalTenant(store);
+    seedLocalClient(store);
     store.users.push({
-      _id: 'user-sub-1', tenantId: 'tenant-local', email: 'reviewer@fps4.test',
+      _id: 'user-sub-1', email: 'reviewer@fps4.test',
       passwordHash: hashSecret(password), status: 'active', failedAttempts: 0, lockedUntil: null,
       roles: ['tenant_admin', 'member']
     });

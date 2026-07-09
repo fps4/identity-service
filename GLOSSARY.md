@@ -2,37 +2,41 @@
 
 Terms where identity-service's business language and code diverge, or that a consumer must get right.
 
-- **Tenant** — a product/organization registered in the `tenants` collection. Opts into OAuth via an
-  `oauth` block (`enabled`, `allowedGrantTypes`, `allowedScopes`, `limits`, `idp`). Authentication is
-  refused when a tenant is missing, not `active`, or has not enabled OAuth.
+- **Deployment / realm** — one running instance of identity-service (`ds1`, …): its own MongoDB, active
+  signing key, issuer origin, Google app, and a single shared user pool. The deployment *is* the tenancy
+  boundary — there is **no** `Tenant` entity or `tenants` collection (removed in
+  [ADR-0018](docs/design/decisions/0018-collapse-tenant-into-deployment.md)). Realm-wide config is
+  deployment env (`CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `AUTH_ALLOWED_ROLES`,
+  `CONFIG.oauth.limits`), not a per-row document.
 
-- **Client** — a registered consumer of a tenant (`oauth_clients`). Carries `grantTypes`,
-  `redirectUris`, `scopes`, `isConfidential`, and — for user login — an `audience`. The `client_id`
-  is the document `_id`.
+- **Client** (Application) — a registered consumer (`oauth_clients`), the only structural per-consumer
+  object (ADR-0018). Carries `grantTypes`, `redirectUris`, `scopes`, `isConfidential`, and — for user
+  login — an `audience`. The `client_id` is the document `_id`.
 
 - **Client credentials** — the machine-to-machine grant. A confidential client exchanges its secret
-  for a short-lived access token carrying `tid` / `cid` / `sid` / `scope`.
+  for a short-lived access token carrying `cid` / `sid` / `scope`.
 
 - **User identity token** — the human-login token. An RS256 JWT carrying `email`, a stable `sub`,
   `iss`, a consumer-bound `aud`, `exp`/`iat`, and an optional coarse `roles` array. Proves *who you
   are*, not *what you may do*. Issued by either IdP (Google SSO or local password) with the same shape.
 
-- **Role** — a coarse, tenant-scoped string (e.g. `tenant_admin`, `member`) carried on a local user
+- **Role** — a coarse, deployment-scoped string (e.g. `platform_admin`, `member`) carried on a local user
   and stamped into the user token's `roles` claim (RQ-0005). Provisioned by the operator (seed config
-  `users[].roles` / `manage-users set-roles`), optionally constrained by a tenant's `oauth.allowedRoles`
+  `users[].roles` / `manage-users set-roles`), optionally constrained by the deployment's `AUTH_ALLOWED_ROLES`
   vocabulary. identity-service **asserts** roles but does not enforce them — each product maps roles to
   its own permissions ([ADR-0005](docs/design/decisions/0005-decentralized-authorization.md)). Contrast
   **scope** (machine/client authorization); roles describe the *user*.
 
 - **IdP (identity provider)** — how a user authenticates. `google` federates Google SSO (RQ-0001);
-  `local` is identity-service's own email/password store (RQ-0002). A per-tenant choice (`oauth.idp`);
-  both issue the same user token.
+  `local` is identity-service's own email/password store (RQ-0002), toggled deployment-wide by
+  `AUTH_LOCAL_IDP_ENABLED`. Both issue the same user token.
 
-- **Local user** — an email/password account in the `users` collection (RQ-0002). Per-tenant unique
-  email, salted-scrypt password hash, a stable server-minted `sub`, and brute-force lockout counters.
+- **Local user** — an email/password account in the `users` collection (RQ-0002). Globally-unique
+  email (one record per person for the whole deployment), salted-scrypt password hash, a stable
+  server-minted `sub`, and brute-force lockout counters.
 
 - **Invite** — an operator-issued, show-once registration code (`invites` collection) gating
-  self-registration on a tenant whose `oauth.registration` is `invite` (RQ-0013). Optionally
+  self-registration when the deployment's `AUTH_REGISTRATION_MODE` is `invite` (RQ-0013). Optionally
   email-bound, role-stamping, multi-use, expiring, revocable; only a SHA-256 digest is stored.
   Distributed out-of-band by the operator — the service validates codes, it never sends them.
 
@@ -68,18 +72,18 @@ Terms where identity-service's business language and code diverge, or that a con
   (still published, so its tokens verify until retired).
 
 - **Management plane** — the authenticated, audited day-2 surface (ADR-0007): the HTTP `/admin/v1` API,
-  an MCP server, and an operator console, all over one service layer. Onboards tenants, manages clients
-  and users, rotates secrets and signing keys, and serves statistics. Network-restricted — kept off the
+  an MCP server, and an operator console, all over one service layer. Manages clients and users,
+  rotates secrets and signing keys, and serves statistics. Network-restricted — kept off the
   public token-issuance surface. Distinct from the runtime OAuth/session endpoints.
 
 - **Admin scope** — the privilege a `client_credentials` token must carry to reach the management plane.
-  The superscope `admin` satisfies every admin route; granular per-area scopes (`admin:tenants`,
-  `admin:clients`, `admin:users`, `admin:keys`, `admin:stats`) let an agent hold least capability. Admin
+  The superscope `admin` satisfies every admin route; granular per-area scopes (`admin:clients`,
+  `admin:users`, `admin:keys`, `admin:stats`) let an agent hold least capability. Admin
   tokens are this service's own client tokens, verified against its own JWKS — there is no separate admin
-  issuer. Contrast **scope** (tenant runtime authorization) and **roles** (the user).
+  issuer. Contrast **scope** (client runtime authorization) and **roles** (the user).
 
 - **Audit log** — the append-only `audit_logs` collection recording every management mutation (who, what,
-  when, which tenant). The per-actor accountability ADR-0003 said a static admin secret could not provide.
+  when). The per-actor accountability ADR-0003 said a static admin secret could not provide.
 
 - **MCP management server** — the Model Context Protocol face of the management plane (`npm run mcp`,
   stdio JSON-RPC). A thin adapter over the same service layer + admin-auth + audit as the HTTP API — one

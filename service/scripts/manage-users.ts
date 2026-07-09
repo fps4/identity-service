@@ -3,11 +3,12 @@
  * registration: create users, reset passwords, and lock/unlock/disable accounts — the password-reset
  * path while there is no email channel. Run with tsx against the service's Mongo.
  *
- *   tsx scripts/manage-users.ts create       --tenant=<id> --email=<e> --password=<p>
- *   tsx scripts/manage-users.ts set-password  --tenant=<id> --email=<e> --password=<p>
- *   tsx scripts/manage-users.ts set-roles     --tenant=<id> --email=<e> --roles=a,b   (RQ-0005; "" clears)
- *   tsx scripts/manage-users.ts lock|unlock|disable|enable|delete --tenant=<id> --email=<e>
+ *   tsx scripts/manage-users.ts create       --email=<e> --password=<p>
+ *   tsx scripts/manage-users.ts set-password  --email=<e> --password=<p>
+ *   tsx scripts/manage-users.ts set-roles     --email=<e> --roles=a,b   (RQ-0005; "" clears)
+ *   tsx scripts/manage-users.ts lock|unlock|disable|enable|delete --email=<e>
  *
+ * Users are deployment-scoped (ADR-0018): email is the unique key, no tenant.
  * MONGO_URI / MONGO_DB_NAME come from the environment (or .env), same as the service.
  */
 import process from 'process';
@@ -28,10 +29,9 @@ function parseArgs() {
 
 async function main() {
   const { command, args } = parseArgs();
-  const tenantId = args.get('tenant');
   const email = args.get('email') ? normalizeEmail(args.get('email')!) : undefined;
-  if (!command || !tenantId || !email) {
-    console.error('Usage: manage-users <create|set-password|set-roles|lock|unlock|disable|enable|delete> --tenant=<id> --email=<e> [--password=<p>] [--roles=a,b]');
+  if (!command || !email) {
+    console.error('Usage: manage-users <create|set-password|set-roles|lock|unlock|disable|enable|delete> --email=<e> [--password=<p>] [--roles=a,b]');
     process.exitCode = 2;
     return;
   }
@@ -45,12 +45,12 @@ async function main() {
       const password = args.get('password');
       if (!password) throw new Error('--password is required for create');
       assertPasswordPolicy(password);
-      const existing = await User.findOne({ tenantId, email }).lean().exec();
+      const existing = await User.findOne({ email }).lean().exec();
       if (existing) throw new Error(`User already exists: ${email}`);
       // RQ-0005: honour --roles at creation so the new user's token carries the `roles` claim
       // immediately (else it issues role-less tokens until a separate set-roles run).
       const roles = (args.get('roles') ?? '').split(',').map((r) => r.trim()).filter(Boolean);
-      const doc = await User.create({ tenantId, email, passwordHash: hashSecret(password), status: 'active', passwordUpdatedAt: now, roles });
+      const doc = await User.create({ email, passwordHash: hashSecret(password), status: 'active', passwordUpdatedAt: now, roles });
       console.log(`created user ${doc._id} (${email}) — this id is the token sub; roles [${roles.join(', ')}]`);
       break;
     }
@@ -59,7 +59,7 @@ async function main() {
       if (!password) throw new Error('--password is required for set-password');
       assertPasswordPolicy(password);
       const result = await User.updateOne(
-        { tenantId, email },
+        { email },
         { $set: { passwordHash: hashSecret(password), passwordUpdatedAt: now, failedAttempts: 0, lockedUntil: null, updatedAt: now } }
       ).exec();
       report(result.matchedCount, email, 'password reset');
@@ -69,7 +69,7 @@ async function main() {
       const raw = args.get('roles') ?? '';
       const roles = raw.split(',').map((r) => r.trim()).filter(Boolean);
       const result = await User.updateOne(
-        { tenantId, email },
+        { email },
         { $set: { roles, updatedAt: now } }
       ).exec();
       report(result.matchedCount, email, `roles set to [${roles.join(', ')}]`);
@@ -87,10 +87,10 @@ async function main() {
         : command === 'enable' ? { status: 'active', failedAttempts: 0, lockedUntil: null }
         : null;
       if (command === 'delete') {
-        const result = await User.deleteOne({ tenantId, email }).exec();
+        const result = await User.deleteOne({ email }).exec();
         report(result.deletedCount, email, 'deleted');
       } else {
-        const result = await User.updateOne({ tenantId, email }, { $set: { ...set, updatedAt: now } }).exec();
+        const result = await User.updateOne({ email }, { $set: { ...set, updatedAt: now } }).exec();
         report(result.matchedCount, email, command);
       }
       break;

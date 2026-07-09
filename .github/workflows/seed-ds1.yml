@@ -118,7 +118,7 @@ jobs:
       - name: Verify
         run: |
           docker exec identity-service-mongo mongosh identity-service --quiet --eval \
-            'print("tenants:", db.tenants.countDocuments({}), " clients:", db.oauth_clients.countDocuments({}), " operators tenant:", db.tenants.countDocuments({_id:"operators"}), " identity-console client:", db.oauth_clients.countDocuments({_id:"identity-console"}))'
+            'print("clients:", db.oauth_clients.countDocuments({}), " users:", db.users.countDocuments({}), " identity-console client:", db.oauth_clients.countDocuments({_id:"identity-console"}))'
 
       - name: Cleanup assembled secrets (always)
         if: always()

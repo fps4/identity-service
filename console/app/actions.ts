@@ -22,46 +22,9 @@ const run = async (fn: () => Promise<ActionResult>): Promise<ActionResult> => {
 const s = (fd: FormData, k: string) => String(fd.get(k) ?? '').trim();
 const list = (fd: FormData, k: string) => s(fd, k).split(',').map((x) => x.trim()).filter(Boolean);
 
-/** Refresh the tenant pages a mutation touches: the list, and the tenant's detail drill-down. */
-const revalidateTenant = (tenantId?: string) => {
-  revalidatePath('/tenants');
-  if (tenantId) revalidatePath(`/tenants/${tenantId}`);
-};
-
-export async function onboardTenant(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
-  return run(async () => {
-    const provider = s(fd, 'provider'); // '' | 'local' | 'google'
-    const registration = s(fd, 'registration'); // '' (open default) | 'open' | 'invite' | 'closed' (RQ-0013)
-    const oauth = provider
-      ? {
-          enabled: true,
-          allowedGrantTypes: provider === 'local' ? ['password'] : ['authorization_code'],
-          idp: { provider },
-          ...(registration ? { registration } : {})
-        }
-      : undefined;
-    const tenant = await api.upsertTenant({ id: s(fd, 'id') || undefined, name: s(fd, 'name'), oauth });
-    revalidateTenant(tenant._id);
-    return { ok: true, message: 'Tenant saved' };
-  });
-}
-
-/** Suspend or re-activate a tenant (soft lifecycle — we never hard-delete a tenant). */
-export async function setTenantStatus(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
-  return run(async () => {
-    const id = s(fd, 'id');
-    const status = s(fd, 'status'); // 'active' | 'suspended'
-    await api.upsertTenant({ id, name: s(fd, 'name'), status });
-    revalidateTenant(id);
-    return { ok: true, message: `Tenant ${status}` };
-  });
-}
-
 export async function createClient(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
     const res = await api.createClient({
-      tenantId,
       name: s(fd, 'name'),
       grantTypes: list(fd, 'grantTypes'),
       scopes: list(fd, 'scopes'),
@@ -70,7 +33,7 @@ export async function createClient(_prev: ActionResult, fd: FormData): Promise<A
       subject: s(fd, 'subject') || undefined,
       isConfidential: s(fd, 'isConfidential') !== 'false'
     });
-    revalidateClient(tenantId);
+    revalidatePath('/clients');
     return { ok: true, message: `Client ${res.clientId} created`, secret: res.secret };
   });
 }
@@ -78,7 +41,7 @@ export async function createClient(_prev: ActionResult, fd: FormData): Promise<A
 export async function rotateClientSecret(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
     const res = await api.rotateClientSecret(s(fd, 'clientId'));
-    revalidateClient(s(fd, 'tenantId'));
+    revalidatePath('/clients');
     return { ok: true, message: 'Secret rotated', secret: res.secret };
   });
 }
@@ -86,55 +49,46 @@ export async function rotateClientSecret(_prev: ActionResult, fd: FormData): Pro
 export async function deleteClient(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
     await api.deleteClient(s(fd, 'clientId'));
-    revalidateClient(s(fd, 'tenantId'));
+    revalidatePath('/clients');
     return { ok: true, message: 'Client deleted' };
   });
 }
 
-const revalidateClient = (tenantId?: string) => {
-  revalidatePath('/clients');
-  if (tenantId) revalidatePath(`/tenants/${tenantId}`);
-};
-
 export async function createUser(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
-    await api.createUser({ tenantId, email: s(fd, 'email'), password: s(fd, 'password'), roles: list(fd, 'roles') });
-    revalidateUser(tenantId);
+    await api.createUser({ email: s(fd, 'email'), password: s(fd, 'password'), roles: list(fd, 'roles') });
+    revalidatePath('/users');
     return { ok: true, message: 'User created' };
   });
 }
 
 export async function resetPassword(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    await api.resetPassword({ tenantId: s(fd, 'tenantId'), email: s(fd, 'email'), password: s(fd, 'password') });
+    await api.resetPassword({ email: s(fd, 'email'), password: s(fd, 'password') });
     return { ok: true, message: 'Password reset' };
   });
 }
 
 export async function setUserStatus(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
-    await api.setUserStatus({ tenantId, email: s(fd, 'email'), status: s(fd, 'status') });
-    revalidateUser(tenantId);
+    await api.setUserStatus({ email: s(fd, 'email'), status: s(fd, 'status') });
+    revalidatePath('/users');
     return { ok: true, message: `User ${s(fd, 'status')}` };
   });
 }
 
 export async function unlockUser(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
-    await api.unlockUser({ tenantId, email: s(fd, 'email') });
-    revalidateUser(tenantId);
+    await api.unlockUser({ email: s(fd, 'email') });
+    revalidatePath('/users');
     return { ok: true, message: 'User unlocked' };
   });
 }
 
 export async function deleteUser(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
-    await api.deleteUser({ tenantId, email: s(fd, 'email') });
-    revalidateUser(tenantId);
+    await api.deleteUser({ email: s(fd, 'email') });
+    revalidatePath('/users');
     return { ok: true, message: 'User deleted' };
   });
 }
@@ -143,15 +97,13 @@ export async function deleteUser(_prev: ActionResult, fd: FormData): Promise<Act
  *  automatic link-on-verified-email at login, for the ambiguous cases the system won't merge itself. */
 export async function linkIdentity(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
     await api.linkIdentity({
-      tenantId,
       email: s(fd, 'email'),
       provider: 'google',
       subject: s(fd, 'subject'),
       identityEmail: s(fd, 'identityEmail') || undefined,
     });
-    revalidateUser(tenantId);
+    revalidatePath('/users');
     return { ok: true, message: 'Identity linked' };
   });
 }
@@ -159,30 +111,23 @@ export async function linkIdentity(_prev: ActionResult, fd: FormData): Promise<A
 /** Remove a linked federated identity from a user (RQ-0011). */
 export async function unlinkIdentity(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
-    await api.unlinkIdentity({ tenantId, email: s(fd, 'email'), provider: 'google', subject: s(fd, 'subject') });
-    revalidateUser(tenantId);
+    await api.unlinkIdentity({ email: s(fd, 'email'), provider: 'google', subject: s(fd, 'subject') });
+    revalidatePath('/users');
     return { ok: true, message: 'Identity unlinked' };
   });
 }
 
-const revalidateUser = (tenantId?: string) => {
-  revalidatePath('/users');
-  if (tenantId) revalidatePath(`/tenants/${tenantId}`);
-};
-
 /** Mint a registration invite (RQ-0013). The code comes back once and is shown via the dialog. */
 export async function createInvite(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
-    const tenantId = s(fd, 'tenantId');
-    const res = await api.createInvite(tenantId, {
+    const res = await api.createInvite({
       email: s(fd, 'email') || undefined,
       roles: list(fd, 'roles'),
       maxUses: Math.max(1, Number(s(fd, 'maxUses') || '1') || 1),
       expiresInHours: Number(s(fd, 'expiresInHours') || '168') || 168,
       note: s(fd, 'note') || undefined
     });
-    revalidateInvite(tenantId);
+    revalidatePath('/invites');
     return {
       ok: true,
       message: 'Invite created',
@@ -195,16 +140,10 @@ export async function createInvite(_prev: ActionResult, fd: FormData): Promise<A
 export async function revokeInvite(_prev: ActionResult, fd: FormData): Promise<ActionResult> {
   return run(async () => {
     await api.revokeInvite(s(fd, 'inviteId'));
-    revalidateInvite(s(fd, 'tenantId'));
+    revalidatePath('/invites');
     return { ok: true, message: 'Invite revoked' };
   });
 }
-
-// Invite mutations touch the top-level /invites directory (RQ-0017) as well as the tenant drill-down.
-const revalidateInvite = (tenantId?: string) => {
-  revalidatePath('/invites');
-  revalidateTenant(tenantId);
-};
 
 export async function rotateKey(_prev?: ActionResult, _fd?: FormData): Promise<ActionResult> {
   return run(async () => {

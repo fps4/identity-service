@@ -53,7 +53,7 @@ override them.
 The flow (ADR-0017):
 
 1. **An identity-service operator mints a client-registration invite** (management plane —
-   `/admin/v1`, MCP, or console) that *pins* the client's shape: `tenantId`, `clientId`, `name`,
+   `/admin/v1`, MCP, or console) that *pins* the client's shape: `clientId`, `name`,
    `audience` (`maestro-workspace`), `subject` (`runtime@<product>.fps4.nl`), and
    `claims:{role: product_runtime, email: …}`. `grantTypes` is fixed to `[client_credentials]`. The
    operator sends the one-time code to the product team out-of-band.

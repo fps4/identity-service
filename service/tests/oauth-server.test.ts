@@ -1,16 +1,14 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createOAuthServer } from '../src/oauth/server.js';
 import { hashSecret } from '../src/utils/hash.js';
 import {
   InvalidScopeError,
-  UnauthorizedClientError,
   RateLimitExceededError
 } from '../src/oauth/errors.js';
 import { decodeJwt } from 'jose';
 import { generateKeyPairSync } from 'crypto';
 import { CONFIG } from '../src/config.js';
 import type { OAuthServerDependencies } from '../src/oauth/types.js';
-import type { TenantDocument, TenantOAuthConfig } from '../src/models/tenant.js';
 
 const { privateKey: testPrivateKeyPem, publicKey: testPublicKeyPem } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
@@ -35,7 +33,6 @@ vi.mock('../src/utils/key-store.js', () => ({
 
 type TokenDoc = {
   _id: string;
-  tenantId: string;
   clientId: string;
   subject?: string;
   sessionId?: string;
@@ -47,16 +44,17 @@ type TokenDoc = {
 };
 
 interface MockState {
-  tenants: Array<TenantDocument & { oauth?: TenantOAuthConfig }>;
   clients: Array<{
     _id: string;
-    tenantId: string;
     name: string;
     secretHash: string;
     grantTypes: string[];
     redirectUris?: string[];
     scopes: string[];
     isConfidential: boolean;
+    audience?: string;
+    subject?: string;
+    claims?: Record<string, unknown>;
   }>;
   tokens: TokenDoc[];
   keyStore: Array<{
@@ -81,19 +79,6 @@ function createMockDeps(state: MockState): OAuthServerDependencies {
       })
     }) as any,
     makeModels: () => ({
-      Tenant: {
-        findOne: (query: any) => ({
-          lean: () => ({
-            exec: async () => {
-              return state.tenants.find((tenant) => {
-                const idMatches = query._id ? tenant._id === query._id : true;
-                const statusMatches = query.status ? tenant.status === query.status : true;
-                return idMatches && statusMatches;
-              }) ?? null;
-            }
-          })
-        })
-      },
       OAuthClient: {
         findById: (id: string) => ({
           lean: () => ({
@@ -103,11 +88,11 @@ function createMockDeps(state: MockState): OAuthServerDependencies {
       },
       OAuthToken: {
         countDocuments: (query: any) => ({
+          // Deployment-wide access-token count (ADR-0018: no tenant filter).
           exec: async () => state.tokens.filter((token) => {
-            const tenantMatches = token.tenantId === query.tenantId;
             const typeMatches = query.type ? token.type === query.type : true;
             const issuedAfter = query.issuedAt?.$gte ? token.issuedAt >= query.issuedAt.$gte : true;
-            return tenantMatches && typeMatches && issuedAfter;
+            return typeMatches && issuedAfter;
           }).length
         }),
         create: async (payload: any) => {
@@ -167,7 +152,6 @@ function createMockDeps(state: MockState): OAuthServerDependencies {
 
 function createInitialState(): MockState {
   return {
-    tenants: [],
     clients: [],
     tokens: [],
     keyStore: []
@@ -183,21 +167,9 @@ describe('OAuth server – client credentials grant', () => {
     oauthServer = createOAuthServer(createMockDeps(state));
   });
 
-  it('issues an access token when tenant and client are properly configured', async () => {
-    state.tenants.push({
-      _id: 'tenant-123',
-      name: 'Test Tenant',
-      status: 'active',
-      oauth: {
-        enabled: true,
-        allowedGrantTypes: ['client_credentials'],
-        allowedScopes: ['telemetry:read']
-      }
-    } as any);
-
+  it('issues an access token when the client is properly configured', async () => {
     state.clients.push({
       _id: 'client-1',
-      tenantId: 'tenant-123',
       name: 'CI client',
       secretHash: hashSecret('top-secret'),
       grantTypes: ['client_credentials'],
@@ -216,21 +188,15 @@ describe('OAuth server – client credentials grant', () => {
     expect(result.expiresIn).toBeGreaterThan(0);
     expect(result.scope).toEqual(['telemetry:read']);
     expect(state.tokens).toHaveLength(1);
-    expect(state.tokens[0].tenantId).toBe('tenant-123');
 
     const claims = decodeJwt(result.accessToken);
-    expect(claims.tid).toBe('tenant-123');
     expect(claims.cid).toBe('client-1');
     expect(claims.scope).toBe('telemetry:read');
   });
 
   it('binds aud to a recognized resource and rejects an unknown one (RFC 8707, ADR-0009 Phase 2)', async () => {
-    state.tenants.push({
-      _id: 'tenant-123', name: 'Test Tenant', status: 'active',
-      oauth: { enabled: true, allowedGrantTypes: ['client_credentials'], allowedScopes: ['admin'] }
-    } as any);
     state.clients.push({
-      _id: 'admin-client', tenantId: 'tenant-123', name: 'admin', secretHash: hashSecret('top-secret'),
+      _id: 'admin-client', name: 'admin', secretHash: hashSecret('top-secret'),
       grantTypes: ['client_credentials'], scopes: ['admin'], redirectUris: [], isConfidential: true
     } as any);
 
@@ -247,15 +213,8 @@ describe('OAuth server – client credentials grant', () => {
   });
 
   it('mints a product_runtime credential with per-client audience, subject and additive claims (US-0086)', () => {
-    state.tenants.push({
-      _id: 'tenant-rt',
-      name: 'Runtime Tenant',
-      status: 'active',
-      oauth: { enabled: true, allowedGrantTypes: ['client_credentials'], allowedScopes: [] }
-    } as any);
     state.clients.push({
       _id: 'gateway-ds1',
-      tenantId: 'tenant-rt',
       name: 'sovereign-llm-gateway@ds1 runtime',
       secretHash: hashSecret('rt-secret'),
       grantTypes: ['client_credentials'],
@@ -284,15 +243,8 @@ describe('OAuth server – client credentials grant', () => {
   });
 
   it('never lets a stored claim override a registered/identity claim (US-0086)', () => {
-    state.tenants.push({
-      _id: 'tenant-rt2',
-      name: 'Runtime Tenant 2',
-      status: 'active',
-      oauth: { enabled: true, allowedGrantTypes: ['client_credentials'], allowedScopes: [] }
-    } as any);
     state.clients.push({
       _id: 'sneaky',
-      tenantId: 'tenant-rt2',
       name: 'sneaky client',
       secretHash: hashSecret('s'),
       grantTypes: ['client_credentials'],
@@ -316,50 +268,13 @@ describe('OAuth server – client credentials grant', () => {
     });
   });
 
-  it('rejects tokens when tenant OAuth is disabled', async () => {
-    state.tenants.push({
-      _id: 'tenant-off',
-      name: 'Off Tenant',
-      status: 'active',
-      oauth: { enabled: false }
-    } as any);
-
-    state.clients.push({
-      _id: 'client-2',
-      tenantId: 'tenant-off',
-      name: 'Disabled Client',
-      secretHash: hashSecret('secret'),
-      grantTypes: ['client_credentials'],
-      scopes: ['telemetry:read'],
-      isConfidential: true
-    });
-
-    await expect(oauthServer.issueClientCredentialsToken({
-      clientId: 'client-2',
-      clientSecret: 'secret',
-      scope: ['telemetry:read']
-    })).rejects.toBeInstanceOf(UnauthorizedClientError);
-  });
-
-  it('rejects tokens when requested scope is not allowed for tenant', async () => {
-    state.tenants.push({
-      _id: 'tenant-scope',
-      name: 'Scope Tenant',
-      status: 'active',
-      oauth: {
-        enabled: true,
-        allowedGrantTypes: ['client_credentials'],
-        allowedScopes: ['telemetry:read']
-      }
-    } as any);
-
+  it('rejects tokens when the requested scope is not allowed for the client', async () => {
     state.clients.push({
       _id: 'client-3',
-      tenantId: 'tenant-scope',
       name: 'Scope Client',
       secretHash: hashSecret('secret'),
       grantTypes: ['client_credentials'],
-      scopes: ['telemetry:read', 'telemetry:write'],
+      scopes: ['telemetry:read'],
       isConfidential: true
     });
 
@@ -370,45 +285,45 @@ describe('OAuth server – client credentials grant', () => {
     })).rejects.toBeInstanceOf(InvalidScopeError);
   });
 
-  it('enforces per-tenant rate limits', async () => {
-    const issuedAt = new Date();
-    state.tenants.push({
-      _id: 'tenant-rate',
-      name: 'Rate Tenant',
-      status: 'active',
-      oauth: {
-        enabled: true,
-        allowedGrantTypes: ['client_credentials'],
-        allowedScopes: ['telemetry:read'],
-        limits: { tokensPerMinute: 1 }
-      }
-    } as any);
+  describe('deployment-wide rate limit', () => {
+    let savedLimit: number;
 
-    state.clients.push({
-      _id: 'client-4',
-      tenantId: 'tenant-rate',
-      name: 'Rate Client',
-      secretHash: hashSecret('secret'),
-      grantTypes: ['client_credentials'],
-      scopes: ['telemetry:read'],
-      isConfidential: true
+    beforeEach(() => {
+      savedLimit = CONFIG.oauth.limits.maxAccessTokensPerMinute;
+      (CONFIG.oauth.limits as any).maxAccessTokensPerMinute = 1;
     });
 
-    state.tokens.push({
-      _id: 'token-existing',
-      tenantId: 'tenant-rate',
-      clientId: 'client-4',
-      type: 'access',
-      scope: ['telemetry:read'],
-      issuedAt,
-      expiresAt: new Date(issuedAt.getTime() + 1000),
-      status: 'active'
+    afterEach(() => {
+      (CONFIG.oauth.limits as any).maxAccessTokensPerMinute = savedLimit;
     });
 
-    await expect(oauthServer.issueClientCredentialsToken({
-      clientId: 'client-4',
-      clientSecret: 'secret',
-      scope: ['telemetry:read']
-    })).rejects.toBeInstanceOf(RateLimitExceededError);
+    it('enforces the deployment-wide access-token rate limit', async () => {
+      const issuedAt = new Date();
+      state.clients.push({
+        _id: 'client-4',
+        name: 'Rate Client',
+        secretHash: hashSecret('secret'),
+        grantTypes: ['client_credentials'],
+        scopes: ['telemetry:read'],
+        isConfidential: true
+      });
+
+      // One access token already issued this minute — at the (overridden) limit of 1.
+      state.tokens.push({
+        _id: 'token-existing',
+        clientId: 'client-4',
+        type: 'access',
+        scope: ['telemetry:read'],
+        issuedAt,
+        expiresAt: new Date(issuedAt.getTime() + 1000),
+        status: 'active'
+      });
+
+      await expect(oauthServer.issueClientCredentialsToken({
+        clientId: 'client-4',
+        clientSecret: 'secret',
+        scope: ['telemetry:read']
+      })).rejects.toBeInstanceOf(RateLimitExceededError);
+    });
   });
 });

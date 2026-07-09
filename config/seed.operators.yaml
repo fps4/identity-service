@@ -1,12 +1,12 @@
-# Focused seed for JUST the console operator (RQ-0007, ADR-0010).
+# Focused seed for JUST the console operator (RQ-0007, ADR-0010, ADR-0018).
 #
-# The full config/seed.yaml references every tenant's ${SEED_*} secret and the seeder throws on any
-# unset one — so a full re-seed needs all of them. This subset lets you provision (or rotate) only the
-# admin-console operator, which needs a single secret you already hold: SEED_CONSOLE_ADMIN_PASSWORD.
+# The full config/seed.yaml references every ${ENV} secret and the seeder throws on any unset one — so a
+# full re-seed needs all of them. This subset provisions (or rotates) only the admin-console client + the
+# bootstrap operator user, which needs a single secret you already hold: SEED_CONSOLE_ADMIN_PASSWORD.
 #
-# Idempotent: upserts the `operators` tenant + `identity-console` client and inserts the user if absent
-# (an existing user is left untouched — use `npm run manage-users set-password` to change the password).
-# Other tenants in the live DB are NOT touched. Keep this in sync with the `operators` tenant in seed.yaml.
+# One deployment = one realm (ADR-0018): a flat clients + users list, no tenant. Idempotent: upserts the
+# `identity-console` client and inserts the user if absent (an existing user is left untouched — use
+# `npm run manage-users set-password` to change the password). Other clients/users are NOT touched.
 #
 # Run on the ds1 host, from service/ (the mongo container publishes :27019 on the host):
 #   SEED_FILE=../config/seed.operators.yaml \
@@ -14,29 +14,16 @@
 #   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service \
 #   npm run seed
 
-tenants:
-  - id: operators
-    name: identity-service operators
+clients:
+  - id: identity-console
+    name: identity-service admin console
+    grantTypes: [password]
+    audience: identity-console         # token `aud` (label only — the admin plane checks iss+JWKS, not aud)
+    redirectUris: []
+    isConfidential: false
+
+users:
+  - email: admin@identity-service.fps4.nl
+    password: ${SEED_CONSOLE_ADMIN_PASSWORD}
     status: active
-    allowedOrigins:
-      - http://localhost:7306        # local console dev (next dev / next start -p 7306)
-      - https://ids.fps4.nl          # ds1 console behind Cloudflare
-    oauth:
-      enabled: true
-      allowedGrantTypes: [password]
-      allowedScopes: []
-      allowedRoles: [platform_admin]   # RQ-0005 allow-list; mapped to admin by ADMIN_OPERATOR_ROLES (ADR-0010)
-      idp: { provider: local }
-      limits: { tokensPerMinute: 120 }
-    clients:
-      - id: identity-console
-        name: identity-service admin console
-        grantTypes: [password]
-        audience: identity-console     # token `aud` (label only — the admin plane checks iss+JWKS, not aud)
-        redirectUris: []
-        isConfidential: false
-    users:
-      - email: admin@identity-service.fps4.nl
-        password: ${SEED_CONSOLE_ADMIN_PASSWORD}
-        status: active
-        roles: [platform_admin]
+    roles: [platform_admin]            # mapped to admin by ADMIN_OPERATOR_ROLES (ADR-0010)

@@ -1,34 +1,34 @@
 ---
 title: Architecture
-summary: How identity-service is built — the service, SDK, React widget, and admin console; the token-issuance flow; multi-tenancy; and the authenticated management plane.
+summary: How identity-service is built — the service, SDK, React widget, and admin console; the token-issuance flow; the deployment/application model; and the authenticated management plane.
 status: current
-last_updated: 2026-06-23
+last_updated: 2026-07-09
 owners: [architect]
 related:
   - docs/reference/api.md
-  - docs/guides/tenant-config.md
   - docs/overview.md
+  - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
 ---
 
 # Architecture
 
-The **identity-service** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent, tenant-aware way.
+The **identity-service** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent way. A deployment is one realm with a single shared user pool; OAuth clients (Applications) are the registered per-consumer objects, and users are deployment-scoped and shared across every client (instance-wide SSO — [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md)).
 
 ## Components
 
-- **Service (`service/`)** – Node.js + Express API hosting OAuth 2.0, legacy session endpoints, and the authenticated `/admin/v1` management plane. It validates tenants, persists sessions and token metadata in MongoDB, manages RSA signing keys, issues JWT access tokens for downstream services, and records every management mutation to an append-only audit log.
+- **Service (`service/`)** – Node.js + Express API hosting OAuth 2.0, legacy session endpoints, and the authenticated `/admin/v1` management plane. It authenticates OAuth clients, persists users, sessions, and token metadata in MongoDB, manages RSA signing keys, issues JWT access tokens for downstream services, and records every management mutation to an append-only audit log.
 - **MCP server (`service/src/mcp/`)** – A stdio JSON-RPC server (`npm run mcp`) exposing the management operations as agent tools. A thin protocol adapter over the **same** service layer and the **same** admin-auth + audit path as the HTTP admin API — one authorization model, one audit trail, two transports (ADR-0007).
 - **SDK (`sdk/`)** – Headless TypeScript client wrapping the HTTP surface: the OAuth client-credentials helper, the Google login helpers, and the local register/login helpers. No UI; safe server-side.
 - **React (`react/`)** – Optional, opt-in package (`@fps4/identity-service-react`) shipping a drop-in `<Login/>` for the local IdP. Separate package so server-side consumers never pull in React.
-- **Console (`console/`)** – Optional operator admin console (`@fps4/identity-service-console`, Next.js). A thin **server-side** client over `/admin/v1` — dashboards plus tenant/client/user/key management. Holds no DB credentials and never exposes the admin token to the browser (ADR-0007). Distinct from the consumer-facing `<Login/>`.
+- **Console (`console/`)** – Optional operator admin console (`@fps4/identity-service-console`, Next.js). A thin **server-side** client over `/admin/v1` — dashboards plus client/user/key management. Holds no DB credentials and never exposes the admin token to the browser (ADR-0007). Distinct from the consumer-facing `<Login/>`.
 - **Docs (`docs/`)** – Architecture, API, and configuration references to help consumers integrate quickly.
 
 ## High-Level Flow
 
-1. A product backend requests an access token via `POST /oauth2/token` (client credentials). Legacy clients may still call `POST /v1/tenants/{tenantId}/sessions`.
-2. The service validates the tenant, confirms OAuth is enabled for that tenant, checks client registration, and records token/session metadata.
-3. JWT access tokens are signed with the active RSA key and embed tenant (`tid`), client (`cid`), optional session (`sid`), and scope claims.
+1. A product backend requests an access token via `POST /oauth2/token` (client credentials). Legacy clients may still call `POST /v1/sessions`.
+2. The service authenticates the client and checks its grant and scope registration, then records token/session metadata.
+3. JWT access tokens are signed with the active RSA key and embed client (`cid`), optional session (`sid`), and scope claims.
 4. Consumers attach the token to downstream API requests. Additional visitor context can be attached later via `PATCH /v1/sessions/{sessionId}`.
 
 ```mermaid
@@ -39,7 +39,7 @@ flowchart LR
         session["Session Core"]
         keys["Key Manager"]
     end
-    db[("MongoDB<br/>tenants · clients · users · sessions<br/>tokens · authorizations · key_store · audit_logs")]
+    db[("MongoDB<br/>clients · users · sessions<br/>tokens · authorizations · key_store · audit_logs")]
     admin["Operator / Agent"]
     subgraph mgmt["Management plane (ADR-0007)"]
         api["/admin/v1 (HTTP)"]
@@ -56,12 +56,12 @@ flowchart LR
     mgmt --> svc
 ```
 
-## Multi-Tenancy Model
+## Deployment & Application Model
 
-- Each tenant document may opt into OAuth by providing an `oauth` configuration block (see [Tenant Configuration](../guides/tenant-config.md)).
-- OAuth clients reference a single tenant; rate limits and scope policies are evaluated per tenant on every token issuance.
+- A **deployment** (`ds1`, …) is one realm: a single MongoDB, one active signing key, one issuer origin, one Google app, and one shared user pool. Users are deployment-scoped, unique by `email`, and can authenticate against any client in the instance (instance-wide SSO). See [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md).
+- OAuth clients (**Applications**) are the registered per-consumer objects; each carries its own grant types, redirect URIs, scopes, and — for user login — an `audience`. Scope policy is per-client; token rate limits and budgets are deployment-wide (`CONFIG.oauth.limits`) and evaluated on every token issuance.
 - Session metadata remains available for use cases that rely on `/v1/sessions`, and session IDs continue to flow through access tokens as `sid` when present.
-- Allowed CORS origins are seeded from tenant documents and refreshed periodically (configurable interval).
+- Allowed browser origins are the deployment's `CORS_ORIGINS` setting — a static, deployment-wide list, not per-consumer documents.
 
 ## Deployment
 
@@ -72,25 +72,25 @@ flowchart LR
 
 ## OAuth 2.0 Architecture Highlights
 
-- **Token Endpoint** (`/oauth2/token`) supports the client-credentials grant (machine tokens) and, for user login, the authorization-code (Google SSO via OIDC + PKCE — RQ-0001), refresh-token, and password (local email/password IdP — RQ-0002) grants. The browser legs are `/oauth2/authorize` and `/oauth2/callback`; `/oauth2/revoke` revokes a refresh token and its session; `/v1/tenants/:id/register` is local self-service registration. All user grants issue the same `email`+`sub` token. Additional grants plug into the OAuth server module.
+- **Token Endpoint** (`/oauth2/token`) supports the client-credentials grant (machine tokens) and, for user login, the authorization-code (Google SSO via OIDC + PKCE — RQ-0001), refresh-token, and password (local email/password IdP — RQ-0002) grants. The browser legs are `/oauth2/authorize` and `/oauth2/callback`; `/oauth2/revoke` revokes a refresh token and its session; `/v1/register` is local self-service registration. All user grants issue the same `email`+`sub` token. Additional grants plug into the OAuth server module.
 - **Key Management** – Active keys are generated automatically; optional AES-256-GCM encryption at rest is available when `OAUTH_KEY_PASSPHRASE` is configured.
 - **Data Collections**
-  - `oauth_clients` – Registered clients per tenant (client secret hashes, grant types, redirect URIs, scopes).
+  - `oauth_clients` – Registered clients (client secret hashes, grant types, redirect URIs, scopes).
   - `oauth_tokens` – Issued access and refresh token metadata (refresh tokens stored hashed) with rate-limit friendly indexes.
   - `oauth_authorizations` – Short-lived, TTL-swept user-login records (PKCE challenge + state + nonce, then the single-use code and captured identity) for the Google SSO flow.
-  - `users` – Local-credential users (RQ-0002): per-tenant email, scrypt password hash, stable subject id, status, and brute-force lockout counters.
+  - `users` – Local-credential users (RQ-0002): globally-unique email, scrypt password hash, stable subject id, status, and brute-force lockout counters.
   - `key_store` – RSA key material with status flags for rotation and JWKS publishing.
-  - `audit_logs` – Append-only record of every management-plane mutation (who/what/when/which tenant) — the per-actor accountability the admin plane provides (ADR-0007).
-- **Rate Limiting** – Tenants may override default token throughput (`tokensPerMinute`) and refresh-token budgets via their OAuth config.
+  - `audit_logs` – Append-only record of every management-plane mutation (who/what/when) — the per-actor accountability the admin plane provides (ADR-0007).
+- **Rate Limiting** – Token throughput (`tokensPerMinute`) and refresh-token budgets are deployment-wide limits (`CONFIG.oauth.limits`, from `OAUTH_MAX_TOKENS_PER_MINUTE` / `OAUTH_MAX_REFRESH_TOKENS` / `OAUTH_MAX_CLIENTS`), applied on every token issuance.
 
 ## Management plane (ADR-0007)
 
-Day-2 operations — onboarding a tenant, registering or rotating a client, creating/locking a user,
+Day-2 operations — registering or rotating a client, creating/locking a user,
 rotating a signing key — run on an authenticated management plane mounted at `/admin/v1` (toggleable;
 network-restricted, kept off the public token-issuance surface by default). Three faces sit on **one**
 service layer (`service/src/services/admin.ts`):
 
-- **HTTP admin API** (`service/src/routes/admin-routes.ts`) — idempotent, audited endpoints for tenants, clients, users, keys, plus aggregate `stats` and an `audit` query (feeds the console dashboards).
+- **HTTP admin API** (`service/src/routes/admin-routes.ts`) — idempotent, audited endpoints for clients, users, keys, plus aggregate `stats` and an `audit` query (feeds the console dashboards).
 - **MCP server** (`service/src/mcp/server.ts`) — the same operations as agent tools over stdio JSON-RPC.
 - **Admin console** (`console/`) — a thin server-side Next.js client over the HTTP API.
 
@@ -109,6 +109,6 @@ tokens, authorizations, lockouts, key history, audit) that re-seeding from git c
 ## Extensibility
 
 - Plug additional grant flows into `service/src/oauth/server.ts` and expose them via new routes under `/oauth2`.
-- Add custom tenant validation or logging in `service/src/container.ts` by injecting decorators around the OAuth/session cores.
+- Add custom client validation or logging in `service/src/container.ts` by injecting decorators around the OAuth/session cores.
 - Extend the SDK (or wrap it internally) to provide product-specific helpers for registration, consent management, etc.
-- Review [Tenant Configuration](../guides/tenant-config.md) when onboarding new tenants; adjustments there ripple automatically to all grant flows.
+- Review the [deployment/realm model in ADR-0018](decisions/0018-collapse-tenant-into-deployment.md) when standing up a deployment; client and user provisioning ripples automatically to all grant flows.

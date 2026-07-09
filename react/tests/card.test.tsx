@@ -51,7 +51,7 @@ describe('<Login/> card chrome (RQ-0016)', () => {
 
 describe('<Register/> card chrome (RQ-0016)', () => {
   it('is off by default (bare form, <h2> title)', () => {
-    const html = renderToStaticMarkup(<Register baseUrl="https://a" tenantId="t" onSuccess={noop} />);
+    const html = renderToStaticMarkup(<Register baseUrl="https://a" onSuccess={noop} />);
     expect(html.startsWith('<form')).toBe(true);
     expect(html).toContain('<h2>Create your account</h2>');
     expect(html).not.toContain(CARD_MARKER);
@@ -59,7 +59,7 @@ describe('<Register/> card chrome (RQ-0016)', () => {
 
   it('composes card chrome with the invite field', () => {
     const html = renderToStaticMarkup(
-      <Register baseUrl="https://a" tenantId="t" onSuccess={noop} card invite={{ required: true, hint: 'From your admin' }} />
+      <Register baseUrl="https://a" onSuccess={noop} card invite={{ required: true, hint: 'From your admin' }} />
     );
     expect(html).toContain(CARD_MARKER);
     expect(html).toContain('<h1');

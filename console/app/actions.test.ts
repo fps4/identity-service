@@ -5,7 +5,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
-    upsertTenant: vi.fn(),
     createClient: vi.fn(),
     rotateClientSecret: vi.fn(),
     createUser: vi.fn(),
@@ -37,28 +36,13 @@ describe('console server actions', () => {
     Object.values(apiMock).forEach((m) => m.mockReset());
   });
 
-  it('onboardTenant maps a local provider to a password OAuth config and reports success', async () => {
-    apiMock.upsertTenant.mockResolvedValue({ _id: 't1' });
-    const { onboardTenant } = await import('@/app/actions');
-
-    const res = await onboardTenant({ ok: false }, form({ name: 'Acme', provider: 'local' }));
-
-    expect(res.ok).toBe(true);
-    expect(apiMock.upsertTenant).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'Acme',
-        oauth: expect.objectContaining({ enabled: true, idp: { provider: 'local' } }),
-      }),
-    );
-  });
-
   it('createClient returns the one-time secret on success', async () => {
     apiMock.createClient.mockResolvedValue({ clientId: 'c-1', secret: 's3cr3t' });
     const { createClient } = await import('@/app/actions');
 
     const res = await createClient(
       { ok: false },
-      form({ tenantId: 't1', name: 'svc', grantTypes: 'client_credentials', scopes: 'admin' }),
+      form({ name: 'svc', grantTypes: 'client_credentials', scopes: 'admin' }),
     );
 
     expect(res.ok).toBe(true);
@@ -69,11 +53,11 @@ describe('console server actions', () => {
     apiMock.linkIdentity.mockResolvedValue({ email: 'op@acme.test', provider: 'google', subject: 'g-1', linked: true });
     const { linkIdentity } = await import('@/app/actions');
 
-    const res = await linkIdentity({ ok: false }, form({ tenantId: 't1', email: 'op@acme.test', subject: 'g-1' }));
+    const res = await linkIdentity({ ok: false }, form({ email: 'op@acme.test', subject: 'g-1' }));
 
     expect(res.ok).toBe(true);
     expect(apiMock.linkIdentity).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantId: 't1', email: 'op@acme.test', provider: 'google', subject: 'g-1' }),
+      expect.objectContaining({ email: 'op@acme.test', provider: 'google', subject: 'g-1' }),
     );
   });
 
@@ -81,11 +65,11 @@ describe('console server actions', () => {
     apiMock.unlinkIdentity.mockResolvedValue({ email: 'op@acme.test', provider: 'google', subject: 'g-1', unlinked: true });
     const { unlinkIdentity } = await import('@/app/actions');
 
-    const res = await unlinkIdentity({ ok: false }, form({ tenantId: 't1', email: 'op@acme.test', subject: 'g-1' }));
+    const res = await unlinkIdentity({ ok: false }, form({ email: 'op@acme.test', subject: 'g-1' }));
 
     expect(res.ok).toBe(true);
     expect(apiMock.unlinkIdentity).toHaveBeenCalledWith(
-      { tenantId: 't1', email: 'op@acme.test', provider: 'google', subject: 'g-1' },
+      { email: 'op@acme.test', provider: 'google', subject: 'g-1' },
     );
   });
 
@@ -93,7 +77,7 @@ describe('console server actions', () => {
     apiMock.linkIdentity.mockRejectedValue(new FakeApiError('Identity is already linked to another user', 409, 'identity_linked'));
     const { linkIdentity } = await import('@/app/actions');
 
-    const res = await linkIdentity({ ok: false }, form({ tenantId: 't1', email: 'b@acme.test', subject: 'shared' }));
+    const res = await linkIdentity({ ok: false }, form({ email: 'b@acme.test', subject: 'shared' }));
 
     expect(res.ok).toBe(false);
     expect(res.message).toBe('Identity is already linked to another user');
@@ -103,12 +87,12 @@ describe('console server actions', () => {
     apiMock.createInvite.mockResolvedValue({ inviteId: 'i-1', code: 'V7QK-3MHP-XA2D', expiresAt: '2026-07-10T12:00:00.000Z' });
     const { createInvite } = await import('@/app/actions');
 
-    const res = await createInvite({ ok: false }, form({ tenantId: 't1', email: 'new@acme.com', roles: 'member', maxUses: '2', expiresInHours: '168', note: 'cohort' }));
+    const res = await createInvite({ ok: false }, form({ email: 'new@acme.com', roles: 'member', maxUses: '2', expiresInHours: '168', note: 'cohort' }));
 
     expect(res.ok).toBe(true);
     expect(res.secret).toBe('V7QK-3MHP-XA2D');
     expect(res.secretHint).toContain('Shown once');
-    expect(apiMock.createInvite).toHaveBeenCalledWith('t1',
+    expect(apiMock.createInvite).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'new@acme.com', roles: ['member'], maxUses: 2, expiresInHours: 168, note: 'cohort' }),
     );
   });
@@ -117,7 +101,7 @@ describe('console server actions', () => {
     apiMock.revokeInvite.mockResolvedValue({ inviteId: 'i-1', revoked: true });
     const { revokeInvite } = await import('@/app/actions');
 
-    const res = await revokeInvite({ ok: false }, form({ inviteId: 'i-1', tenantId: 't1' }));
+    const res = await revokeInvite({ ok: false }, form({ inviteId: 'i-1' }));
 
     expect(res.ok).toBe(true);
     expect(apiMock.revokeInvite).toHaveBeenCalledWith('i-1');
@@ -127,7 +111,7 @@ describe('console server actions', () => {
     apiMock.createUser.mockRejectedValue(new FakeApiError('email already exists', 409, 'duplicate'));
     const { createUser } = await import('@/app/actions');
 
-    const res = await createUser({ ok: false }, form({ tenantId: 't1', email: 'a@b.com', password: 'pw' }));
+    const res = await createUser({ ok: false }, form({ email: 'a@b.com', password: 'pw' }));
 
     expect(res.ok).toBe(false);
     expect(res.message).toBe('email already exists');

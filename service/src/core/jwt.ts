@@ -16,7 +16,6 @@ export function createSessionJwtSigner(config: JwtConfigProvider) {
 
   return async function signSessionJwt({
     sessionId,
-    tenantId,
     subject = 'anonymous',
     expiresInSec
   }: SignSessionJwtArgs) {
@@ -28,7 +27,7 @@ export function createSessionJwtSigner(config: JwtConfigProvider) {
     const now = Math.floor(Date.now() / 1000);
     const exp = now + Math.max(1, expiresInSec);
 
-    const token = await new SignJWT({ sid: sessionId, tid: tenantId, sub: subject })
+    const token = await new SignJWT({ sid: sessionId, sub: subject })
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setIssuedAt(now)
       .setExpirationTime(exp)

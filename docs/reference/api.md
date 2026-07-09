@@ -2,11 +2,12 @@
 title: identity-service API
 summary: The identity-service endpoint contract — OAuth 2.0 token issuance, legacy sessions, JWKS, and the authenticated /admin/v1 management plane.
 status: current
-last_updated: 2026-06-23
+last_updated: 2026-07-09
 owners: [architect]
 related:
   - docs/design/architecture.md
   - docs/guides/tenant-config.md
+  - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/product/RQ-0001-workspace-user-identity-google-sso.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
 ---
@@ -29,7 +30,7 @@ network-restricted — kept off the public token-issuance surface by default.
 ## Headers
 
 - `Content-Type: application/json`
-- `Origin` – used to enforce CORS per tenant.
+- `Origin` – checked against the deployment's `CORS_ORIGINS` allow-list.
 
 ---
 
@@ -39,8 +40,8 @@ Issue OAuth 2.0 tokens. Three grants are supported: **`client_credentials`** (ma
 **`authorization_code`** (user login via Google SSO — RQ-0001), and **`refresh_token`** (rotate a
 user token).
 
-> **Prerequisite:** the tenant must have `oauth.enabled = true` and allow the grant in
-> `oauth.allowedGrantTypes`. See [Tenant Configuration](../guides/tenant-config.md).
+> **Prerequisite:** the client must be registered with the grant in its `grantTypes` (and, for user
+> login, an `audience`). See [Deployment Configuration](../guides/tenant-config.md).
 
 ### `grant_type=client_credentials`
 
@@ -93,7 +94,7 @@ claims above are **unchanged**. Because provisioning yields a real user, a `disa
 and assigned `roles` now apply to Google logins exactly as to password logins.
 
 When the authenticated user has roles, the token also carries a **`roles`** claim — a JSON array of
-coarse, tenant-scoped role strings (RQ-0005), **omitted** when the user has none. Roles are advisory
+coarse, deployment-scoped role strings (RQ-0005), **omitted** when the user has none. Roles are advisory
 identity assertions: identity-service does **not** enforce them — each consuming product maps roles to
 its own permissions ([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is additive
 (a verifier that ignores it is unaffected) and is re-read from the user store on every issuance
@@ -101,7 +102,7 @@ its own permissions ([ADR-0005](../design/decisions/0005-decentralized-authoriza
 
 ### `grant_type=password` (local login — RQ-0002)
 
-Email + password login against identity-service's own credential store, for tenants that enable the
+Email + password login against identity-service's own credential store, when the deployment enables the
 **local** IdP. Issues the same user token shape as the Google flow.
 
 - `Content-Type: application/x-www-form-urlencoded`
@@ -124,20 +125,20 @@ returned. A refresh fails once its session is revoked or expired.
 - `400 invalid_scope` – requested scope not permitted.
 - `400 invalid_grant` – bad/expired/used authorization code, failed PKCE, or invalid/revoked refresh token.
 - `401 invalid_client` – bad client credentials (client-credentials grant).
-- `400 unauthorized_client` – grant not allowed for client/tenant, or client has no `audience`.
-- `429 slow_down` – tenant token rate limit exceeded.
+- `400 unauthorized_client` – grant not allowed for the client, or client has no `audience`.
+- `429 slow_down` – token rate limit exceeded.
 - `500 server_error` – unexpected failure.
 
 ---
 
 ## `GET /oauth2/authorize`
 
-Browser entry point for user login (RQ-0001). Validates the client + tenant and the registered
+Browser entry point for user login (RQ-0001). Validates the client and the registered
 `redirect_uri`, then **302-redirects** the browser to Google to authenticate.
 
 ### Query parameters
 
-- `client_id` – a tenant OAuth client allowing the `authorization_code` grant.
+- `client_id` – an OAuth client allowing the `authorization_code` grant.
 - `redirect_uri` – must be pre-registered on the client (exact match).
 - `code_challenge` – PKCE challenge; `code_challenge_method=S256` (the only supported method).
 - `state` (recommended) – opaque CSRF value, echoed back unchanged on the consumer redirect.
@@ -169,14 +170,14 @@ JWTs remain valid until `exp` (≤ 15 min) — they are stateless and not checke
 
 ---
 
-## `POST /v1/tenants/{tenantId}/register`
+## `POST /v1/register`
 
-Self-service local-credential registration (RQ-0002). Creates a user under a tenant that has the
+Self-service local-credential registration (RQ-0002). Creates a user when the deployment has the
 **local** IdP enabled. Login is the separate `password` grant; registration does not return a token.
 
-Gated by the tenant's **registration policy** (`oauth.registration`, RQ-0013): `open` (default —
+Gated by the deployment's **registration mode** (`AUTH_REGISTRATION_MODE`, RQ-0013): `open` (default —
 anyone may register, as before), `invite` (a valid operator-issued invite code is required), or
-`closed` (no self-registration). Policies other than `open` also stop federated (Google) logins from
+`closed` (no self-registration). Modes other than `open` also stop federated (Google) logins from
 JIT-provisioning **new** users — the browser is redirected back with `error=access_denied`; existing
 users log in unchanged.
 
@@ -186,7 +187,7 @@ users log in unchanged.
 { "email": "reviewer@example.com", "password": "at-least-10-chars", "inviteCode": "V7QK-3MHP-XA2D" }
 ```
 
-`inviteCode` is required on an `invite` tenant and ignored otherwise. Entry is forgiving: case and
+`inviteCode` is required when the mode is `invite` and ignored otherwise. Entry is forgiving: case and
 dashes don't matter. Redeeming a code stamps the invite's `roles` onto the user; an **email-bound**
 invite additionally requires the matching address and sets `emailVerified: true` (the operator sent
 the code there — ADR-0013).
@@ -194,7 +195,7 @@ the code there — ADR-0013).
 ### Response (`201`)
 
 ```json
-{ "id": "f3ede70f-...", "email": "reviewer@example.com", "tenantId": "tenant-local" }
+{ "id": "f3ede70f-...", "email": "reviewer@example.com" }
 ```
 
 `id` is the stable subject id (the token `sub` at login).
@@ -202,27 +203,22 @@ the code there — ADR-0013).
 ### Errors
 
 - `400 invalid_email` / `400 weak_password` – fails validation (password shorter than the configured minimum).
-- `400 local_idp_disabled` – tenant has not enabled the local IdP / `password` grant.
-- `403 registration_closed` – the tenant does not allow self-registration.
-- `403 invite_required` – the tenant is invite-only and no code was presented.
+- `400 local_idp_disabled` – the deployment has not enabled the local IdP (`AUTH_LOCAL_IDP_ENABLED=false`).
+- `403 registration_closed` – the deployment does not allow self-registration.
+- `403 invite_required` – the deployment is invite-only and no code was presented.
 - `403 invalid_invite` – the code is unknown, expired, revoked, exhausted, **or bound to a different
   email** — deliberately one generic answer, so codes cannot be probed for state (ADR-0013).
-- `404 tenant_not_found` – tenant missing or inactive.
-- `409 email_taken` – an account with this email already exists for the tenant.
-- `429 slow_down` – per-tenant registration rate limit exceeded (checked before any invite use is consumed).
+- `409 email_taken` – an account with this email already exists.
+- `429 slow_down` – registration rate limit exceeded (checked before any invite use is consumed).
 
 > **Password reset** has no email channel yet: an operator resets credentials via the
 > `service/scripts/manage-users.ts` CLI (`set-password`, `lock`, `unlock`, `disable`).
 
 ---
 
-## `POST /v1/tenants/{tenantId}/sessions`
+## `POST /v1/sessions`
 
-Create a session and issue a tenant-scoped JWT (legacy path; tokens will align with OAuth responses in a future release).
-
-### Path Parameters
-
-- `tenantId` – required tenant identifier.
+Create a session and issue a session JWT (legacy path; tokens will align with OAuth responses in a future release).
 
 ### Request Body
 
@@ -253,8 +249,7 @@ Create a session and issue a tenant-scoped JWT (legacy path; tokens will align w
 
 ### Errors
 
-- `400` – invalid input (missing tenantId, invalid body).
-- `404` – tenant not found or inactive.
+- `400` – invalid input (invalid body).
 - `500` – service misconfiguration (missing JWT secret) or unexpected error.
 
 ---
@@ -334,7 +329,7 @@ Returns the JSON Web Key Set (JWKS) for verifying RS256 tokens issued by the ser
 
 ## `/admin/v1/*` — management plane (ADR-0007)
 
-The authenticated, audited surface for day-2 operations: tenants, clients, users, signing keys, and
+The authenticated, audited surface for day-2 operations: clients, users, signing keys, and
 statistics. Mounted at `/admin/v1` (override with `ADMIN_API_BASE_PATH`; disable the whole surface with
 `ADMIN_API_ENABLED=false`). The HTTP API, the [MCP server](../design/architecture.md#management-plane-adr-0007),
 and the [admin console](../../console/README.md) all sit on the same service layer, auth, and audit path.
@@ -351,32 +346,29 @@ and the [admin console](../../console/README.md) all sit on the same service lay
     admin console attributes each action to a **human** (the audit `principalSubject` is the operator's `sub`).
 - The superscope **`admin`** (configurable via `ADMIN_API_SCOPE`) satisfies any admin route. For
   least-privilege agents, granular per-area scopes also satisfy their own routes:
-  `admin:tenants`, `admin:clients`, `admin:users`, `admin:keys`, `admin:stats`. (Operator principals are
+  `admin:clients`, `admin:users`, `admin:keys`, `admin:stats`. (Operator principals are
   granted the superscope.)
 - Missing/invalid/expired token → `401 unauthorized`; a valid token that is neither an admin-scoped
   machine token nor an operator-role user token, or one lacking the required scope → `403 forbidden`.
 - Every **mutation** is written to the append-only `audit_logs` collection (principal, action, method,
-  path, target, status, tenant).
+  path, target, status).
 
 ### Endpoints
 
 | Method & path | Scope | Purpose |
 |---|---|---|
-| `GET /tenants` | `admin:tenants` | List tenants. |
-| `GET /tenants/{id}` | `admin:tenants` | Fetch one tenant. |
-| `POST /tenants` | `admin:tenants` | Onboard or update a tenant (idempotent upsert). |
-| `GET /tenants/{tenantId}/clients` | `admin:clients` | List a tenant's OAuth clients. |
+| `GET /clients` | `admin:clients` | List OAuth clients. |
 | `POST /clients` | `admin:clients` | Register a client. **The client secret is returned once** — only its hash is persisted. |
 | `POST /clients/{id}/rotate-secret` | `admin:clients` | Rotate a client secret (returns the new secret once). |
-| `GET /tenants/{tenantId}/users` | `admin:users` | List a tenant's users (local + federated), including each user's linked `identities[]`; never returns `passwordHash`. |
+| `GET /users` | `admin:users` | List users (local + federated), including each user's linked `identities[]`; never returns `passwordHash`. |
 | `POST /users` | `admin:users` | Create a local user. |
-| `POST /users/reset-password` | `admin:users` | Reset a local user's password (`{ tenantId, email, password }`). |
+| `POST /users/reset-password` | `admin:users` | Reset a local user's password (`{ email, password }`). |
 | `POST /users/status` | `admin:users` | Set user status (`active` \| `disabled`) — enforced on **all** login paths, Google included (RQ-0011). |
 | `POST /users/unlock` | `admin:users` | Clear brute-force lockout counters. |
-| `POST /users/link-identity` | `admin:users` | Link a federated identity onto a user (`{ tenantId, email, provider:"google", subject, identityEmail?, emailVerified? }`); `409 identity_linked` if already owned (RQ-0011). |
-| `POST /users/unlink-identity` | `admin:users` | Remove a linked federated identity (`{ tenantId, email, provider:"google", subject }`) (RQ-0011). |
-| `POST /tenants/{tenantId}/invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ email?, roles?, maxUses?, expiresInHours?, note? }`. **The code is returned once** — only its digest is persisted. Roles are validated against the tenant's `allowedRoles`. Defaults: single-use, 7-day expiry. |
-| `GET /tenants/{tenantId}/invites` | `admin:users` | List a tenant's invites with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
+| `POST /users/link-identity` | `admin:users` | Link a federated identity onto a user (`{ email, provider:"google", subject, identityEmail?, emailVerified? }`); `409 identity_linked` if already owned (RQ-0011). |
+| `POST /users/unlink-identity` | `admin:users` | Remove a linked federated identity (`{ email, provider:"google", subject }`) (RQ-0011). |
+| `POST /invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ email?, roles?, maxUses?, expiresInHours?, note? }`. **The code is returned once** — only its digest is persisted. Roles are validated against `AUTH_ALLOWED_ROLES`. Defaults: single-use, 7-day expiry. |
+| `GET /invites` | `admin:users` | List invites with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
 | `POST /invites/{id}/revoke` | `admin:users` | Revoke an invite so no further redemptions succeed. |
 | `POST /keys/rotate` | `admin:keys` | Mint a new active signing key; demote the previous to `inactive`. |
 | `GET /keys` | `admin:keys` | Inspect `key_store` status. |
@@ -387,7 +379,6 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 
 ```json
 {
-  "tenants": { "total": 4, "active": 4 },
   "clients": { "total": 9 },
   "users":   { "total": 120, "locked": 1, "disabled": 2 },
   "tokens":  { "accessLastHour": 87, "accessLastDay": 1432, "activeRefresh": 64 },

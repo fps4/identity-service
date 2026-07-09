@@ -1,23 +1,20 @@
 // The one network call behind <Register/> (RQ-0015): self-service local-credential registration
-// against identity-service (POST /v1/tenants/:tenantId/register, RQ-0002/RQ-0013). Kept as a
-// standalone, framework-free function — unit-testable with a mocked fetch and reusable by custom UIs,
-// mirroring requestPasswordToken. Self-contained on purpose: this package depends only on React
-// (peer), nothing else — in particular NOT the SDK, so server-side consumers never pull in React.
+// against identity-service (POST /v1/register, RQ-0002/RQ-0013). Kept as a standalone, framework-free
+// function — unit-testable with a mocked fetch and reusable by custom UIs, mirroring
+// requestPasswordToken. Self-contained on purpose: this package depends only on React (peer), nothing
+// else — in particular NOT the SDK, so server-side consumers never pull in React.
 
 export interface RegisteredUser {
   id: string;
   email: string;
-  tenantId: string;
 }
 
 export interface RegistrationRequest {
   /** identity-service base URL, e.g. https://auth-dev.example.com */
   baseUrl: string;
-  /** the tenant to register into (must have the local IdP enabled) */
-  tenantId: string;
   email: string;
   password: string;
-  /** operator-issued invite code — required on tenants whose registration policy is `invite` (RQ-0013) */
+  /** operator-issued invite code — required when the registration policy is `invite` (RQ-0013) */
   inviteCode?: string;
   /** override fetch (tests / SSR); defaults to global fetch */
   fetchImpl?: typeof fetch;
@@ -43,7 +40,7 @@ export async function requestRegistration(req: RegistrationRequest): Promise<Reg
   }
 
   const base = req.baseUrl.replace(/\/+$/, '');
-  const url = `${base}/v1/tenants/${encodeURIComponent(req.tenantId)}/register`;
+  const url = `${base}/v1/register`;
 
   const response = await fetcher(url, {
     method: 'POST',
@@ -51,7 +48,7 @@ export async function requestRegistration(req: RegistrationRequest): Promise<Reg
     body: JSON.stringify({
       email: req.email,
       password: req.password,
-      // only send the field when present, so open-registration tenants aren't handed an empty code
+      // only send the field when present, so open registration isn't handed an empty code
       ...(req.inviteCode ? { inviteCode: req.inviteCode } : {})
     })
   });
@@ -64,5 +61,5 @@ export async function requestRegistration(req: RegistrationRequest): Promise<Reg
     throw new RegisterError(data?.message ?? data?.error ?? 'Registration failed', response.status, data?.error);
   }
 
-  return { id: data.id, email: data.email, tenantId: data.tenantId };
+  return { id: data.id, email: data.email };
 }

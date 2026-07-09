@@ -121,7 +121,7 @@
 
   <section>
     <h2>Create Session</h2>
-    <p>Exercises <code>POST /v1/tenants/:tenantId/sessions</code>. Adjust client meta as needed.</p>
+    <p>Exercises <code>POST /v1/sessions</code>. Adjust client meta as needed.</p>
     <label for="clientMeta">Client Meta (JSON)</label>
     <textarea id="clientMeta" rows="5" placeholder='{"ip":"1.2.3.4","userAgent":"Manual Harness"}'></textarea>
     <button id="createSession">Create Session</button>
@@ -238,7 +238,7 @@
       };
 
       try {
-        const res = await fetch(`${cfg.baseUrl}/v1/tenants/${encodeURIComponent(cfg.tenantId)}/sessions`, {
+        const res = await fetch(`${cfg.baseUrl}/v1/sessions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)

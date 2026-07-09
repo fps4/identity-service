@@ -1,11 +1,11 @@
 import { randomUUID, randomBytes } from 'crypto';
 import type { Connection } from 'mongoose';
+import { CONFIG } from '../config.js';
 import { hashSecret } from '../utils/hash.js';
 import { rotateSigningKey, listPublicKeys } from '../utils/key-store.js';
 import { generateInviteCode, inviteCodeDigest, deriveInviteStatus } from './invites.js';
 import type { ModelsBucket } from '../oauth/types.js';
 import type { Logger } from '../utils/logger.js';
-import type { TenantOAuthConfig } from '../models/tenant.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -24,16 +24,7 @@ export interface AdminServiceDependencies {
   logger?: Logger;
 }
 
-export interface UpsertTenantInput {
-  id?: string;
-  name: string;
-  status?: 'active' | 'suspended' | 'trial' | 'deleted';
-  oauth?: TenantOAuthConfig;
-  allowedOrigins?: string[];
-}
-
 export interface CreateClientInput {
-  tenantId: string;
   /** Optional stable client id (becomes the OAuth `client_id` / Mongo `_id`). Omit to generate a UUID. */
   id?: string;
   name: string;
@@ -53,16 +44,14 @@ export interface CreateClientInput {
 }
 
 export interface CreateUserInput {
-  tenantId: string;
   email: string;
   password: string;
   roles?: string[];
 }
 
 export interface CreateInviteInput {
-  tenantId: string;
   email?: string;          // optional binding — redemption then requires this address and vouches it
-  roles?: string[];        // stamped on the redeemed user; validated against tenant allowedRoles
+  roles?: string[];        // stamped on the redeemed user; validated against CONFIG.auth.allowedRoles
   maxUses?: number;        // default 1; >1 for cohort codes
   expiresInHours?: number; // default 7 days
   note?: string;
@@ -79,49 +68,16 @@ export function createAdminService(deps: AdminServiceDependencies) {
   const nowFn = deps.now ?? (() => new Date());
   const models = async (): Promise<ModelsBucket> => deps.makeModels(await deps.getMasterConnection());
 
-  // --- Tenants ---
-
-  async function listTenants() {
-    const m = await models();
-    return m.Tenant.find().lean().exec();
-  }
-
-  async function getTenant(id: string) {
-    const m = await models();
-    const tenant = await m.Tenant.findById(id).lean().exec();
-    if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
-    return tenant;
-  }
-
-  /** Onboard or update a tenant (idempotent upsert — same convergence the seed loader uses). */
-  async function upsertTenant(input: UpsertTenantInput) {
-    if (!input.name?.trim()) throw new AdminServiceError('name is required', 400, 'invalid_input');
-    const m = await models();
-    const id = input.id ?? randomUUID();
-    const set: Record<string, unknown> = { name: input.name, updatedAt: nowFn() };
-    if (input.status) set.status = input.status;
-    if (input.oauth) set.oauth = input.oauth;
-    if (input.allowedOrigins) set.allowedOrigins = input.allowedOrigins;
-    const tenant = await m.Tenant.findByIdAndUpdate(
-      id,
-      { $set: set, $setOnInsert: { _id: id, createdAt: nowFn() } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    ).lean().exec();
-    deps.logger?.info?.({ tenantId: id }, 'admin upserted tenant');
-    return tenant;
-  }
-
   // --- Clients ---
 
-  async function listClients(tenantId: string) {
+  async function listClients() {
     const m = await models();
     // Never expose secretHash.
-    return m.OAuthClient.find({ tenantId }).select('-secretHash').lean().exec();
+    return m.OAuthClient.find().select('-secretHash').lean().exec();
   }
 
   /** Register a client. Returns the generated secret ONCE (only its hash is stored). */
   async function createClient(input: CreateClientInput): Promise<{ clientId: string; secret: string }> {
-    if (!input.tenantId) throw new AdminServiceError('tenantId is required', 400, 'invalid_input');
     if (!input.name?.trim()) throw new AdminServiceError('name is required', 400, 'invalid_input');
     if (!Array.isArray(input.grantTypes) || input.grantTypes.length === 0) {
       throw new AdminServiceError('grantTypes must be a non-empty array', 400, 'invalid_input');
@@ -130,15 +86,12 @@ export function createAdminService(deps: AdminServiceDependencies) {
       throw new AdminServiceError('claims must be an object', 400, 'invalid_input');
     }
     const m = await models();
-    const tenant = await m.Tenant.findById(input.tenantId).lean().exec();
-    if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
 
     const clientId = input.id?.trim() || randomUUID();
     const secret = newSecret();
     try {
       await m.OAuthClient.create({
         _id: clientId,
-        tenantId: input.tenantId,
         name: input.name,
         secretHash: hashSecret(secret),
         grantTypes: input.grantTypes,
@@ -156,7 +109,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
       }
       throw err;
     }
-    deps.logger?.info?.({ tenantId: input.tenantId, clientId }, 'admin created client');
+    deps.logger?.info?.({ clientId }, 'admin created client');
     return { clientId, secret };
   }
 
@@ -185,27 +138,24 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   // --- Users (local-credential IdP) ---
 
-  /** List a tenant's local-credential users. Never exposes passwordHash. */
-  async function listUsers(tenantId: string) {
+  /** List the deployment's local-credential users. Never exposes passwordHash. */
+  async function listUsers() {
     const m = await models();
-    return m.User.find({ tenantId }).select('-passwordHash').lean().exec();
+    return m.User.find().select('-passwordHash').lean().exec();
   }
 
-  async function createUser(input: CreateUserInput): Promise<{ id: string; email: string; tenantId: string }> {
+  async function createUser(input: CreateUserInput): Promise<{ id: string; email: string }> {
     const email = (input.email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) throw new AdminServiceError('A valid email is required', 400, 'invalid_email');
     if (!input.password || input.password.length < 1) throw new AdminServiceError('password is required', 400, 'invalid_input');
     const m = await models();
-    const tenant = await m.Tenant.findById(input.tenantId).lean().exec();
-    if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
 
-    const existing = await m.User.findOne({ tenantId: input.tenantId, email }).lean().exec();
+    const existing = await m.User.findOne({ email }).lean().exec();
     if (existing) throw new AdminServiceError('An account with this email already exists', 409, 'email_taken');
 
     const id = randomUUID();
     await m.User.create({
       _id: id,
-      tenantId: input.tenantId,
       email,
       passwordHash: hashSecret(input.password),
       status: 'active',
@@ -213,46 +163,45 @@ export function createAdminService(deps: AdminServiceDependencies) {
       roles: input.roles ?? [],
       passwordUpdatedAt: nowFn()
     });
-    deps.logger?.info?.({ tenantId: input.tenantId, userId: id }, 'admin created user');
-    return { id, email, tenantId: input.tenantId };
+    deps.logger?.info?.({ userId: id }, 'admin created user');
+    return { id, email };
   }
 
-  async function resetUserPassword(tenantId: string, email: string, password: string): Promise<void> {
+  async function resetUserPassword(email: string, password: string): Promise<void> {
     if (!password) throw new AdminServiceError('password is required', 400, 'invalid_input');
     const m = await models();
     const result = await m.User.updateOne(
-      { tenantId, email: email.trim().toLowerCase() },
+      { email: email.trim().toLowerCase() },
       { $set: { passwordHash: hashSecret(password), passwordUpdatedAt: nowFn(), failedAttempts: 0, lockedUntil: null, updatedAt: nowFn() } }
     ).exec();
     if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    deps.logger?.info?.({ tenantId, email }, 'admin reset user password');
+    deps.logger?.info?.({ email }, 'admin reset user password');
   }
 
-  async function setUserStatus(tenantId: string, email: string, status: 'active' | 'disabled'): Promise<void> {
+  async function setUserStatus(email: string, status: 'active' | 'disabled'): Promise<void> {
     const m = await models();
     const result = await m.User.updateOne(
-      { tenantId, email: email.trim().toLowerCase() },
+      { email: email.trim().toLowerCase() },
       { $set: { status, updatedAt: nowFn() } }
     ).exec();
     if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    deps.logger?.info?.({ tenantId, email, status }, 'admin set user status');
+    deps.logger?.info?.({ email, status }, 'admin set user status');
   }
 
   /** Clear a brute-force lockout (and reactivate if locked). */
-  async function unlockUser(tenantId: string, email: string): Promise<void> {
+  async function unlockUser(email: string): Promise<void> {
     const m = await models();
     const result = await m.User.updateOne(
-      { tenantId, email: email.trim().toLowerCase() },
+      { email: email.trim().toLowerCase() },
       { $set: { failedAttempts: 0, lockedUntil: null, status: 'active', updatedAt: nowFn() } }
     ).exec();
     if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    deps.logger?.info?.({ tenantId, email }, 'admin unlocked user');
+    deps.logger?.info?.({ email }, 'admin unlocked user');
   }
 
   /** Link a federated identity onto an existing user (RQ-0011 US-5) — the operator counterpart to the
    *  automatic link-on-verified-email at login, for the ambiguous cases the system won't merge itself. */
   async function linkUserIdentity(
-    tenantId: string,
     email: string,
     identity: { provider: 'google'; subject: string; identityEmail?: string; emailVerified?: boolean }
   ): Promise<{ email: string; provider: string; subject: string; linked: true }> {
@@ -260,11 +209,11 @@ export function createAdminService(deps: AdminServiceDependencies) {
     if (!identity.subject?.trim()) throw new AdminServiceError('subject is required', 400, 'invalid_input');
     const m = await models();
     const normalized = email.trim().toLowerCase();
-    const user = await m.User.findOne({ tenantId, email: normalized }).lean().exec() as { _id: string; identities?: { provider: string; subject: string }[] } | null;
+    const user = await m.User.findOne({ email: normalized }).lean().exec() as { _id: string; identities?: { provider: string; subject: string }[] } | null;
     if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
 
-    // The identity must not already belong to another user in the tenant (the unique index also enforces this).
-    const owner = await m.User.findOne({ tenantId, 'identities.provider': 'google', 'identities.subject': identity.subject }).lean().exec() as { _id?: string } | null;
+    // The identity must not already belong to another user (the unique index also enforces this).
+    const owner = await m.User.findOne({ 'identities.provider': 'google', 'identities.subject': identity.subject }).lean().exec() as { _id?: string } | null;
     if (owner && owner._id !== user._id) {
       throw new AdminServiceError('Identity is already linked to another user', 409, 'identity_linked');
     }
@@ -272,7 +221,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const already = (user.identities ?? []).some((i) => i.provider === 'google' && i.subject === identity.subject);
     if (!already) {
       await m.User.updateOne(
-        { tenantId, email: normalized },
+        { email: normalized },
         {
           $push: { identities: {
             provider: 'google',
@@ -285,13 +234,12 @@ export function createAdminService(deps: AdminServiceDependencies) {
         }
       ).exec();
     }
-    deps.logger?.info?.({ tenantId, email: normalized, subject: identity.subject }, 'admin linked user identity');
+    deps.logger?.info?.({ email: normalized, subject: identity.subject }, 'admin linked user identity');
     return { email: normalized, provider: 'google', subject: identity.subject, linked: true };
   }
 
   /** Remove a linked federated identity from a user (RQ-0011 US-5). */
   async function unlinkUserIdentity(
-    tenantId: string,
     email: string,
     identity: { provider: 'google'; subject: string }
   ): Promise<{ email: string; provider: string; subject: string; unlinked: true }> {
@@ -300,21 +248,21 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const m = await models();
     const normalized = email.trim().toLowerCase();
     const result = await m.User.updateOne(
-      { tenantId, email: normalized },
+      { email: normalized },
       { $pull: { identities: { provider: 'google', subject: identity.subject } }, $set: { updatedAt: nowFn() } }
     ).exec();
     if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    deps.logger?.info?.({ tenantId, email: normalized, subject: identity.subject }, 'admin unlinked user identity');
+    deps.logger?.info?.({ email: normalized, subject: identity.subject }, 'admin unlinked user identity');
     return { email: normalized, provider: 'google', subject: identity.subject, unlinked: true };
   }
 
   /** Delete a local-credential user. 404 if it does not exist. */
-  async function deleteUser(tenantId: string, email: string): Promise<{ email: string; deleted: true }> {
+  async function deleteUser(email: string): Promise<{ email: string; deleted: true }> {
     const m = await models();
     const normalized = email.trim().toLowerCase();
-    const result = await m.User.deleteOne({ tenantId, email: normalized }).exec();
+    const result = await m.User.deleteOne({ email: normalized }).exec();
     if (result.deletedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    deps.logger?.info?.({ tenantId, email: normalized }, 'admin deleted user');
+    deps.logger?.info?.({ email: normalized }, 'admin deleted user');
     return { email: normalized, deleted: true };
   }
 
@@ -326,21 +274,18 @@ export function createAdminService(deps: AdminServiceDependencies) {
    * fails loud at creation rather than quietly at the invitee's redemption (ADR-0013).
    */
   async function createInvite(input: CreateInviteInput): Promise<{ inviteId: string; code: string; expiresAt: Date }> {
-    if (!input.tenantId) throw new AdminServiceError('tenantId is required', 400, 'invalid_input');
     const m = await models();
-    const tenant = await m.Tenant.findById(input.tenantId).lean().exec() as { oauth?: TenantOAuthConfig } | null;
-    if (!tenant) throw new AdminServiceError('Tenant not found', 404, 'tenant_not_found');
 
     const email = input.email?.trim().toLowerCase();
     if (email !== undefined && !EMAIL_RE.test(email)) {
       throw new AdminServiceError('email must be a valid address', 400, 'invalid_email');
     }
     const roles = input.roles ?? [];
-    const allowedRoles = tenant.oauth?.allowedRoles ?? [];
+    const allowedRoles = CONFIG.auth.allowedRoles;
     if (allowedRoles.length) {
       const vocabulary = new Set(allowedRoles);
       const stray = roles.find((r) => !vocabulary.has(r));
-      if (stray) throw new AdminServiceError(`Role "${stray}" is not in the tenant's allowedRoles`, 400, 'invalid_input');
+      if (stray) throw new AdminServiceError(`Role "${stray}" is not in AUTH_ALLOWED_ROLES`, 400, 'invalid_input');
     }
     const maxUses = input.maxUses ?? 1;
     if (!Number.isInteger(maxUses) || maxUses < 1) {
@@ -355,7 +300,6 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const expiresAt = new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
     await m.Invite.create({
       _id: inviteId,
-      tenantId: input.tenantId,
       codeDigest: inviteCodeDigest(code),
       email,
       roles,
@@ -367,15 +311,15 @@ export function createAdminService(deps: AdminServiceDependencies) {
       createdAt: now,
       updatedAt: now
     });
-    deps.logger?.info?.({ tenantId: input.tenantId, inviteId, maxUses }, 'admin created invite');
+    deps.logger?.info?.({ inviteId, maxUses }, 'admin created invite');
     return { inviteId, code, expiresAt };
   }
 
-  /** List a tenant's invites with derived status. Never exposes the code or its digest. */
-  async function listInvites(tenantId: string) {
+  /** List the deployment's invites with derived status. Never exposes the code or its digest. */
+  async function listInvites() {
     const m = await models();
     const now = nowFn();
-    const invites = await m.Invite.find({ tenantId }).sort({ createdAt: -1 }).lean().exec();
+    const invites = await m.Invite.find().sort({ createdAt: -1 }).lean().exec();
     return invites.map((invite) => {
       const { codeDigest: _digest, usesRemaining, ...rest } = invite as typeof invite & { codeDigest?: string };
       return {
@@ -420,11 +364,9 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
     const [
-      tenants, activeTenants, clients, users, lockedUsers, disabledUsers,
+      clients, users, lockedUsers, disabledUsers,
       tokensLastHour, tokensLastDay, activeRefresh, activeKeys
     ] = await Promise.all([
-      m.Tenant.countDocuments({}).exec(),
-      m.Tenant.countDocuments({ status: 'active' }).exec(),
       m.OAuthClient.countDocuments({}).exec(),
       m.User.countDocuments({}).exec(),
       m.User.countDocuments({ lockedUntil: { $gt: now } }).exec(),
@@ -436,7 +378,6 @@ export function createAdminService(deps: AdminServiceDependencies) {
     ]);
 
     return {
-      tenants: { total: tenants, active: activeTenants },
       clients: { total: clients },
       users: { total: users, locked: lockedUsers, disabled: disabledUsers },
       tokens: { accessLastHour: tokensLastHour, accessLastDay: tokensLastDay, activeRefresh },
@@ -446,7 +387,6 @@ export function createAdminService(deps: AdminServiceDependencies) {
   }
 
   return {
-    listTenants, getTenant, upsertTenant,
     listClients, createClient, rotateClientSecret, deleteClient,
     listUsers, createUser, resetUserPassword, setUserStatus, unlockUser, deleteUser,
     linkUserIdentity, unlinkUserIdentity,

@@ -15,9 +15,8 @@ import type { Invite } from '@/lib/api';
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function InviteDetailDrawer({ invite, tenantName, onClose }: {
+export function InviteDetailDrawer({ invite, onClose }: {
   invite: Invite;
-  tenantName: string;
   onClose: () => void;
 }) {
   return (
@@ -32,7 +31,6 @@ export function InviteDetailDrawer({ invite, tenantName, onClose }: {
           <div className="ml-auto">
             <ActionForm action={revokeInvite} submitLabel="Revoke invite" variant="destructive" confirm="Revoke this invite? Its code stops working immediately." inline>
               <Hidden name="inviteId" value={invite._id} />
-              <Hidden name="tenantId" value={invite.tenantId} />
             </ActionForm>
           </div>
         ) : (
@@ -43,8 +41,6 @@ export function InviteDetailDrawer({ invite, tenantName, onClose }: {
       <div>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Invite</h3>
         <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5">
-          <dt className="text-muted-foreground">Tenant</dt>
-          <dd>{tenantName} <span className="font-mono text-xs text-muted-foreground">{invite.tenantId}</span></dd>
           <dt className="text-muted-foreground">Bound to</dt>
           <dd>{invite.email || <span className="text-muted-foreground">any email</span>}</dd>
           <dt className="text-muted-foreground">Roles</dt>

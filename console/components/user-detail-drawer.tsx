@@ -1,11 +1,10 @@
 'use client';
 
 // The per-user detail drawer (RQ-0014, ADR-0014). Opened from a row in the users directory, it shows
-// the user's identity summary and routes every mutation through the SAME audited server actions the
-// tenant-detail page uses (reset password, disable/enable, unlock, delete, link/unlink identity) — so
-// this is presentation-only, with the per-actor audit (ADR-0010) unchanged. Actions revalidate
-// `/users`, which restreams fresh props to the directory; a deleted user drops out and the parent
-// unmounts this drawer.
+// the user's identity summary and routes every mutation through the audited server actions (reset
+// password, disable/enable, unlock, delete, link/unlink identity) — so this is presentation-only, with
+// the per-actor audit (ADR-0010) unchanged. Actions revalidate `/users`, which restreams fresh props to
+// the directory; a deleted user drops out and the parent unmounts this drawer.
 
 import { ActionForm } from '@/components/action-form';
 import { Field, Hidden } from '@/components/field';
@@ -18,10 +17,8 @@ import type { User } from '@/lib/api';
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
+export function UserDetailDrawer({ user, onClose }: {
   user: User;
-  tenantId: string;
-  tenantName: string;
   onClose: () => void;
 }) {
   const status = statusLabel(user);
@@ -55,8 +52,6 @@ export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
           </div>
 
           <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5">
-            <dt className="text-muted-foreground">Tenant</dt>
-            <dd>{tenantName} <span className="font-mono text-xs text-muted-foreground">{tenantId}</span></dd>
             <dt className="text-muted-foreground">Subject</dt>
             <dd className="font-mono text-xs">{user._id}</dd>
             <dt className="text-muted-foreground">Roles</dt>
@@ -84,7 +79,6 @@ export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
                       {idn.emailVerified ? '✓' : '?'}
                     </span>
                     <ActionForm action={unlinkIdentity} submitLabel="Unlink" variant="outline" confirm={`Unlink ${idn.provider}:${idn.subject} from ${user.email}?`} inline>
-                      <Hidden name="tenantId" value={tenantId} />
                       <Hidden name="email" value={user.email} />
                       <Hidden name="subject" value={idn.subject} />
                     </ActionForm>
@@ -96,7 +90,6 @@ export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
             )}
             <div className="mt-2">
               <ActionForm action={linkIdentity} submitLabel="Link Google" variant="outline" inline>
-                <Hidden name="tenantId" value={tenantId} />
                 <Hidden name="email" value={user.email} />
                 <Field name="subject" label="" placeholder="google sub" required />
               </ActionForm>
@@ -107,7 +100,6 @@ export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Reset password</h3>
             <ActionForm action={resetPassword} submitLabel="Reset password" variant="outline">
-              <Hidden name="tenantId" value={tenantId} />
               <Hidden name="email" value={user.email} />
               <Field name="password" label="New password" type="password" required />
             </ActionForm>
@@ -118,7 +110,6 @@ export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
         <div className="flex flex-wrap items-center gap-2 border-t p-4">
           {locked && (
             <ActionForm action={unlockUser} submitLabel="Unlock" variant="outline" inline>
-              <Hidden name="tenantId" value={tenantId} />
               <Hidden name="email" value={user.email} />
             </ActionForm>
           )}
@@ -129,13 +120,11 @@ export function UserDetailDrawer({ user, tenantId, tenantName, onClose }: {
             confirm={disabled ? undefined : `Disable ${user.email}? They can no longer obtain tokens (existing sessions expire normally).`}
             inline
           >
-            <Hidden name="tenantId" value={tenantId} />
             <Hidden name="email" value={user.email} />
             <Hidden name="status" value={disabled ? 'active' : 'disabled'} />
           </ActionForm>
           <div className="ml-auto">
             <ActionForm action={deleteUser} submitLabel="Delete" variant="destructive" confirm={`Delete ${user.email}? This is permanent.`} inline>
-              <Hidden name="tenantId" value={tenantId} />
               <Hidden name="email" value={user.email} />
             </ActionForm>
           </div>

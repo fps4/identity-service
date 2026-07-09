@@ -19,7 +19,6 @@ function audit(req: Request, res: Response, action: string, target?: { type?: st
           at: new Date(),
           principalClientId: req.admin?.clientId,
           principalSubject: req.admin?.subject,
-          principalTenantId: req.admin?.tenantId,
           action,
           method: req.method,
           path: req.originalUrl,
@@ -43,40 +42,18 @@ function handleError(res: Response, error: unknown): Response {
   return res.status(500).json({ error: 'server_error', error_description: 'Internal Server Error' });
 }
 
-// --- Tenants ---
-
-router.get('/tenants', requireAdmin(ADMIN_SCOPES.tenants), async (_req, res) => {
-  try {
-    res.json({ tenants: await adminService.listTenants() });
-  } catch (e) { handleError(res, e); }
-});
-
-router.get('/tenants/:id', requireAdmin(ADMIN_SCOPES.tenants), async (req, res) => {
-  try {
-    res.json(await adminService.getTenant(req.params.id));
-  } catch (e) { handleError(res, e); }
-});
-
-router.post('/tenants', requireAdmin(ADMIN_SCOPES.tenants), async (req, res) => {
-  try {
-    const tenant = await adminService.upsertTenant(req.body ?? {});
-    audit(req, res, 'tenant.upsert', { type: 'tenant', id: (tenant as { _id?: string })?._id });
-    res.status(200).json(tenant);
-  } catch (e) { handleError(res, e); }
-});
-
-router.get('/tenants/:tenantId/clients', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
-  try {
-    res.json({ clients: await adminService.listClients(req.params.tenantId) });
-  } catch (e) { handleError(res, e); }
-});
-
 // --- Clients ---
+
+router.get('/clients', requireAdmin(ADMIN_SCOPES.clients), async (_req, res) => {
+  try {
+    res.json({ clients: await adminService.listClients() });
+  } catch (e) { handleError(res, e); }
+});
 
 router.post('/clients', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
   try {
     const result = await adminService.createClient(req.body ?? {});
-    audit(req, res, 'client.create', { type: 'client', id: result.clientId }, { tenantId: req.body?.tenantId });
+    audit(req, res, 'client.create', { type: 'client', id: result.clientId });
     // The secret is returned ONCE — only its hash is persisted.
     res.status(201).json(result);
   } catch (e) { handleError(res, e); }
@@ -100,95 +77,94 @@ router.delete('/clients/:id', requireAdmin(ADMIN_SCOPES.clients), async (req, re
 
 // --- Users ---
 
-router.get('/tenants/:tenantId/users', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+router.get('/users', requireAdmin(ADMIN_SCOPES.users), async (_req, res) => {
   try {
-    res.json({ users: await adminService.listUsers(req.params.tenantId) });
+    res.json({ users: await adminService.listUsers() });
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const result = await adminService.createUser(req.body ?? {});
-    audit(req, res, 'user.create', { type: 'user', id: result.id }, { tenantId: req.body?.tenantId });
+    audit(req, res, 'user.create', { type: 'user', id: result.id });
     res.status(201).json(result);
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users/reset-password', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const { tenantId, email, password } = req.body ?? {};
-    await adminService.resetUserPassword(tenantId, email, password);
-    audit(req, res, 'user.resetPassword', { type: 'user', id: email }, { tenantId });
+    const { email, password } = req.body ?? {};
+    await adminService.resetUserPassword(email, password);
+    audit(req, res, 'user.resetPassword', { type: 'user', id: email });
     res.json({ ok: true });
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users/status', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const { tenantId, email, status } = req.body ?? {};
+    const { email, status } = req.body ?? {};
     if (status !== 'active' && status !== 'disabled') {
       return res.status(400).json({ error: 'invalid_input', error_description: "status must be 'active' or 'disabled'" });
     }
-    await adminService.setUserStatus(tenantId, email, status);
-    audit(req, res, 'user.setStatus', { type: 'user', id: email }, { tenantId, status });
+    await adminService.setUserStatus(email, status);
+    audit(req, res, 'user.setStatus', { type: 'user', id: email }, { status });
     res.json({ ok: true });
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users/unlock', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const { tenantId, email } = req.body ?? {};
-    await adminService.unlockUser(tenantId, email);
-    audit(req, res, 'user.unlock', { type: 'user', id: email }, { tenantId });
+    const { email } = req.body ?? {};
+    await adminService.unlockUser(email);
+    audit(req, res, 'user.unlock', { type: 'user', id: email });
     res.json({ ok: true });
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users/link-identity', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const { tenantId, email, provider, subject, identityEmail, emailVerified } = req.body ?? {};
-    const result = await adminService.linkUserIdentity(tenantId, email, { provider, subject, identityEmail, emailVerified });
-    audit(req, res, 'user.linkIdentity', { type: 'user', id: email }, { tenantId, provider, subject });
+    const { email, provider, subject, identityEmail, emailVerified } = req.body ?? {};
+    const result = await adminService.linkUserIdentity(email, { provider, subject, identityEmail, emailVerified });
+    audit(req, res, 'user.linkIdentity', { type: 'user', id: email }, { provider, subject });
     res.json(result);
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users/unlink-identity', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const { tenantId, email, provider, subject } = req.body ?? {};
-    const result = await adminService.unlinkUserIdentity(tenantId, email, { provider, subject });
-    audit(req, res, 'user.unlinkIdentity', { type: 'user', id: email }, { tenantId, provider, subject });
+    const { email, provider, subject } = req.body ?? {};
+    const result = await adminService.unlinkUserIdentity(email, { provider, subject });
+    audit(req, res, 'user.unlinkIdentity', { type: 'user', id: email }, { provider, subject });
     res.json(result);
   } catch (e) { handleError(res, e); }
 });
 
 router.post('/users/delete', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const { tenantId, email } = req.body ?? {};
-    const result = await adminService.deleteUser(tenantId, email);
-    audit(req, res, 'user.delete', { type: 'user', id: email }, { tenantId });
+    const { email } = req.body ?? {};
+    const result = await adminService.deleteUser(email);
+    audit(req, res, 'user.delete', { type: 'user', id: email });
     res.json(result);
   } catch (e) { handleError(res, e); }
 });
 
 // --- Invites (RQ-0013) ---
 
-router.post('/tenants/:tenantId/invites', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+router.post('/invites', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const result = await adminService.createInvite({
       ...(req.body ?? {}),
-      tenantId: req.params.tenantId,
       createdBy: req.admin?.subject ?? req.admin?.clientId
     });
-    audit(req, res, 'invite.create', { type: 'invite', id: result.inviteId }, { tenantId: req.params.tenantId, maxUses: req.body?.maxUses });
+    audit(req, res, 'invite.create', { type: 'invite', id: result.inviteId }, { maxUses: req.body?.maxUses });
     // The code is returned ONCE — only its digest is persisted.
     res.status(201).json(result);
   } catch (e) { handleError(res, e); }
 });
 
-router.get('/tenants/:tenantId/invites', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+router.get('/invites', requireAdmin(ADMIN_SCOPES.users), async (_req, res) => {
   try {
-    res.json({ invites: await adminService.listInvites(req.params.tenantId) });
+    res.json({ invites: await adminService.listInvites() });
   } catch (e) { handleError(res, e); }
 });
 

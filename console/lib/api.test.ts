@@ -37,21 +37,21 @@ describe('console api client — token forwarding (ADR-0010)', () => {
 
   it('forwards the operator token when an operator is signed in', async () => {
     callerTokenMock.mockResolvedValue('operator-jwt');
-    const fetchMock = mockFetchOnce({ tenants: [] });
+    const fetchMock = mockFetchOnce({ users: [] });
     const { api } = await loadApi();
 
-    await api.listTenants();
+    await api.listUsers();
 
-    expect(fetchMock).toHaveBeenCalledWith('http://admin.test/admin/v1/tenants', expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith('http://admin.test/admin/v1/users', expect.anything());
     expect(authHeaderFrom(fetchMock)).toBe('Bearer operator-jwt');
   });
 
   it('falls back to the break-glass token when there is no operator session', async () => {
     callerTokenMock.mockResolvedValue(undefined);
-    const fetchMock = mockFetchOnce({ tenants: [] });
+    const fetchMock = mockFetchOnce({ users: [] });
     const { api } = await loadApi();
 
-    await api.listTenants();
+    await api.listUsers();
 
     expect(authHeaderFrom(fetchMock)).toBe('Bearer break-glass-token');
   });

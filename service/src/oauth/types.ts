@@ -1,7 +1,6 @@
 import type { Connection, Model } from 'mongoose';
 import type { Logger } from '../utils/logger.js';
 import type {
-  TenantDocument,
   OAuthClientDocument,
   OAuthTokenDocument,
   OAuthAuthorizationDocument,
@@ -14,7 +13,6 @@ import type {
 import type { GoogleIdp } from './google.js';
 
 export interface ModelsBucket {
-  Tenant: Model<TenantDocument>;
   OAuthClient: Model<OAuthClientDocument>;
   OAuthToken: Model<OAuthTokenDocument>;
   OAuthAuthorization: Model<OAuthAuthorizationDocument>;
@@ -38,7 +36,6 @@ export interface ClientCredentialsInput {
   clientId: string;
   clientSecret: string;
   scope?: string[];
-  tenantId?: string;
   subject?: string;
   sessionId?: string;
   /**

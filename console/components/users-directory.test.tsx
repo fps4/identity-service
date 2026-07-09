@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { UsersDirectory } from '@/components/users-directory';
@@ -8,25 +8,20 @@ vi.mock('@/app/actions', () => ({
   createUser: vi.fn(), resetPassword: vi.fn(), setUserStatus: vi.fn(),
   unlockUser: vi.fn(), deleteUser: vi.fn(), linkIdentity: vi.fn(), unlinkIdentity: vi.fn(),
 }));
-const push = vi.fn();
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-const tenants = [{ _id: 't1', name: 'Acme' }, { _id: 't2', name: 'Globex' }];
 const users = [
-  { _id: 'usr_active', tenantId: 't1', email: 'dana@acme.example', status: 'active', roles: ['tenant_admin'] },
-  { _id: 'usr_disabled', tenantId: 't1', email: 'kim@acme.example', status: 'disabled', roles: [] },
-  { _id: 'usr_locked', tenantId: 't1', email: 'sam@acme.example', status: 'active', roles: ['member'], failedAttempts: 5, lockedUntil: future },
+  { _id: 'usr_active', email: 'dana@acme.example', status: 'active', roles: ['tenant_admin'] },
+  { _id: 'usr_disabled', email: 'kim@acme.example', status: 'disabled', roles: [] },
+  { _id: 'usr_locked', email: 'sam@acme.example', status: 'active', roles: ['member'], failedAttempts: 5, lockedUntil: future },
 ];
 
 const renderDirectory = () =>
-  render(<UsersDirectory tenants={tenants} activeTenantId="t1" users={users as never} />);
+  render(<UsersDirectory users={users as never} />);
 
 describe('UsersDirectory', () => {
-  beforeEach(() => push.mockReset());
-
-  it('lists every user in the tenant with a count', () => {
+  it('lists every user with a count', () => {
     renderDirectory();
     expect(screen.getByText('dana@acme.example')).toBeInTheDocument();
     expect(screen.getByText('kim@acme.example')).toBeInTheDocument();
@@ -55,12 +50,6 @@ describe('UsersDirectory', () => {
     expect(screen.getByText('sam@acme.example')).toBeInTheDocument();
     expect(screen.queryByText('dana@acme.example')).not.toBeInTheDocument();
     expect(screen.queryByText('kim@acme.example')).not.toBeInTheDocument();
-  });
-
-  it('navigates to ?tenantId= when the tenant is switched', () => {
-    renderDirectory();
-    fireEvent.change(screen.getByLabelText('Tenant'), { target: { value: 't2' } });
-    expect(push).toHaveBeenCalledWith('/users?tenantId=t2');
   });
 
   it('opens a detail drawer with contextual actions when a row is selected', () => {

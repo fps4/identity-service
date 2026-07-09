@@ -47,16 +47,9 @@ const str = { type: 'string' };
 const strArr = { type: 'array', items: { type: 'string' } };
 
 export const TOOLS: ToolDef[] = [
-  {
-    name: 'list_tenants',
-    description: 'List all tenants.',
-    areaScope: ADMIN_SCOPES.tenants,
-    inputSchema: obj({}),
-    handler: () => adminService.listTenants()
-  },
-  // Structural provisioning (onboard_tenant / create_client / delete_client) is intentionally NOT exposed
-  // here — tenants + OAuth clients are declarative, seeded from git config (ADR-0011). They remain on the
-  // HTTP admin API for break-glass. The MCP keeps only read + operational tools below.
+  // Structural provisioning (create_client / delete_client) is intentionally NOT exposed here — OAuth
+  // clients are declarative, seeded from git config (ADR-0011, ADR-0018). They remain on the HTTP admin
+  // API for break-glass. The MCP keeps only read + operational tools below.
   {
     name: 'rotate_client_secret',
     description: 'Rotate an existing client secret (operational credential rotation). Returns the new secret ONCE.',
@@ -66,54 +59,53 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'create_user',
-    description: 'Create a local-credential user under a tenant.',
+    description: 'Create a local-credential user.',
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ tenantId: str, email: str, password: str, roles: strArr }, ['tenantId', 'email', 'password']),
+    inputSchema: obj({ email: str, password: str, roles: strArr }, ['email', 'password']),
     handler: (a) => adminService.createUser(a)
   },
   {
     name: 'reset_user_password',
     description: "Reset a user's password (also clears any brute-force lockout).",
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ tenantId: str, email: str, password: str }, ['tenantId', 'email', 'password']),
-    handler: async (a) => { await adminService.resetUserPassword(a.tenantId, a.email, a.password); return { ok: true }; }
+    inputSchema: obj({ email: str, password: str }, ['email', 'password']),
+    handler: async (a) => { await adminService.resetUserPassword(a.email, a.password); return { ok: true }; }
   },
   {
     name: 'set_user_status',
     description: "Set a user's status to 'active' or 'disabled'.",
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ tenantId: str, email: str, status: { type: 'string', enum: ['active', 'disabled'] } }, ['tenantId', 'email', 'status']),
-    handler: async (a) => { await adminService.setUserStatus(a.tenantId, a.email, a.status); return { ok: true }; }
+    inputSchema: obj({ email: str, status: { type: 'string', enum: ['active', 'disabled'] } }, ['email', 'status']),
+    handler: async (a) => { await adminService.setUserStatus(a.email, a.status); return { ok: true }; }
   },
   {
     name: 'unlock_user',
     description: 'Clear a brute-force lockout and reactivate a user.',
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ tenantId: str, email: str }, ['tenantId', 'email']),
-    handler: async (a) => { await adminService.unlockUser(a.tenantId, a.email); return { ok: true }; }
+    inputSchema: obj({ email: str }, ['email']),
+    handler: async (a) => { await adminService.unlockUser(a.email); return { ok: true }; }
   },
   // Invites (RQ-0013) are runtime user-onboarding state — operational, not structural — so they
   // belong on the MCP surface alongside the other user tools (ADR-0011).
   {
     name: 'create_invite',
-    description: 'Mint a registration invite for a tenant (RQ-0013). Returns the code ONCE — only its digest is stored. Optional: bind to an email, stamp roles, allow multiple uses, set expiry in hours.',
+    description: 'Mint a registration invite (RQ-0013). Returns the code ONCE — only its digest is stored. Optional: bind to an email, stamp roles, allow multiple uses, set expiry in hours.',
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({
-      tenantId: str,
       email: str,
       roles: strArr,
       maxUses: { type: 'number' },
       expiresInHours: { type: 'number' },
       note: str
-    }, ['tenantId']),
+    }, []),
     handler: (a) => adminService.createInvite(a)
   },
   {
     name: 'list_invites',
-    description: "List a tenant's invites with derived status (pending/redeemed/expired/revoked). Codes are never shown.",
+    description: 'List the deployment\'s invites with derived status (pending/redeemed/expired/revoked). Codes are never shown.',
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ tenantId: str }, ['tenantId']),
-    handler: (a) => adminService.listInvites(a.tenantId)
+    inputSchema: obj({}),
+    handler: () => adminService.listInvites()
   },
   {
     name: 'revoke_invite',
@@ -131,7 +123,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'get_stats',
-    description: 'Aggregate counts for tenants, clients, users, tokens, and keys.',
+    description: 'Aggregate counts for clients, users, tokens, and keys.',
     areaScope: ADMIN_SCOPES.stats,
     inputSchema: obj({}),
     handler: () => adminService.getStats()
@@ -146,7 +138,6 @@ export async function writeAudit(principal: AdminPrincipal, action: string, ok: 
       at: new Date(),
       principalClientId: principal.clientId,
       principalSubject: principal.subject,
-      principalTenantId: principal.tenantId,
       action: `mcp:${action}`,
       method: 'MCP',
       path: action,

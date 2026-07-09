@@ -2,14 +2,20 @@
 title: "0011: Identity-data operating model — structure is GitOps, state is the DB; MCP is read + operational, not provisioning"
 summary: "Draw the seam between declarative and imperative identity data: tenants + OAuth clients are structural and provisioned from seed config (GitOps); users, credentials, status, and keys are operational and owned by the live DB (ADR-0008), mutated through the admin plane. Scope the MCP agent surface to read + operational tools and remove structural provisioning (onboard_tenant / create_client / delete_client) from it. Refines ADR-0003 and ADR-0007."
 status: accepted
-last_updated: 2026-06-26
+last_updated: 2026-07-09
 date: 2026-06-26
 related:
   - ./0003-seed-config-not-admin-api.md
   - ./0007-management-api-mcp-and-standalone-identity-service.md
   - ./0008-drop-sops-db-is-system-of-record.md
-  - ../../guides/tenant-config.md
+  - ./0018-collapse-tenant-into-deployment.md
 ---
+
+> **Refined by [ADR-0018](0018-collapse-tenant-into-deployment.md) (2026-07-09):** the Tenant entity is
+> removed (one deployment = one realm). The declarative-structure / imperative-state seam below still
+> holds, but the **OAuth client is now the only structural per-consumer object** — there is no tenant to
+> provision, and the `list_tenants` MCP tool / `/admin/v1` tenant routes are gone.
+
 
 ## Context
 

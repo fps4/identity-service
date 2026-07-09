@@ -2,9 +2,9 @@ import { randomUUID } from 'crypto';
 import mongoose, { Connection, Document, Model } from 'mongoose';
 
 /**
- * An operator-issued registration invite (RQ-0013, ADR-0013). Gates self-registration on a tenant
- * whose `oauth.registration` is `invite`: the operator mints a code on the management plane and
- * distributes it out-of-band; the invitee presents it to `POST /v1/tenants/:tenantId/register`.
+ * An operator-issued registration invite (RQ-0013, ADR-0013). Gates self-registration when the
+ * deployment's `AUTH_REGISTRATION_MODE` is `invite`: the operator mints a code on the management plane
+ * and distributes it out-of-band; the invitee presents it to `POST /v1/register`.
  *
  * Only the SHA-256 digest of the show-once code is stored — deterministic (NOT salted scrypt)
  * because redemption must look the invite up by presented value, the same trade `oauth_tokens`
@@ -17,10 +17,9 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
  */
 export interface InviteDocument extends Document<string> {
   _id: string;
-  tenantId: string;
   codeDigest: string;        // sha256 of the canonicalized code; unique — the redemption lookup key
   email?: string | null;     // optional binding (lowercased); redemption then requires this email and vouches it
-  roles: string[];           // stamped onto the redeemed user; validated against tenant allowedRoles at creation
+  roles: string[];           // stamped onto the redeemed user; validated against CONFIG.auth.allowedRoles at creation
   maxUses: number;
   usesRemaining: number;
   expiresAt: Date;
@@ -33,7 +32,6 @@ export interface InviteDocument extends Document<string> {
 
 const inviteSchema = new mongoose.Schema<InviteDocument>({
   _id: { type: String, required: true, default: () => randomUUID() },
-  tenantId: { type: String, required: true, index: true },
   codeDigest: { type: String, required: true, unique: true },
   email: { type: String, lowercase: true, trim: true, default: null },
   roles: { type: [String], default: [] },

@@ -1,0 +1,61 @@
+name: migrate-ds1
+
+# One-shot data migration for ADR-0018 (collapse Tenant into Deployment). Runs
+# scripts/migrate-drop-tenant.ts against the live ds1 MongoDB: dedupes users by email, strips tenantId
+# from every collection, drops the `tenants` collection, and reconciles indexes (users.email becomes
+# globally unique). Idempotent — a second run is a no-op — so it is safe to re-dispatch.
+#
+# Manual only (workflow_dispatch). Run AFTER the deploy that ships the ADR-0018 image, so the model
+# definitions the migration's syncIndexes() uses match the new schema. Take a backup first
+# (docker/backup.sh runs nightly; the DB is the system of record — ADR-0008).
+#
+# Reuses the seed-ds1 seeder image (docker/seed.Dockerfile carries scripts/ + tsx). The ds1 runner is
+# containerised with only the Docker socket, so we run the migration in a container joined to the mongo
+# network — the same pattern as seed-ds1 / dump-ds1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what WOULD change without writing (recommended first).
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-ds1
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, ds1]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the seeder image (carries scripts/migrate-drop-tenant.ts + tsx)
+        run: docker build -f docker/seed.Dockerfile -t ids-migrate:${{ github.sha }} .
+
+      - name: Run the migration against the live stack
+        run: |
+          # Join whatever network the mongo container is actually on, so `mongo` resolves.
+          NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' identity-service-mongo 2>/dev/null | awk '{print $1}')
+          [ -n "$NET" ] || { echo "::error::identity-service-mongo not running — deploy the stack first"; exit 1; }
+          echo "mongo network: $NET"
+
+          FLAGS=""
+          [ "${{ inputs.dry_run }}" = "true" ] && FLAGS="--dry-run"
+          echo "::group::migrate-drop-tenant $FLAGS"
+          docker run --rm --network "$NET" \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB_NAME=identity-service \
+            ids-migrate:${{ github.sha }} \
+            npx tsx scripts/migrate-drop-tenant.ts $FLAGS
+          echo "::endgroup::"
+
+      - name: Verify (post-migration shape)
+        run: |
+          docker exec identity-service-mongo mongosh identity-service --quiet --eval \
+            'print("users with tenantId:", db.users.countDocuments({tenantId:{$exists:true}}), " tenants coll:", db.getCollectionNames().includes("tenants"), " user indexes:", JSON.stringify(db.users.getIndexes().map(i=>i.name)))'

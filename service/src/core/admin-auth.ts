@@ -20,7 +20,6 @@ import logger from '../utils/logger.js';
 export interface AdminPrincipal {
   clientId?: string;      // token `cid` (machine principals only)
   subject?: string;       // token `sub`
-  tenantId?: string;      // token `tid`
   scopes: string[];
   kind: 'machine' | 'operator';
 }
@@ -98,7 +97,6 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
   }
   const cid = typeof payload.cid === 'string' ? payload.cid : undefined;
   const subject = typeof payload.sub === 'string' ? payload.sub : undefined;
-  const tenantId = typeof payload.tid === 'string' ? payload.tid : undefined;
 
   // Machine principal: a client_credentials token. Authority comes from its own admin scope(s).
   if (cid) {
@@ -106,7 +104,6 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
       kind: 'machine',
       clientId: cid,
       subject,
-      tenantId,
       scopes: parseScopes((payload as Record<string, unknown>).scope)
     };
   }
@@ -120,7 +117,6 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
     return {
       kind: 'operator',
       subject,
-      tenantId,
       scopes: [CONFIG.admin.requiredScope]
     };
   }
@@ -133,7 +129,7 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
 
 /**
  * Express middleware factory: require a valid admin token carrying `requiredScope` (the superscope) or
- * the supplied area scope (e.g. `admin:tenants`). Returns 401 for a missing/invalid token, 403 for a
+ * the supplied area scope (e.g. `admin:users`). Returns 401 for a missing/invalid token, 403 for a
  * valid token without sufficient scope.
  */
 export function requireAdmin(areaScope: string) {
@@ -165,7 +161,6 @@ export function requireAdmin(areaScope: string) {
 
 /** Admin scope constants for the route table. */
 export const ADMIN_SCOPES = {
-  tenants: 'admin:tenants',
   clients: 'admin:clients',
   users: 'admin:users',
   keys: 'admin:keys',

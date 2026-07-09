@@ -12,9 +12,8 @@ import { Hidden } from '@/components/field';
 import { rotateClientSecret, deleteClient } from '@/app/actions';
 import type { Client } from '@/lib/api';
 
-export function ClientDetailDrawer({ client, tenantName, onClose }: {
+export function ClientDetailDrawer({ client, onClose }: {
   client: Client;
-  tenantName: string;
   onClose: () => void;
 }) {
   const confidential = client.isConfidential !== false;
@@ -34,13 +33,11 @@ export function ClientDetailDrawer({ client, tenantName, onClose }: {
           {confidential && (
             <ActionForm action={rotateClientSecret} submitLabel="Rotate secret" variant="outline" inline>
               <Hidden name="clientId" value={client._id} />
-              <Hidden name="tenantId" value={client.tenantId} />
             </ActionForm>
           )}
           <div className="ml-auto">
             <ActionForm action={deleteClient} submitLabel="Delete" variant="destructive" confirm={`Delete application ${client.name}? Tokens it issued stop validating.`} inline>
               <Hidden name="clientId" value={client._id} />
-              <Hidden name="tenantId" value={client.tenantId} />
             </ActionForm>
           </div>
         </>
@@ -49,8 +46,6 @@ export function ClientDetailDrawer({ client, tenantName, onClose }: {
       <div className="section">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Configuration</h3>
         <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5">
-          <dt className="text-muted-foreground">Tenant</dt>
-          <dd>{tenantName} <span className="font-mono text-xs text-muted-foreground">{client.tenantId}</span></dd>
           <dt className="text-muted-foreground">Client id</dt>
           <dd className="font-mono text-xs">{client._id}</dd>
           <dt className="text-muted-foreground">Grant types</dt>

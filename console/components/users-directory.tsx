@@ -1,44 +1,36 @@
 'use client';
 
-// The data-first users directory (RQ-0014, ADR-0014): tenant picker + client-side search/status
-// filter + a table with status badges, opening a per-user detail drawer. Replaces the old form-first
-// /users page. The server component loads one tenant's users; filtering here never refetches. Every
-// mutation runs through the existing audited server actions (in the drawer and the create dialog).
+// The data-first users directory (RQ-0014, ADR-0014): client-side search/status filter + a table with
+// status badges, opening a per-user detail drawer. The server component loads the users; filtering here
+// never refetches. Every mutation runs through the existing audited server actions (in the drawer and
+// the create dialog).
 
 import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
 import { Table, THead, TBody } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { ActionForm } from '@/components/action-form';
-import { Field, Hidden } from '@/components/field';
+import { Field } from '@/components/field';
 import { UserDetailDrawer } from '@/components/user-detail-drawer';
 import { statusLabel, statusTone } from '@/lib/users';
 import { createUser } from '@/app/actions';
 import type { User } from '@/lib/api';
 
-type TenantOption = { _id: string; name: string };
 type StatusFilter = 'all' | 'active' | 'disabled' | 'locked';
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const inputCls =
   'h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
-export function UsersDirectory({ tenants, activeTenantId, users, loadError }: {
-  tenants: TenantOption[];
-  activeTenantId: string;
+export function UsersDirectory({ users, loadError }: {
   users: User[];
   loadError?: string;
 }) {
-  const router = useRouter();
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-
-  const activeTenant = tenants.find((t) => t._id === activeTenantId);
-  const tenantName = activeTenant?.name ?? activeTenantId;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -57,14 +49,6 @@ export function UsersDirectory({ tenants, activeTenantId, users, loadError }: {
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
-        <select
-          aria-label="Tenant"
-          value={activeTenantId}
-          onChange={(e) => router.push(`/users?tenantId=${encodeURIComponent(e.target.value)}`)}
-          className={inputCls}
-        >
-          {tenants.map((t) => <option key={t._id} value={t._id}>{t.name}</option>)}
-        </select>
         <input
           aria-label="Search users"
           placeholder="Search email or subject…"
@@ -131,7 +115,7 @@ export function UsersDirectory({ tenants, activeTenantId, users, loadError }: {
               <tr>
                 <td colSpan={5}>
                   <div className="py-12 text-center text-sm text-muted-foreground">
-                    {users.length ? 'No users match your search.' : `No users in ${tenantName} yet.`}
+                    {users.length ? 'No users match your search.' : 'No users yet.'}
                     {!users.length && (
                       <div className="mt-3"><Button size="sm" onClick={() => setCreating(true)}>Create the first user</Button></div>
                     )}
@@ -144,27 +128,26 @@ export function UsersDirectory({ tenants, activeTenantId, users, loadError }: {
       </div>
 
       {selected && (
-        <UserDetailDrawer user={selected} tenantId={activeTenantId} tenantName={tenantName} onClose={() => setSelectedId(null)} />
+        <UserDetailDrawer user={selected} onClose={() => setSelectedId(null)} />
       )}
 
       {creating && (
-        <CreateUserModal tenantId={activeTenantId} tenantName={tenantName} onClose={() => setCreating(false)} />
+        <CreateUserModal onClose={() => setCreating(false)} />
       )}
     </div>
   );
 }
 
-function CreateUserModal({ tenantId, tenantName, onClose }: { tenantId: string; tenantName: string; onClose: () => void }) {
+function CreateUserModal({ onClose }: { onClose: () => void }) {
   return (
     <div role="dialog" aria-modal="true" aria-label="Create user" className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="relative z-10 w-full max-w-md space-y-4 rounded-lg border bg-background p-6 shadow-lg">
         <div>
           <h2 className="text-lg font-semibold">Create user</h2>
-          <p className="text-sm text-muted-foreground">A local-credential account in {tenantName}.</p>
+          <p className="text-sm text-muted-foreground">A local-credential account.</p>
         </div>
         <ActionForm action={createUser} submitLabel="Create user" onResult={onClose}>
-          <Hidden name="tenantId" value={tenantId} />
           <Field name="email" label="Email" type="email" required />
           <Field name="password" label="Temp password" type="password" required />
           <Field name="roles" label="Roles (comma)" placeholder="optional" />

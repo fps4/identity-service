@@ -13,7 +13,7 @@ export function Field({ name, label, type = 'text', placeholder, required, defau
   );
 }
 
-/** A labelled native <select>, styled to match Field. Used to pick a tenant instead of pasting an id. */
+/** A labelled native <select>, styled to match Field. */
 export function SelectField({ name, label, options, required, defaultValue }: {
   name: string; label: string; options: { value: string; label: string }[]; required?: boolean; defaultValue?: string;
 }) {
@@ -33,7 +33,7 @@ export function SelectField({ name, label, options, required, defaultValue }: {
   );
 }
 
-/** A hidden form value — used to carry ids (tenantId, clientId, email) into per-row action forms. */
+/** A hidden form value — used to carry ids (clientId, inviteId, email) into per-row action forms. */
 export function Hidden({ name, value }: { name: string; value: string }) {
   return <input type="hidden" name={name} value={value} />;
 }

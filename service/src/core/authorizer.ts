@@ -9,7 +9,6 @@ import type {
 } from './types.js';
 import {
   InvalidInputError,
-  TenantNotFoundError,
   SessionNotFoundError,
   NoSessionUpdatesProvidedError
 } from './errors.js';
@@ -24,25 +23,14 @@ export function createAuthorizer(deps: AuthorizerDependencies): Authorizer {
   }
 
   async function createSession(input: CreateSessionInput): Promise<CreateSessionResult> {
-    if (!input.tenantId) {
-      throw new InvalidInputError('tenantId is required');
-    }
-
     const visitorId = input.visitorId ? String(input.visitorId) : uuid();
     const issuedAt = now();
     const expiresAt = new Date(issuedAt.getTime() + ttlMinutes * 60 * 1000);
 
-    deps.logger?.info?.({ tenantId: input.tenantId, client: input.clientMeta }, 'auth request received');
+    deps.logger?.info?.({ client: input.clientMeta }, 'auth request received');
 
     const connection = await deps.getMasterConnection();
-    const { Tenant, Session } = deps.makeModels(connection);
-
-    deps.logger?.info?.({ tenantId: input.tenantId }, 'validating tenant');
-    const tenant = await Tenant.findOne({ _id: input.tenantId, status: 'active' }).lean().exec();
-    if (!tenant) {
-      throw new TenantNotFoundError(input.tenantId);
-    }
-    deps.logger?.info?.({ tenantId: input.tenantId }, 'tenant validated');
+    const { Session } = deps.makeModels(connection);
 
     if (typeof Session.init === 'function') {
       await Session.init();
@@ -52,7 +40,6 @@ export function createAuthorizer(deps: AuthorizerDependencies): Authorizer {
     const context = buildSessionContext(input.clientMeta);
     await Session.create({
       _id: sessionId,
-      tenantId: input.tenantId,
       visitorId,
       status: 'active',
       context,
@@ -61,18 +48,17 @@ export function createAuthorizer(deps: AuthorizerDependencies): Authorizer {
       expiresAt
     });
 
-    deps.logger?.info?.({ tenantId: input.tenantId, sessionId }, 'session created');
+    deps.logger?.info?.({ sessionId }, 'session created');
 
     const secondsUntilExpiry = Math.max(1, Math.floor((expiresAt.getTime() - issuedAt.getTime()) / 1000));
     const { token, exp } = await deps.signJwt({
       sessionId,
-      tenantId: input.tenantId,
       subject: input.subject,
       expiresInSec: secondsUntilExpiry
     });
     const nowSeconds = Math.floor(issuedAt.getTime() / 1000);
 
-    deps.logger?.info?.({ tenantId: input.tenantId, sessionId }, 'auth success');
+    deps.logger?.info?.({ sessionId }, 'auth success');
 
     return {
       sessionId,
