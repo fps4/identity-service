@@ -11,6 +11,12 @@ related:
   - ./0005-decentralized-authorization.md
 ---
 
+> **Reworked by [ADR-0020](0020-application-aggregate.md) (2026-07-09):** the role catalogue, audience, and
+> assignments/invites move off the OAuth **client** and up to a first-class **Application**; a client becomes
+> a typed **credential** under an application, and assignments/invites re-key from `clientId` to
+> `applicationId`. The entitlement gate is unchanged in spirit — it now resolves credential → application and
+> requires an active assignment for `(user, application)`.
+
 ## Context
 
 [ADR-0018](0018-collapse-tenant-into-deployment.md) collapsed Tenant into Deployment: one realm, one

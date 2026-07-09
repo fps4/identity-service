@@ -30,13 +30,13 @@ const matches = (item: any, query: any): boolean =>
   Object.entries(query).every(([k, v]) => (v && typeof v === 'object' && '$gte' in (v as any)) ? item[k] >= (v as any).$gte : item[k] === v);
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
-interface Store { clients: any[]; users: any[]; tokens: any[]; sessions: any[]; assignments: any[]; }
-const makeStore = (): Store => ({ clients: [], users: [], tokens: [], sessions: [], assignments: [] });
+interface Store { clients: any[]; applications: any[]; users: any[]; tokens: any[]; sessions: any[]; assignments: any[]; }
+const makeStore = (): Store => ({ clients: [], applications: [], users: [], tokens: [], sessions: [], assignments: [] });
 
-// An assignment matches on clientId + status; `userId` is honoured when the seeded record pins one, and
-// treated as a wildcard (any user of this client) when omitted — the ADR-0019 entitlement gate.
+// An assignment matches on applicationId + status (ADR-0020); `userId` is honoured when the seeded record
+// pins one, and treated as a wildcard (any user of this application) when omitted — the entitlement gate.
 const assignmentMatches = (a: any, q: any): boolean =>
-  a.clientId === q.clientId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
+  a.applicationId === q.applicationId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
 
 function makeDeps(store: Store, now: () => Date) {
   return {
@@ -44,6 +44,7 @@ function makeDeps(store: Store, now: () => Date) {
     now,
     makeModels: () => ({
       OAuthClient: { findById: (id: string) => ({ lean: () => ({ exec: async () => store.clients.find((c) => c._id === id) ?? null }) }) },
+      Application: { findById: (id: string) => ({ lean: () => ({ exec: async () => store.applications.find((a) => a._id === id) ?? null }) }) },
       User: {
         findOne: (q: any) => ({
           exec: async () => { const u = store.users.find((x) => matches(x, q)); return u ? attachSave(u) : null; },
@@ -68,9 +69,14 @@ function makeDeps(store: Store, now: () => Date) {
 }
 
 function seedLocalClient(store: Store) {
+  // The application (ADR-0020) owns the default audience + role catalogue; the credential just points at it.
+  store.applications.push({
+    _id: 'app-local', name: 'Local App', audience: 'maestro-workspace',
+    roles: [{ key: 'tenant_admin' }, { key: 'member' }]
+  });
   store.clients.push({
-    _id: 'client-local', name: 'local web',
-    grantTypes: ['password'], redirectUris: [], scopes: [], audience: 'maestro-workspace', isConfidential: false, secretHash: ''
+    _id: 'client-local', name: 'local web', applicationId: 'app-local',
+    grantTypes: ['password'], redirectUris: [], scopes: [], isConfidential: false, secretHash: ''
   });
 }
 
@@ -134,9 +140,9 @@ describe('Local password IdP — login (RQ-0002)', () => {
       _id: 'user-sub-1', email: 'reviewer@fps4.test',
       passwordHash: hashSecret(password), status: 'active', failedAttempts: 0, lockedUntil: null
     });
-    // ADR-0019: the token's roles are the app-scoped roles from the user's active assignment to the client,
-    // not a field on the user. Seed the entitlement that gates issuance.
-    store.assignments.push({ _id: 'a1', userId: 'user-sub-1', clientId: 'client-local', roles: ['tenant_admin', 'member'], status: 'active' });
+    // ADR-0020: the token's roles are the app-scoped roles from the user's active assignment to the
+    // application, not a field on the user. Seed the entitlement that gates issuance.
+    store.assignments.push({ _id: 'a1', userId: 'user-sub-1', applicationId: 'app-local', roles: ['tenant_admin', 'member'], status: 'active' });
     server = createOAuthServer(makeDeps(store, () => fixedNow));
   });
 

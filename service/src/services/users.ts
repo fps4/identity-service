@@ -151,7 +151,7 @@ export function createUserService(deps: UserServiceDependencies) {
         await models.Assignment.create({
           _id: randomUUID(),
           userId: id,
-          clientId: invite.clientId,
+          applicationId: invite.applicationId,
           roles: invite.roles ?? [],
           status: 'active',
           createdBy: `invite:${invite._id}`,
@@ -175,7 +175,7 @@ export function createUserService(deps: UserServiceDependencies) {
           targetType: 'invite',
           targetId: invite._id,
           status: 201,
-          meta: { userId: id, email, clientId: invite.clientId, roles: invite.roles ?? [] }
+          meta: { userId: id, email, applicationId: invite.applicationId, roles: invite.roles ?? [] }
         });
       } catch (err) {
         deps.logger?.error?.({ err, inviteId: invite._id }, 'failed to audit invite redemption');

@@ -2,7 +2,8 @@
 
 Operator web console for the identity-service **management plane** (ADR-0007) — the human-facing third
 surface alongside the HTTP `/admin/v1` API and the MCP server. Dashboards (statistics) plus management
-screens for clients, users, signing-key rotation, and the audit log.
+screens whose top level is **Applications** (each with its role catalogue, members, and OAuth-client
+credentials — ADR-0020), plus users, signing-key rotation, and the audit log.
 
 ## Stack
 

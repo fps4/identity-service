@@ -4,7 +4,7 @@
 // Client-side search + status filter + a table with status badges, opening a per-invite detail drawer.
 // Create mints a show-once code via the existing createInvite action; revoke lives on the drawer.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Table, THead, TBody } from '@/components/ui/table';
@@ -13,8 +13,8 @@ import { ActionForm } from '@/components/action-form';
 import { Field, SelectField, RoleCheckboxes, Hidden } from '@/components/field';
 import { InviteDetailDrawer } from '@/components/invite-detail-drawer';
 import { inviteStatusTone, type InviteStatus } from '@/lib/invites';
-import { createInvite, fetchClientRoles } from '@/app/actions';
-import type { Invite, Client, AppRole } from '@/lib/api';
+import { createInvite } from '@/app/actions';
+import type { Invite, Application } from '@/lib/api';
 
 type StatusFilter = 'all' | InviteStatus;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -22,9 +22,9 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const inputCls =
   'h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
-export function InvitesDirectory({ invites, clients = [], loadError }: {
+export function InvitesDirectory({ invites, applications = [], loadError }: {
   invites: Invite[];
-  clients?: Client[];
+  applications?: Application[];
   loadError?: string;
 }) {
   const [query, setQuery] = useState('');
@@ -32,7 +32,7 @@ export function InvitesDirectory({ invites, clients = [], loadError }: {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
-  const clientName = (id: string) => clients.find((c) => c._id === id)?.name;
+  const appName = (id: string) => applications.find((a) => a._id === id)?.name;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -83,8 +83,8 @@ export function InvitesDirectory({ invites, clients = [], loadError }: {
                   {inv.note ? <div className="text-xs text-muted-foreground">{inv.note}</div> : null}
                 </td>
                 <td>
-                  <div className="text-sm">{clientName(inv.clientId) ?? <span className="text-muted-foreground">—</span>}</div>
-                  <div className="font-mono text-xs text-muted-foreground">{inv.clientId}</div>
+                  <div className="text-sm">{appName(inv.applicationId) ?? <span className="text-muted-foreground">—</span>}</div>
+                  <div className="font-mono text-xs text-muted-foreground">{inv.applicationId}</div>
                 </td>
                 <td><Badge tone={inviteStatusTone(inv.status)} dot>{cap(inv.status)}</Badge></td>
                 <td className="text-muted-foreground">{inv.roles?.length ? inv.roles.join(', ') : '—'}</td>
@@ -108,27 +108,20 @@ export function InvitesDirectory({ invites, clients = [], loadError }: {
       </div>
 
       {selected && (
-        <InviteDetailDrawer invite={selected} clientName={clientName(selected.clientId)} onClose={() => setSelectedId(null)} />
+        <InviteDetailDrawer invite={selected} applicationName={appName(selected.applicationId)} onClose={() => setSelectedId(null)} />
       )}
 
       {creating && (
-        <CreateInviteModal clients={clients} onClose={() => setCreating(false)} />
+        <CreateInviteModal applications={applications} onClose={() => setCreating(false)} />
       )}
     </div>
   );
 }
 
-function CreateInviteModal({ clients, onClose }: { clients: Client[]; onClose: () => void }) {
-  // ADR-0019: an invite targets a specific application; its roles come from THAT application's catalogue.
-  const [clientId, setClientId] = useState(clients[0]?._id ?? '');
-  const [catalogue, setCatalogue] = useState<AppRole[]>([]);
-
-  useEffect(() => {
-    if (!clientId) return;
-    let live = true;
-    fetchClientRoles(clientId).then((r) => { if (live) setCatalogue(r); }).catch(() => { if (live) setCatalogue([]); });
-    return () => { live = false; };
-  }, [clientId]);
+function CreateInviteModal({ applications, onClose }: { applications: Application[]; onClose: () => void }) {
+  // ADR-0020: an invite targets a specific application; its roles come from THAT application's catalogue.
+  const [applicationId, setApplicationId] = useState(applications[0]?._id ?? '');
+  const catalogue = applications.find((a) => a._id === applicationId)?.roles ?? [];
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Create invite" className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -138,23 +131,23 @@ function CreateInviteModal({ clients, onClose }: { clients: Client[]; onClose: (
           <h2 className="text-lg font-semibold">Create invite</h2>
           <p className="text-sm text-muted-foreground">The code is shown once — send it to the invitee out-of-band.</p>
         </div>
-        {!clients.length ? (
-          <p className="text-sm text-destructive">Register an application first — an invite must target one.</p>
+        {!applications.length ? (
+          <p className="text-sm text-destructive">Create an application first — an invite must target one.</p>
         ) : (
         /* onResult omitted: createInvite returns the show-once code, which ActionForm keeps on screen
            until dismissed — closing the dialog then would hide it before it is copied. */
         <ActionForm action={createInvite} submitLabel="Create invite">
-          <Hidden name="clientId" value={clientId} />
+          <Hidden name="applicationId" value={applicationId} />
           <div className="flex flex-col gap-1">
             <label htmlFor="invite-app" className="text-xs font-medium text-muted-foreground">Application</label>
             <select
               id="invite-app"
               aria-label="Application"
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
+              value={applicationId}
+              onChange={(e) => setApplicationId(e.target.value)}
               className="flex h-9 w-56 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              {clients.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+              {applications.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
             </select>
           </div>
           <Field name="email" label="Bind to email (optional)" type="email" placeholder="invitee@acme.com" />

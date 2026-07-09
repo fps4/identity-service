@@ -17,7 +17,7 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
  */
 export interface InviteDocument extends Document<string> {
   _id: string;
-  clientId: string;          // the application the redeemer is entitled to (ADR-0019)
+  applicationId: string;     // the application the redeemer is entitled to (ADR-0019, ADR-0020)
   codeDigest: string;        // sha256 of the canonicalized code; unique — the redemption lookup key
   email?: string | null;     // optional binding (lowercased); redemption then requires this email and vouches it
   roles: string[];           // app-scoped roles granted on redemption; validated against the client's catalogue
@@ -33,7 +33,7 @@ export interface InviteDocument extends Document<string> {
 
 const inviteSchema = new mongoose.Schema<InviteDocument>({
   _id: { type: String, required: true, default: () => randomUUID() },
-  clientId: { type: String, required: true, index: true },
+  applicationId: { type: String, required: true, index: true },
   codeDigest: { type: String, required: true, unique: true },
   email: { type: String, lowercase: true, trim: true, default: null },
   roles: { type: [String], default: [] },

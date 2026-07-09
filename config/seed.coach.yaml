@@ -1,29 +1,29 @@
-# Focused STRUCTURAL seed for the Skills Coach (ADR-0011, ADR-0018).
+# Focused STRUCTURAL seed for the Skills Coach (ADR-0011, ADR-0019, ADR-0020).
 #
-# Per ADR-0011, OAuth clients are declarative/GitOps (this file); users + credentials are operational and
-# owned by the live DB (ADR-0008), managed via the admin plane (console/HTTP/MCP). So this file lists NO
+# Per ADR-0011, applications + credentials are declarative/GitOps (this file); users + credentials are
+# operational and owned by the live DB (ADR-0008), managed via the admin plane. So this file lists NO
 # users and references NO ${SEED_*} secrets — it is dispatchable on its own.
 #
-# One deployment = one realm (ADR-0018): a flat clients list, no tenant. It provisions (or repairs) just
-# the `coach-web` client. The coach's demo users (admin@/learner@/officer@coach.fps4.nl) live in the DB
-# and are NOT touched by this file. Keep the client in sync with the `coach-web` block in seed.yaml.
-#
-# The coach resource server verifies aud=coach-workspace + the `roles` claim. Coach's browser origins
-# (coach.fps4.nl) belong in the deployment CORS_ORIGINS (config/ds1/.env.base), not here.
+# One deployment = one realm (ADR-0018); the coach is ONE application (ADR-0020) owning its audience +
+# role catalogue, with the `coach-web` credential under it. Its demo users (admin@/learner@/officer@
+# coach.fps4.nl) live in the DB and are NOT touched here. Keep in sync with the `coach` app in seed.yaml.
 #
 # Apply via the seed-ds1 workflow:  gh workflow run seed-ds1.yml -f seed_file=config/seed.coach.yaml
 # Or on the ds1 host from service/:  SEED_FILE=../config/seed.coach.yaml \
 #   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
 
-clients:
-  - id: coach-web
-    name: Skills Coach Web
-    grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
-    audience: coach-workspace          # becomes the token `aud` (matches the coach API's IDENTITY_SERVICE_AUDIENCE)
-    redirectUris:                      # the coach web /auth/callback (exact-match validated) — RQ-0012
-      - http://localhost:3000/auth/callback   # local dev
-      - https://coach.fps4.nl/auth/callback   # NL production surface
-    isConfidential: false              # public client — the browser sends client_id with no secret
-    roles:                             # the coach role catalogue (ADR-0019) → token `roles` claim (RQ-0005)
+applications:
+  - id: coach
+    name: Skills Coach
+    audience: coach-workspace            # matches the coach API's IDENTITY_SERVICE_AUDIENCE
+    roles:                               # the coach role catalogue (ADR-0019) → token `roles` (RQ-0005)
       - { key: learner, name: Learner }
       - { key: compliance-officer, name: Compliance Officer }
+    credentials:
+      - id: coach-web
+        name: Skills Coach Web
+        grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
+        redirectUris:                    # the coach web /auth/callback (exact-match validated) — RQ-0012
+          - http://localhost:3000/auth/callback   # local dev
+          - https://coach.fps4.nl/auth/callback   # NL production surface
+        isConfidential: false            # public client — the browser sends client_id with no secret

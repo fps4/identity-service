@@ -14,13 +14,13 @@ import { isLocked, statusLabel, statusTone } from '@/lib/users';
 import {
   resetPassword, setUserStatus, unlockUser, deleteUser, linkIdentity, unlinkIdentity,
 } from '@/app/actions';
-import type { User, Client } from '@/lib/api';
+import type { User, Application } from '@/lib/api';
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function UserDetailDrawer({ user, clients = [], onClose }: {
+export function UserDetailDrawer({ user, applications = [], onClose }: {
   user: User;
-  clients?: Client[];
+  applications?: Application[];
   onClose: () => void;
 }) {
   const status = statusLabel(user);
@@ -63,8 +63,8 @@ export function UserDetailDrawer({ user, clients = [], onClose }: {
             </dd>
           </dl>
 
-          {/* Per-application access (ADR-0019) */}
-          <UserAssignmentsSection email={user.email} clients={clients} />
+          {/* Per-application access (ADR-0020) */}
+          <UserAssignmentsSection email={user.email} applications={applications} />
 
           {/* Linked identities (RQ-0011) */}
           <section>

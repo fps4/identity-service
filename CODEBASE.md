@@ -17,9 +17,10 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
   email/password IdP (RQ-0002); claims `email` + a stable `sub` + `iss` + a consumer-bound `aud` +
   `exp`/`iat`, plus an optional **`roles`** array — the user's **app-scoped** roles for that `aud`, from
   their assignment (ADR-0019), which consumers map to permissions (identity-service asserts roles but does
-  not enforce them — ADR-0005). Issuance is **entitlement-gated**: a user needs an active assignment to
-  the client or the grant is refused (`access_denied`, ADR-0019). Both IdPs issue the same token; the
-  local IdP is toggled deployment-wide (`AUTH_LOCAL_IDP_ENABLED`).
+  not enforce them — ADR-0005). The `aud` is the **application's** audience (or the credential's override —
+  ADR-0020). Issuance is **entitlement-gated**: the gate resolves the credential → its application and a
+  user needs an active assignment to that **application** or the grant is refused (`access_denied`, ADR-0019).
+  Both IdPs issue the same token; the local IdP is toggled deployment-wide (`AUTH_LOCAL_IDP_ENABLED`).
 
 ## Directory map
 
@@ -30,15 +31,15 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 | `service/src/routes/` | HTTP surface: `oauth-routes.ts` (`/oauth2/*`), `session-routes.ts` (legacy `/v1/*`), `admin-routes.ts` (`/admin/v1/*` management plane — ADR-0007). |
 | `service/src/mcp/` | `server.ts` — MCP management server (stdio JSON-RPC, `npm run mcp`) exposing the admin operations as agent tools, over the same service layer + admin-auth + audit (ADR-0007). |
 | `service/src/core/` | JWT signing helpers, the session authorizer, and `admin-auth.ts` (verifies admin client-credentials tokens + scopes — ADR-0007). |
-| `service/src/models/` | Mongoose models: oauth-client (carries the role catalogue), oauth-token, oauth-authorization, user (no `roles` field), assignment (user↔app entitlement — ADR-0019), session, key-store, audit-log (ADR-0007). |
-| `service/src/services/` | `users.ts` — local-credential registration (RQ-0002); `admin.ts` — management operations for clients (+role catalogues), users, assignments (ADR-0019), keys + stats (ADR-0007). |
+| `service/src/models/` | Mongoose models: application (owns audience + role catalogue — ADR-0020), oauth-client (a credential under an `applicationId`, no role catalogue), oauth-token, oauth-authorization, user (no `roles` field), assignment (user↔app entitlement, keyed on `applicationId` — ADR-0019/0020), session, key-store, audit-log (ADR-0007). |
+| `service/src/services/` | `users.ts` — local-credential registration (RQ-0002); `admin.ts` — management operations for applications (+role catalogues, members, credentials — ADR-0020), users, assignments (ADR-0019), keys + stats (ADR-0007). |
 | `service/scripts/` | Operator CLIs: `manage-users.ts` (create/reset/lock/unlock/disable users) and `seed.ts` (idempotent `npm run seed` loader — RQ-0004). |
-| `config/` | `seed.example.yaml` (committed template) → `config/seed.yaml` (gitignored): clients (+ role catalogues), users, and per-user assignments for seed provisioning (ADR-0019). |
+| `config/` | `seed.example.yaml` (committed template) → `config/seed.yaml` (gitignored): applications (+ role catalogues + their credentials), users, and per-user assignments for seed provisioning (ADR-0019/0020). |
 | `service/src/utils/` | Key store (RSA generate/rotate + JWKS), db, hashing, CORS, logging. |
 | `service/tests/` | Vitest suites (dependency-injected, no network/DB). |
 | `sdk/` | Headless TypeScript client: `requestClientCredentialsToken` + the Google login helpers (`beginGoogleLogin` / `completeGoogleLogin` / `refreshUserToken` / `revokeUserToken`) + `registerWithPassword` / `loginWithPassword`. No UI; safe server-side. |
 | `react/` | **Optional** React UI package `@fps4/identity-service-react` — a drop-in `<Login/>` (password) for consumer apps (RQ-0003 / ADR-0002). Separate package so server-side consumers never pull in React. |
-| `console/` | **Operator** admin console (Next.js, `@fps4/identity-service-console` — ADR-0007). Thin server-side client over `/admin/v1`: dashboards + client/user management. Distinct from the consumer `<Login/>` widget. |
+| `console/` | **Operator** admin console (Next.js, `@fps4/identity-service-console` — ADR-0007). Thin server-side client over `/admin/v1`: dashboards + application/credential/user management (top level is Applications — ADR-0020). Distinct from the consumer `<Login/>` widget. |
 | `docker/` | Compose base + dev/prod overlays; `backup.sh` (nightly encrypted backups) + `migrate-rename-ds1.sh`. Deploys are manual over SSH to a Docker host (see `docs/guides/deployment.md`). |
 | `docs/` | Two-plane docs: `design/` (architecture + ADRs), `reference/` (API), `guides/` (deployment config, deployment), `product/` (RQ specs). Index: `docs/README.md`. |
 
@@ -54,8 +55,9 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 ## Naming notes
 
 - **deployment / realm** — one instance = one realm = one shared user pool; realm-wide config is deployment env, users are deployment-scoped, and there is no `Tenant` entity (ADR-0018).
-- **client** (Application) — a registered consumer, the only structural per-consumer object; carries `grantTypes`, `redirectUris`, `scopes`, and (for user tokens) an `audience`.
-- **audience (`aud`)** — the consumer/workspace a user token is bound to; a token minted for one is not valid for another.
+- **application** — the first-class per-consumer object (a product); owns its `name`, default `audience`, and role catalogue, and is what users are assigned to (ADR-0020).
+- **client / credential** — an OAuth client *under* an application (`applicationId`); the auth material (grant types, redirect URIs, scopes, secret) that authenticates *as* the application. Carries no role catalogue; may set an `audience` override (ADR-0020).
+- **audience (`aud`)** — the consumer/workspace a user token is bound to (the application's audience, or a credential override); a token minted for one is not valid for another.
 
 ## Out of scope
 

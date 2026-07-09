@@ -9,12 +9,13 @@ related:
   - docs/overview.md
   - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
+  - docs/design/decisions/0020-application-aggregate.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
 ---
 
 # Architecture
 
-The **identity-service** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent way. A deployment is one realm with a single shared user pool; OAuth clients (Applications) are the registered per-consumer objects, and users are deployment-scoped and shared across every client (instance-wide SSO — [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md)). Layered on that shared pool, a user must hold an active **assignment** to an application to be issued a token for it, and each application owns its own **role catalogue** ([ADR-0019](decisions/0019-application-assignments-and-app-roles.md)).
+The **identity-service** platform separates authentication responsibilities into a configurable service and lightweight clients so that multiple products can authenticate users and devices in a consistent way. A deployment is one realm with a single shared user pool; users are deployment-scoped and shared across every application (instance-wide SSO — [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md)). The first-class per-consumer object is the **Application** (a product): it owns a `name`, a default `audience`, and a **role catalogue**, and it is the thing users are assigned to. OAuth clients are **credentials** *under* an application (a web-login credential, a machine/runtime credential, …), each carrying its own `applicationId` ([ADR-0020](decisions/0020-application-aggregate.md)). Layered on the shared pool, a user must hold an active **assignment** to an application to be issued a token for it, and the token's `roles` come from that assignment ([ADR-0019](decisions/0019-application-assignments-and-app-roles.md)).
 
 ## Components
 
@@ -22,7 +23,7 @@ The **identity-service** platform separates authentication responsibilities into
 - **MCP server (`service/src/mcp/`)** – A stdio JSON-RPC server (`npm run mcp`) exposing the management operations as agent tools. A thin protocol adapter over the **same** service layer and the **same** admin-auth + audit path as the HTTP admin API — one authorization model, one audit trail, two transports (ADR-0007).
 - **SDK (`sdk/`)** – Headless TypeScript client wrapping the HTTP surface: the OAuth client-credentials helper, the Google login helpers, and the local register/login helpers. No UI; safe server-side.
 - **React (`react/`)** – Optional, opt-in package (`@fps4/identity-service-react`) shipping a drop-in `<Login/>` for the local IdP. Separate package so server-side consumers never pull in React.
-- **Console (`console/`)** – Optional operator admin console (`@fps4/identity-service-console`, Next.js). A thin **server-side** client over `/admin/v1` — dashboards plus client/user/key management. Holds no DB credentials and never exposes the admin token to the browser (ADR-0007). Distinct from the consumer-facing `<Login/>`.
+- **Console (`console/`)** – Optional operator admin console (`@fps4/identity-service-console`, Next.js). A thin **server-side** client over `/admin/v1` — dashboards plus application/credential/user/key management (the top level is **Applications**, each with its credentials, role catalogue, and members). Holds no DB credentials and never exposes the admin token to the browser (ADR-0007). Distinct from the consumer-facing `<Login/>`.
 - **Docs (`docs/`)** – Architecture, API, and configuration references to help consumers integrate quickly.
 
 ## High-Level Flow
@@ -40,7 +41,7 @@ flowchart LR
         session["Session Core"]
         keys["Key Manager"]
     end
-    db[("MongoDB<br/>clients · users · assignments · sessions<br/>tokens · authorizations · key_store · audit_logs")]
+    db[("MongoDB<br/>applications · clients · users · assignments · sessions<br/>tokens · authorizations · key_store · audit_logs")]
     admin["Operator / Agent"]
     subgraph mgmt["Management plane (ADR-0007)"]
         api["/admin/v1 (HTTP)"]
@@ -59,18 +60,19 @@ flowchart LR
 
 ## Deployment & Application Model
 
-- A **deployment** (`ds1`, …) is one realm: a single MongoDB, one active signing key, one issuer origin, one Google app, and one shared user pool. Users are deployment-scoped, unique by `email`, and can authenticate against any client in the instance (instance-wide SSO). See [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md).
-- OAuth clients (**Applications**) are the registered per-consumer objects; each carries its own grant types, redirect URIs, scopes, and — for user login — an `audience`. Scope policy is per-client; token rate limits and budgets are deployment-wide (`CONFIG.oauth.limits`) and evaluated on every token issuance.
-- Each application also owns a **role catalogue** — `roles: [{ key, name?, description? }]`, the set of app-scoped roles that exist for that client. Catalogues are seed-bootstrapped (GitOps baseline) **and** runtime-editable through the management plane; the live DB is authoritative ([ADR-0019](decisions/0019-application-assignments-and-app-roles.md)).
+- A **deployment** (`ds1`, …) is one realm: a single MongoDB, one active signing key, one issuer origin, one Google app, and one shared user pool. Users are deployment-scoped, unique by `email`, and can authenticate against any application in the instance (instance-wide SSO). See [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md).
+- An **Application** (`applications` collection) is the first-class per-consumer object — the product ([ADR-0020](decisions/0020-application-aggregate.md)). It owns a `name`, a **default `audience`** (the token `aud` for tokens minted through it), a **role catalogue**, and the users **assigned** to it.
+- **OAuth clients are credentials under an application** (`applicationId`, required): a user-login (web) credential (`password`/`authorization_code`), a machine/runtime credential (`client_credentials`), a CI credential, etc. A credential carries its own grant types, redirect URIs, scopes, and `isConfidential`; the **role catalogue and default audience live on the application**, not the credential. A credential MAY carry an `audience` **override** (e.g. a product runtime reporting to `maestro-workspace`). Scope policy is per-credential; token rate limits and budgets are deployment-wide (`CONFIG.oauth.limits`) and evaluated on every token issuance.
+- The **role catalogue** — `roles: [{ key, name?, description? }]` — is the set of app-scoped roles that exist for the application. Catalogues are seed-bootstrapped (GitOps baseline) **and** runtime-editable through the management plane; the live DB is authoritative ([ADR-0019](decisions/0019-application-assignments-and-app-roles.md)).
 - Session metadata remains available for use cases that rely on `/v1/sessions`, and session IDs continue to flow through access tokens as `sid` when present.
 - Allowed browser origins are the deployment's `CORS_ORIGINS` setting — a static, deployment-wide list, not per-consumer documents.
 
-### Entitlement & assignments (ADR-0019)
+### Entitlement & assignments (ADR-0019 / ADR-0020)
 
-- Layered on the shared user pool, a **user↔application assignment** governs entitlement: an `assignments` document (one per `{userId, clientId}` pair) records the app-scoped `roles` granted to that user and a `status` (`active` | `suspended`). This does **not** reintroduce Tenant — the realm and user pool stay single and shared.
-- **Issuance is gated, globally.** For every user grant (`password`, `authorization_code`, and `refresh_token`), after the user authenticates, token issuance requires an `active` assignment for the target client; otherwise the request fails `access_denied` ("user is not assigned to this application"). Refresh re-reads the assignment, so revoking or suspending it kills further tokens — the same guarantee `assertUserActive` gives for disabled users. Client-credentials (machine) tokens are **unaffected** — they have no user, so assignments do not apply.
-- The token's **`roles` claim is app-scoped**, sourced from `assignment.roles` (a subset of the client's catalogue), not from a deployment-wide `user.roles` — that field is **removed** (ADR-0019 reworks ADR-0010's global operator role: `platform_admin` is now a role in the `identity-console` app's catalogue, held via an assignment, and `ADMIN_OPERATOR_ROLES` still maps it to admin authority).
-- Assignments are created by operators on the management plane, or by **invites** — an invite now pins a target `clientId` + `roles`, so redeeming it provisions the user **and** the assignment in one step (ADR-0019 reworks ADR-0013).
+- Layered on the shared user pool, a **user↔application assignment** governs entitlement: an `assignments` document (one per `{userId, applicationId}` pair) records the app-scoped `roles` granted to that user and a `status` (`active` | `suspended`). This does **not** reintroduce Tenant — the realm and user pool stay single and shared.
+- **Issuance is gated, globally.** For every user grant (`password`, `authorization_code`, and `refresh_token`), after the user authenticates the issuance gate resolves the **credential → its application**, then requires an `active` assignment for `(user, application)`; otherwise the request fails `access_denied` ("user is not assigned to this application"). A user assigned to an application may log in through **any** of its user-login credentials. Refresh re-reads the assignment, so revoking or suspending it kills further tokens — the same guarantee `assertUserActive` gives for disabled users. Client-credentials (machine) tokens are **unaffected** — they have no user, so assignments do not apply.
+- The token's **`aud`** is `credential.audience ?? application.audience` — inherited from the application, with the per-credential override taking precedence. Its **`roles` claim is app-scoped**, sourced from `assignment.roles` (a subset of the application's catalogue), not from a deployment-wide `user.roles` — that field is **removed** (ADR-0019 reworks ADR-0010's global operator role: `platform_admin` is now a role in the `identity-console` **application's** catalogue, held via an assignment, and `ADMIN_OPERATOR_ROLES` still maps it to admin authority).
+- Assignments are created by operators on the management plane, or by **invites** — an invite now pins a target `applicationId` + `roles`, so redeeming it provisions the user **and** the assignment in one step (ADR-0019 reworks ADR-0013).
 
 ## Deployment
 
@@ -84,11 +86,12 @@ flowchart LR
 - **Token Endpoint** (`/oauth2/token`) supports the client-credentials grant (machine tokens) and, for user login, the authorization-code (Google SSO via OIDC + PKCE — RQ-0001), refresh-token, and password (local email/password IdP — RQ-0002) grants. The browser legs are `/oauth2/authorize` and `/oauth2/callback`; `/oauth2/revoke` revokes a refresh token and its session; `/v1/register` is local self-service registration. All user grants issue the same `email`+`sub` token. Additional grants plug into the OAuth server module.
 - **Key Management** – Active keys are generated automatically; optional AES-256-GCM encryption at rest is available when `OAUTH_KEY_PASSPHRASE` is configured.
 - **Data Collections**
-  - `oauth_clients` – Registered clients (client secret hashes, grant types, redirect URIs, scopes) plus the application's **role catalogue** (`roles: [{ key, name?, description? }]` — ADR-0019).
+  - `applications` – The first-class product objects (ADR-0020): `name`, the default `audience`, and the **role catalogue** (`roles: [{ key, name?, description? }]` — ADR-0019). Users are assigned to an application; its credentials authenticate *as* it.
+  - `oauth_clients` – **Credentials** under an application (ADR-0020): each carries `applicationId`, client secret hash, grant types, redirect URIs, scopes, `isConfidential`, and an optional `audience` **override**. The role catalogue and default audience live on the application, not here.
   - `oauth_tokens` – Issued access and refresh token metadata (refresh tokens stored hashed) with rate-limit friendly indexes.
   - `oauth_authorizations` – Short-lived, TTL-swept user-login records (PKCE challenge + state + nonce, then the single-use code and captured identity) for the Google SSO flow.
   - `users` – Local-credential + federated users (RQ-0002): globally-unique email, scrypt password hash, stable subject id, status, and brute-force lockout counters. Users **no longer** carry a `roles` field — roles are app-scoped via assignments (ADR-0019).
-  - `assignments` – User↔application entitlements (ADR-0019): one record per `{userId, clientId}` with the app-scoped `roles` granted and a `status` (`active` | `suspended`). Gates token issuance for user grants and sources the token's `roles` claim.
+  - `assignments` – User↔application entitlements (ADR-0019 / ADR-0020): one record per `{userId, applicationId}` with the app-scoped `roles` granted and a `status` (`active` | `suspended`). Gates token issuance for user grants and sources the token's `roles` claim.
   - `key_store` – RSA key material with status flags for rotation and JWKS publishing.
   - `audit_logs` – Append-only record of every management-plane mutation (who/what/when) — the per-actor accountability the admin plane provides (ADR-0007).
 - **Rate Limiting** – Token throughput (`tokensPerMinute`) and refresh-token budgets are deployment-wide limits (`CONFIG.oauth.limits`, from `OAUTH_MAX_TOKENS_PER_MINUTE` / `OAUTH_MAX_REFRESH_TOKENS` / `OAUTH_MAX_CLIENTS`), applied on every token issuance.
@@ -100,7 +103,7 @@ rotating a signing key — run on an authenticated management plane mounted at `
 network-restricted, kept off the public token-issuance surface by default). Three faces sit on **one**
 service layer (`service/src/services/admin.ts`):
 
-- **HTTP admin API** (`service/src/routes/admin-routes.ts`) — idempotent, audited endpoints for clients (including their role catalogues and member lists), users, **assignments** (assign/update/revoke a user↔app entitlement), keys, plus aggregate `stats` and an `audit` query (feeds the console dashboards).
+- **HTTP admin API** (`service/src/routes/admin-routes.ts`) — idempotent, audited endpoints for **applications** (their role catalogues, members, and credentials), **credentials** (`clients`, each under an `applicationId`), users, **assignments** (assign/update/revoke a user↔app entitlement, keyed on `applicationId`), keys, plus aggregate `stats` and an `audit` query (feeds the console dashboards).
 - **MCP server** (`service/src/mcp/server.ts`) — the same operations as agent tools over stdio JSON-RPC.
 - **Admin console** (`console/`) — a thin server-side Next.js client over the HTTP API.
 

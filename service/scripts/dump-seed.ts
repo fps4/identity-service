@@ -1,24 +1,18 @@
 /**
- * Seed export — the write-back half of the operating model (ADR-0011, RQ-0004, ADR-0018). Serializes
- * the OAuth clients currently in Mongo into a seed.yaml-shaped document (one deployment = one realm, so
- * a flat `clients` / `users` list, no tenant layer), so changes made through the admin console / API can
- * be captured back into version-controlled config (commit the output) and survive a rebuild-from-seed.
- * The inverse of `scripts/seed.ts`.
+ * Seed export — the write-back half of the operating model (ADR-0011, RQ-0004, ADR-0020). Serializes the
+ * APPLICATIONS currently in Mongo (each with its role catalogue, audience, and credentials) into a
+ * seed.yaml-shaped document, so changes made through the admin console / API can be captured back into
+ * version-controlled config and survive a rebuild-from-seed. The inverse of `scripts/seed.ts`.
  *
  *   cd service
  *   npm run dump-seed                       # whole DB → stdout
  *   npm run dump-seed -- --out=../config/seed.yaml
  *   npm run dump-seed -- --include-users    # also emit users (with ${ENV} password placeholders)
  *
- * SECRETS ARE NOT RECOVERABLE. Client secrets and user passwords are stored only as one-way hashes,
- * so they cannot be exported:
- *   - Clients are dumped WITHOUT `secret`. Re-running seed against the SAME db preserves each client's
- *     existing secretHash (the loader only writes secretHash when `secret:` is present), so this is a
- *     lossless round-trip for live data. For a FRESH-db rebuild, a confidential client with no secret
- *     would come up with no usable secret — add a `secret: ${ENV_VAR}` to its entry first. The script
- *     warns about every confidential client it dumps without a secret.
- *   - Users are omitted by default (passwords unrecoverable + emails are PII). `--include-users` emits
- *     them with `password: ${SEED_<USER>_PASSWORD}` placeholders you must set in the env before loading.
+ * SECRETS ARE NOT RECOVERABLE (one-way hashes). Credentials are dumped WITHOUT `secret`; a confidential
+ * credential needs a `secret: ${ENV}` added before a fresh-db rebuild (the script warns). Users are
+ * omitted by default; `--include-users` emits them with `${SEED_<USER>_PASSWORD}` placeholders and their
+ * per-application assignments.
  */
 import process from 'process';
 import { writeFileSync } from 'fs';
@@ -36,8 +30,11 @@ function parseFlags(): Flags {
 }
 
 /** Minimal shapes the builder needs from the lean Mongo docs (kept loose so tests need no real models). */
-export interface DumpClient { _id: string; name?: string; grantTypes?: string[]; audience?: string; redirectUris?: string[]; scopes?: string[]; isConfidential?: boolean; subject?: string; claims?: Record<string, unknown> }
-export interface DumpUser { email: string; status?: string; roles?: string[] }
+export interface DumpAppRole { key: string; name?: string; description?: string }
+export interface DumpApplication { _id: string; name?: string; audience?: string; roles?: DumpAppRole[] }
+export interface DumpCredential { _id: string; applicationId?: string; name?: string; grantTypes?: string[]; audience?: string; redirectUris?: string[]; scopes?: string[]; isConfidential?: boolean; subject?: string; claims?: Record<string, unknown> }
+export interface DumpUser { _id: string; email: string; status?: string }
+export interface DumpAssignment { userId: string; applicationId: string; roles?: string[] }
 
 /** Drop undefined / empty-array keys so the emitted YAML stays close to a hand-written seed file. */
 function compact<T extends Record<string, unknown>>(obj: T): Partial<T> {
@@ -57,58 +54,73 @@ export function passwordEnvVar(email: string): string {
 }
 
 /**
- * Pure transform: turn live clients/users into seed.yaml-shaped objects, plus any operator warnings.
- * Exported (no I/O) so it round-trips through parseSeedConfig under test.
+ * Pure transform: turn live applications + credentials + users + assignments into seed.yaml-shaped
+ * objects, plus operator warnings. Exported (no I/O) so it round-trips through parseSeedConfig under test.
  */
 export function buildSeed(
-  clients: DumpClient[],
+  applications: DumpApplication[],
+  credentials: DumpCredential[],
   users: DumpUser[],
+  assignments: DumpAssignment[],
   opts: { includeUsers: boolean }
-): { clients: Record<string, unknown>[]; users: Record<string, unknown>[]; warnings: string[] } {
+): { applications: Record<string, unknown>[]; users: Record<string, unknown>[]; warnings: string[] } {
   const warnings: string[] = [];
+  const credsByApp = new Map<string, DumpCredential[]>();
+  for (const c of credentials) {
+    const key = c.applicationId ?? '';
+    (credsByApp.get(key) ?? credsByApp.set(key, []).get(key)!).push(c);
+  }
 
-  const dumpedClients = clients.map((c) => {
-    if (c.isConfidential) {
-      warnings.push(`client '${c._id}' is confidential but dumped without a secret — add secret: \${ENV} before a fresh-db rebuild`);
-    }
-    return compact({
-      id: c._id,
-      name: c.name,
-      grantTypes: c.grantTypes,
-      audience: c.audience,
-      redirectUris: c.redirectUris,
-      scopes: c.scopes,
-      isConfidential: c.isConfidential,
-      subject: c.subject,
-      claims: c.claims && Object.keys(c.claims).length ? c.claims : undefined
-      // secret intentionally omitted — see file header.
-    });
-  });
+  const dumpedApps = applications.map((app) => compact({
+    id: app._id,
+    name: app.name,
+    audience: app.audience,
+    roles: app.roles && app.roles.length ? app.roles.map((r) => compact({ key: r.key, name: r.name, description: r.description })) : undefined,
+    credentials: (credsByApp.get(app._id) ?? []).map((c) => {
+      if (c.isConfidential) {
+        warnings.push(`credential '${c._id}' (app ${app._id}) is confidential but dumped without a secret — add secret: \${ENV} before a fresh-db rebuild`);
+      }
+      return compact({
+        id: c._id,
+        name: c.name,
+        grantTypes: c.grantTypes,
+        audience: c.audience,
+        redirectUris: c.redirectUris,
+        scopes: c.scopes,
+        isConfidential: c.isConfidential,
+        subject: c.subject,
+        claims: c.claims && Object.keys(c.claims).length ? c.claims : undefined
+        // secret intentionally omitted — see file header.
+      });
+    })
+  }));
 
   let dumpedUsers: Record<string, unknown>[] = [];
   if (opts.includeUsers) {
+    const asgByUser = new Map<string, DumpAssignment[]>();
+    for (const a of assignments) (asgByUser.get(a.userId) ?? asgByUser.set(a.userId, []).get(a.userId)!).push(a);
     dumpedUsers = users.map((u) => {
       warnings.push(`user '${u.email}' dumped with a \${${passwordEnvVar(u.email)}} placeholder — set it in the env before loading`);
       return compact({
         email: u.email,
         password: `\${${passwordEnvVar(u.email)}}`,
         status: u.status,
-        roles: u.roles
+        assignments: (asgByUser.get(u._id) ?? []).map((a) => compact({ application: a.applicationId, roles: a.roles }))
       });
     });
   }
 
-  return { clients: dumpedClients, users: dumpedUsers, warnings };
+  return { applications: dumpedApps, users: dumpedUsers, warnings };
 }
 
 const HEADER =
-  '# Generated by `npm run dump-seed` — a snapshot of the OAuth clients currently in the database.\n' +
-  '# Client secrets and user passwords are NOT included (they are stored only as one-way hashes).\n' +
+  '# Generated by `npm run dump-seed` — a snapshot of the applications + credentials currently in the DB.\n' +
+  '# Credential secrets and user passwords are NOT included (they are stored only as one-way hashes).\n' +
   '# Review, add any `secret: ${ENV}` refs needed for a fresh-db rebuild, then commit.\n\n';
 
-/** Serialize built clients/users to a seed.yaml document (header comment + YAML body). */
-export function toSeedYaml(seed: { clients: Record<string, unknown>[]; users: Record<string, unknown>[] }): string {
-  const body: Record<string, unknown> = { clients: seed.clients };
+/** Serialize built applications/users to a seed.yaml document (header comment + YAML body). */
+export function toSeedYaml(seed: { applications: Record<string, unknown>[]; users: Record<string, unknown>[] }): string {
+  const body: Record<string, unknown> = { applications: seed.applications };
   if (seed.users.length) body.users = seed.users;
   return HEADER + stringify(body);
 }
@@ -116,19 +128,19 @@ export function toSeedYaml(seed: { clients: Record<string, unknown>[]; users: Re
 async function main() {
   const flags = parseFlags();
   const connection = await getMasterConnection();
-  const { OAuthClient, User } = makeModels(connection);
+  const { Application, OAuthClient, User, Assignment } = makeModels(connection);
 
-  const clients = await OAuthClient.find().sort({ _id: 1 }).lean().exec() as unknown as DumpClient[];
-  const users = flags.includeUsers
-    ? await User.find().sort({ email: 1 }).lean().exec() as unknown as DumpUser[]
-    : [];
+  const applications = await Application.find().sort({ _id: 1 }).lean().exec() as unknown as DumpApplication[];
+  const credentials = await OAuthClient.find().sort({ _id: 1 }).lean().exec() as unknown as DumpCredential[];
+  const users = flags.includeUsers ? await User.find().sort({ email: 1 }).lean().exec() as unknown as DumpUser[] : [];
+  const assignments = flags.includeUsers ? await Assignment.find().lean().exec() as unknown as DumpAssignment[] : [];
 
-  const { clients: outClients, users: outUsers, warnings } = buildSeed(clients, users, { includeUsers: flags.includeUsers });
-  const yamlBody = toSeedYaml({ clients: outClients, users: outUsers });
+  const { applications: outApps, users: outUsers, warnings } = buildSeed(applications, credentials, users, assignments, { includeUsers: flags.includeUsers });
+  const yamlBody = toSeedYaml({ applications: outApps, users: outUsers });
 
   if (flags.out) {
     writeFileSync(flags.out, yamlBody, 'utf-8');
-    console.error(`dump-seed: wrote ${outClients.length} client(s) to ${flags.out}`);
+    console.error(`dump-seed: wrote ${outApps.length} application(s) to ${flags.out}`);
   } else {
     process.stdout.write(yamlBody);
   }

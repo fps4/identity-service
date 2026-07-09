@@ -8,6 +8,8 @@ related:
   - docs/design/architecture.md
   - docs/guides/tenant-config.md
   - docs/design/decisions/0018-collapse-tenant-into-deployment.md
+  - docs/design/decisions/0019-application-assignments-and-app-roles.md
+  - docs/design/decisions/0020-application-aggregate.md
   - docs/product/RQ-0001-workspace-user-identity-google-sso.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
 ---
@@ -40,8 +42,9 @@ Issue OAuth 2.0 tokens. Three grants are supported: **`client_credentials`** (ma
 **`authorization_code`** (user login via Google SSO — RQ-0001), and **`refresh_token`** (rotate a
 user token).
 
-> **Prerequisite:** the client must be registered with the grant in its `grantTypes` (and, for user
-> login, an `audience`). See [Deployment Configuration](../guides/tenant-config.md).
+> **Prerequisite:** the credential (OAuth client) must be registered under an application with the grant
+> in its `grantTypes`; the token `aud` is the application's `audience` (or the credential's override — ADR-0020).
+> See [Deployment Configuration](../guides/tenant-config.md).
 
 ### `grant_type=client_credentials`
 
@@ -84,8 +87,8 @@ Response (`200`):
 ```
 
 The `access_token` is an RS256 JWT carrying **`email`**, the stable Google **`sub`** (the JWT
-`sub` claim), **`iss`**, the consumer-bound **`aud`** (the client's configured `audience`), and
-**`exp`** + `iat` — verifiable via [`/.well-known/jwks.json`](#get-well-knownjwksjson).
+`sub` claim), **`iss`**, the consumer-bound **`aud`** (the application's `audience`, or the credential's
+override — ADR-0020), and **`exp`** + `iat` — verifiable via [`/.well-known/jwks.json`](#get-well-knownjwksjson).
 
 On first login the person is **just-in-time provisioned** as a manageable user record and the Google
 identity is linked to it; a subsequent login with a verified email that matches an existing account
@@ -93,15 +96,16 @@ links onto that account rather than creating a duplicate (RQ-0011). This is issu
 claims above are **unchanged**. Because provisioning yields a real user, a `disabled`/`locked` status
 and the user's app assignment now apply to Google logins exactly as to password logins.
 
-**Entitlement gate (ADR-0019).** Every user grant is gated: after the user authenticates, issuance
-requires an **active [assignment](#admin-v1-management-plane)** for the target client, else
-`access_denied` ("user is not assigned to this application"). JIT-provisioning a Google user creates the
-identity but **not** an assignment — a new person with no assignment authenticates but is refused a token
-until one is granted (by an operator or an invite). This is a hard, global gate; machine
-(`client_credentials`) tokens have no user and are unaffected.
+**Entitlement gate (ADR-0019 / ADR-0020).** Every user grant is gated: after the user authenticates, the
+gate resolves the credential → its **application** and requires an **active
+[assignment](#admin-v1-management-plane)** for `(user, application)`, else `access_denied` ("user is not
+assigned to this application"). JIT-provisioning a Google user creates the identity but **not** an
+assignment — a new person with no assignment authenticates but is refused a token until one is granted (by an
+operator or an invite). This is a hard, global gate; machine (`client_credentials`) tokens have no user and
+are unaffected.
 
 The token carries a **`roles`** claim — a JSON array of the user's **app-scoped** roles *in this
-application*, sourced from the assignment's `roles` (a subset of the client's role catalogue, ADR-0019),
+application*, sourced from the assignment's `roles` (a subset of the application's role catalogue, ADR-0019),
 **omitted** when the assignment grants none. Roles are advisory identity assertions: identity-service does
 **not** enforce them — each consuming product maps roles to its own permissions
 ([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is additive (a verifier
@@ -115,7 +119,7 @@ Email + password login against identity-service's own credential store, when the
 **local** IdP. Issues the same user token shape as the Google flow.
 
 - `Content-Type: application/x-www-form-urlencoded`
-- Body parameters: `grant_type=password`, `username` (the email), `password`, `client_id` (must allow the `password` grant and have an `audience`).
+- Body parameters: `grant_type=password`, `username` (the email), `password`, `client_id` (a user-login credential under an application; must allow the `password` grant, and its application must have an `audience`).
 - Response: same shape as `authorization_code`.
 - Bad email and bad password return the **same** `invalid_grant` (no user enumeration); too many failures temporarily **lock** the account.
 
@@ -123,7 +127,7 @@ Email + password login against identity-service's own credential store, when the
 
 Rotates a user token. The presented refresh token is single-use; a fresh access + refresh pair is
 returned. A refresh fails once its session is revoked or expired, or once the user's assignment for the
-client is **revoked or suspended** (`access_denied` — ADR-0019).
+credential's **application** is **revoked or suspended** (`access_denied` — ADR-0019).
 
 - `Content-Type: application/x-www-form-urlencoded`
 - Body parameters: `grant_type=refresh_token`, `refresh_token`, `client_id`.
@@ -137,7 +141,7 @@ client is **revoked or suspended** (`access_denied` — ADR-0019).
 - `403 access_denied` – the authenticated user has no **active assignment** to this application
   ("user is not assigned to this application") — password, authorization-code, and refresh grants (ADR-0019).
 - `401 invalid_client` – bad client credentials (client-credentials grant).
-- `400 unauthorized_client` – grant not allowed for the client, or client has no `audience`.
+- `400 unauthorized_client` – grant not allowed for the credential, or its application has no `audience`.
 - `429 slow_down` – token rate limit exceeded.
 - `500 server_error` – unexpected failure.
 
@@ -201,9 +205,9 @@ users log in unchanged.
 
 `inviteCode` is required when the mode is `invite` and ignored otherwise. Entry is forgiving: case and
 dashes don't matter. Redeeming a code creates the user **and** an **assignment** to the invite's target
-`clientId` with the invite's `roles` (ADR-0019) — so the invitee lands directly into one application; an
-**email-bound** invite additionally requires the matching address and sets `emailVerified: true` (the
-operator sent the code there — ADR-0013).
+`applicationId` with the invite's `roles` (ADR-0019 / ADR-0020) — so the invitee lands directly into one
+application; an **email-bound** invite additionally requires the matching address and sets
+`emailVerified: true` (the operator sent the code there — ADR-0013).
 
 ### Response (`201`)
 
@@ -342,8 +346,8 @@ Returns the JSON Web Key Set (JWKS) for verifying RS256 tokens issued by the ser
 
 ## `/admin/v1/*` — management plane (ADR-0007)
 
-The authenticated, audited surface for day-2 operations: clients, users, signing keys, and
-statistics. Mounted at `/admin/v1` (override with `ADMIN_API_BASE_PATH`; disable the whole surface with
+The authenticated, audited surface for day-2 operations: applications, credentials (OAuth clients), users,
+signing keys, and statistics. Mounted at `/admin/v1` (override with `ADMIN_API_BASE_PATH`; disable the whole surface with
 `ADMIN_API_ENABLED=false`). The HTTP API, the [MCP server](../design/architecture.md#management-plane-adr-0007),
 and the [admin console](../../console/README.md) all sit on the same service layer, auth, and audit path.
 
@@ -372,12 +376,17 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 
 | Method & path | Scope | Purpose |
 |---|---|---|
-| `GET /clients` | `admin:clients` | List OAuth clients (including each client's role catalogue). |
-| `POST /clients` | `admin:clients` | Register a client; body accepts `roles: AppRole[]` — the app's **role catalogue** (`AppRole = { key, name?, description? }`, ADR-0019). **The client secret is returned once** — only its hash is persisted. |
-| `POST /clients/{id}/rotate-secret` | `admin:clients` | Rotate a client secret (returns the new secret once). |
-| `GET /clients/{id}/roles` | `admin:clients` | Read the client's role catalogue (`AppRole[]`, ADR-0019). |
-| `PUT /clients/{id}/roles` | `admin:clients` | Replace the client's role catalogue (`{ roles: AppRole[] }`, ADR-0019). |
-| `GET /clients/{id}/members` | `admin:clients` | List the users assigned to this application and their app-scoped roles (ADR-0019). |
+| `GET /applications` | `admin:clients` | List applications (each with its `name`, default `audience`, and role catalogue — ADR-0020). |
+| `GET /applications/{id}` | `admin:clients` | Read one application. |
+| `POST /applications` | `admin:clients` | Create an application (ADR-0020): body `{ id?, name, audience?, roles? }` — `roles: AppRole[]` is the app's **role catalogue** (`AppRole = { key, name?, description? }`, ADR-0019); `audience` is the default token `aud`. |
+| `DELETE /applications/{id}` | `admin:clients` | Delete an application. |
+| `GET /applications/{id}/roles` | `admin:clients` | Read the application's role catalogue (`AppRole[]`, ADR-0019). |
+| `PUT /applications/{id}/roles` | `admin:clients` | Replace the application's role catalogue (`{ roles: AppRole[] }`, ADR-0019). |
+| `GET /applications/{id}/members` | `admin:clients` | List the users assigned to this application and their app-scoped roles (ADR-0019). |
+| `GET /applications/{id}/credentials` | `admin:clients` | List the OAuth-client **credentials** under this application (ADR-0020). |
+| `GET /clients` | `admin:clients` | List OAuth-client **credentials**; filter with `?applicationId=` (ADR-0020). Clients no longer carry a role catalogue. |
+| `POST /clients` | `admin:clients` | Register a **credential** under an application (ADR-0020): body **requires `applicationId`**; `audience` is an optional **override** of the application's default; **no `roles`** (the catalogue lives on the application). **The client secret is returned once** — only its hash is persisted. |
+| `POST /clients/{id}/rotate-secret` | `admin:clients` | Rotate a credential's secret (returns the new secret once). |
 | `GET /users` | `admin:users` | List users (local + federated), including each user's linked `identities[]`; never returns `passwordHash`. Users no longer carry a `roles` field (ADR-0019). |
 | `POST /users` | `admin:users` | Create a local user — body `{ email, password }` (**no** `roles`; entitlement is granted separately via an assignment — ADR-0019). |
 | `POST /users/reset-password` | `admin:users` | Reset a local user's password (`{ email, password }`). |
@@ -385,12 +394,12 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 | `POST /users/unlock` | `admin:users` | Clear brute-force lockout counters. |
 | `POST /users/link-identity` | `admin:users` | Link a federated identity onto a user (`{ email, provider:"google", subject, identityEmail?, emailVerified? }`); `409 identity_linked` if already owned (RQ-0011). |
 | `POST /users/unlink-identity` | `admin:users` | Remove a linked federated identity (`{ email, provider:"google", subject }`) (RQ-0011). |
-| `POST /assignments` | `admin:users` | Assign a user to an application (ADR-0019): `{ email, clientId, roles? }` — creates the `active` assignment (unique per `{user, client}`); `roles` must be a subset of the client's catalogue. |
-| `POST /assignments/update` | `admin:users` | Update an existing assignment: `{ email, clientId, roles?, status? }` (`status`: `active` \| `suspended`). |
-| `POST /assignments/revoke` | `admin:users` | Revoke a user's assignment to an application: `{ email, clientId }` — denies further token issuance for that app. |
+| `POST /assignments` | `admin:users` | Assign a user to an application (ADR-0019 / ADR-0020): `{ email, applicationId, roles? }` — creates the `active` assignment (unique per `{user, application}`); `roles` must be a subset of the application's catalogue. |
+| `POST /assignments/update` | `admin:users` | Update an existing assignment: `{ email, applicationId, roles?, status? }` (`status`: `active` \| `suspended`). |
+| `POST /assignments/revoke` | `admin:users` | Revoke a user's assignment to an application: `{ email, applicationId }` — denies further token issuance for that app. |
 | `GET /assignments?email=` | `admin:users` | List a user's assignments (the applications they may reach and their per-app roles). |
-| `POST /invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ clientId, roles?, email?, maxUses?, expiresInHours?, note? }`. **`clientId` is required** — redeeming creates an assignment to it (ADR-0019); `roles` must be a subset of that client's catalogue. **The code is returned once** — only its digest is persisted. Defaults: single-use, 7-day expiry. |
-| `GET /invites` | `admin:users` | List invites (each includes its target `clientId`) with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
+| `POST /invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ applicationId, roles?, email?, maxUses?, expiresInHours?, note? }`. **`applicationId` is required** — redeeming creates an assignment to it (ADR-0019 / ADR-0020); `roles` must be a subset of that application's catalogue. **The code is returned once** — only its digest is persisted. Defaults: single-use, 7-day expiry. |
+| `GET /invites` | `admin:users` | List invites (each includes its target `applicationId`) with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
 | `POST /invites/{id}/revoke` | `admin:users` | Revoke an invite so no further redemptions succeed. |
 | `POST /keys/rotate` | `admin:keys` | Mint a new active signing key; demote the previous to `inactive`. |
 | `GET /keys` | `admin:keys` | Inspect `key_store` status. |
@@ -401,9 +410,10 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 
 ```json
 {
-  "clients":     { "total": 9 },
-  "users":       { "total": 120, "locked": 1, "disabled": 2 },
-  "assignments": { "active": 143 },
+  "applications": { "total": 4 },
+  "clients":      { "total": 9 },
+  "users":        { "total": 120, "locked": 1, "disabled": 2 },
+  "assignments":  { "active": 143 },
   "tokens":      { "accessLastHour": 87, "accessLastDay": 1432, "activeRefresh": 64 },
   "keys":        { "active": 1 },
   "at": "2026-06-23T02:30:00.000Z"

@@ -3,22 +3,22 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { InvitesDirectory } from '@/components/invites-directory';
 
-vi.mock('@/app/actions', () => ({ createInvite: vi.fn(), revokeInvite: vi.fn(), fetchClientRoles: vi.fn().mockResolvedValue([]) }));
+vi.mock('@/app/actions', () => ({ createInvite: vi.fn(), revokeInvite: vi.fn() }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-// ADR-0019: every invite targets an application (clientId).
+// ADR-0020: every invite targets an application (applicationId).
 const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 const invites = [
-  { _id: 'inv_p', clientId: 'app_web', email: 'newhire@acme.example', roles: ['member'], maxUses: 1, usedCount: 0, expiresAt: future, status: 'pending', note: 'March cohort' },
-  { _id: 'inv_r', clientId: 'app_web', email: null, roles: [], maxUses: 5, usedCount: 2, expiresAt: future, status: 'redeemed' },
-  { _id: 'inv_x', clientId: 'app_api', email: null, roles: [], maxUses: 1, usedCount: 0, expiresAt: future, status: 'expired' },
+  { _id: 'inv_p', applicationId: 'app_web', email: 'newhire@acme.example', roles: ['member'], maxUses: 1, usedCount: 0, expiresAt: future, status: 'pending', note: 'March cohort' },
+  { _id: 'inv_r', applicationId: 'app_web', email: null, roles: [], maxUses: 5, usedCount: 2, expiresAt: future, status: 'redeemed' },
+  { _id: 'inv_x', applicationId: 'app_api', email: null, roles: [], maxUses: 1, usedCount: 0, expiresAt: future, status: 'expired' },
 ];
-const clients = [
-  { _id: 'app_web', name: 'acme-web', grantTypes: [], scopes: [], roles: [{ key: 'member' }] },
+const applications = [
+  { _id: 'app_web', name: 'acme-web', roles: [{ key: 'member' }] },
 ];
 
 const renderDirectory = () =>
-  render(<InvitesDirectory invites={invites as never} clients={clients as never} />);
+  render(<InvitesDirectory invites={invites as never} applications={applications as never} />);
 
 describe('InvitesDirectory', () => {
   it('lists invites with status badges and a count', () => {

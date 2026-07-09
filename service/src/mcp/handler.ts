@@ -86,35 +86,42 @@ export const TOOLS: ToolDef[] = [
     inputSchema: obj({ email: str }, ['email']),
     handler: async (a) => { await adminService.unlockUser(a.email); return { ok: true }; }
   },
-  // Assignments (ADR-0019): a user's entitlement + app-scoped roles for an application. Operational
-  // user-access state, so it belongs on the MCP surface alongside the other user tools.
+  // Applications + assignments (ADR-0019/0020): the product registration, its role catalogue, and a
+  // user's entitlement to it. Operational read/user-access state — belongs on the MCP surface.
+  {
+    name: 'list_applications',
+    description: 'List the applications (products) with their audience and role catalogues.',
+    areaScope: ADMIN_SCOPES.clients,
+    inputSchema: obj({}),
+    handler: () => adminService.listApplications()
+  },
   {
     name: 'assign_user',
-    description: "Assign a user to an application with app-scoped roles (ADR-0019). Roles must be in the application's role catalogue. Idempotent — re-assigning updates the roles.",
+    description: "Assign a user to an application with app-scoped roles (ADR-0020). Roles must be in the application's role catalogue. Idempotent — re-assigning updates the roles.",
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ email: str, clientId: str, roles: strArr }, ['email', 'clientId']),
+    inputSchema: obj({ email: str, applicationId: str, roles: strArr }, ['email', 'applicationId']),
     handler: (a) => adminService.assignUser(a)
   },
   {
     name: 'update_assignment',
     description: "Change a user's app-scoped roles and/or suspend/reactivate their assignment to an application.",
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ email: str, clientId: str, roles: strArr, status: { type: 'string', enum: ['active', 'suspended'] } }, ['email', 'clientId']),
-    handler: (a) => adminService.updateAssignment(a.email, a.clientId, { roles: a.roles, status: a.status })
+    inputSchema: obj({ email: str, applicationId: str, roles: strArr, status: { type: 'string', enum: ['active', 'suspended'] } }, ['email', 'applicationId']),
+    handler: (a) => adminService.updateAssignment(a.email, a.applicationId, { roles: a.roles, status: a.status })
   },
   {
     name: 'revoke_assignment',
     description: "Revoke a user's entitlement to an application (they can no longer obtain a token for it).",
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ email: str, clientId: str }, ['email', 'clientId']),
-    handler: (a) => adminService.revokeAssignment(a.email, a.clientId)
+    inputSchema: obj({ email: str, applicationId: str }, ['email', 'applicationId']),
+    handler: (a) => adminService.revokeAssignment(a.email, a.applicationId)
   },
   {
     name: 'list_app_members',
     description: 'List the users assigned to an application, with their app-scoped roles.',
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ clientId: str }, ['clientId']),
-    handler: (a) => adminService.listClientMembers(a.clientId)
+    inputSchema: obj({ applicationId: str }, ['applicationId']),
+    handler: (a) => adminService.listApplicationMembers(a.applicationId)
   },
   {
     name: 'list_user_assignments',
@@ -124,26 +131,26 @@ export const TOOLS: ToolDef[] = [
     handler: (a) => adminService.listUserAssignments(a.email)
   },
   {
-    name: 'set_client_roles',
-    description: "Replace an application's role catalogue (ADR-0019) — the roles assignments may grant for it.",
+    name: 'set_application_roles',
+    description: "Replace an application's role catalogue (ADR-0020) — the roles assignments may grant for it.",
     areaScope: ADMIN_SCOPES.clients,
-    inputSchema: obj({ clientId: str, roles: roleCatalogue }, ['clientId', 'roles']),
-    handler: (a) => adminService.setClientRoles(a.clientId, a.roles)
+    inputSchema: obj({ applicationId: str, roles: roleCatalogue }, ['applicationId', 'roles']),
+    handler: (a) => adminService.setApplicationRoles(a.applicationId, a.roles)
   },
   // Invites (RQ-0013) are runtime user-onboarding state — operational, not structural — so they
   // belong on the MCP surface alongside the other user tools (ADR-0011).
   {
     name: 'create_invite',
-    description: 'Mint a registration invite (RQ-0013, ADR-0019). Entitles the redeemer to an application (clientId, required) with app-scoped roles. Returns the code ONCE. Optional: bind to an email, allow multiple uses, set expiry in hours.',
+    description: 'Mint a registration invite (RQ-0013, ADR-0020). Entitles the redeemer to an application (applicationId, required) with app-scoped roles. Returns the code ONCE. Optional: bind to an email, allow multiple uses, set expiry in hours.',
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({
-      clientId: str,
+      applicationId: str,
       email: str,
       roles: strArr,
       maxUses: { type: 'number' },
       expiresInHours: { type: 'number' },
       note: str
-    }, ['clientId']),
+    }, ['applicationId']),
     handler: (a) => adminService.createInvite(a)
   },
   {

@@ -1,6 +1,6 @@
 ---
 title: Deployment Configuration Guide
-summary: How to configure a deployment of identity-service — the realm-wide env settings, OAuth clients (Applications) and their role catalogues, local users, per-user application assignments, Google SSO, registration/invites, and the flat seed config.
+summary: How to configure a deployment of identity-service — the realm-wide env settings, applications (with their role catalogues and default audience), OAuth-client credentials under them, local users, per-user application assignments, Google SSO, registration/invites, and the nested seed config.
 status: current
 last_updated: 2026-07-09
 owners: [architect]
@@ -9,6 +9,7 @@ related:
   - docs/design/architecture.md
   - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
+  - docs/design/decisions/0020-application-aggregate.md
   - docs/product/RQ-0001-workspace-user-identity-google-sso.md
 ---
 
@@ -17,19 +18,23 @@ related:
 Since [ADR-0018](../design/decisions/0018-collapse-tenant-into-deployment.md), **one deployment = one
 realm = one shared user pool**. There is no `Tenant` entity, no `tenantId`, and no `tenants` collection.
 A deployment (`ds1`, …) has its own MongoDB, active signing key, issuer origin, and Google app; **users
-are deployment-scoped** (unique by `email`, shared across every client → instance-wide SSO), and the
-**OAuth client (Application)** is the only structural per-consumer object.
+are deployment-scoped** (unique by `email`, shared across every application → instance-wide SSO). Since
+[ADR-0020](../design/decisions/0020-application-aggregate.md) the first-class per-consumer object is the
+**Application** (a product): it owns a `name`, a **default `audience`**, and a **role catalogue**, and it is
+what users are assigned to. **OAuth clients are credentials *under* an application** (`applicationId`): a
+user-login (web) credential, a machine/runtime credential, etc.
 
 Configuring a deployment therefore has two parts:
 
 1. **Realm-wide settings** — deployment **environment variables** (`CONFIG`), not a per-row document.
-2. **Provisioned objects** — OAuth clients (with their **role catalogues**), local users, and per-user
-   **assignments** (ADR-0019), via the flat **seed config** (`config/seed.yaml`) or the
+2. **Provisioned objects** — applications (with their **role catalogues** and default audience), their
+   OAuth-client **credentials**, local users, and per-user **assignments** (ADR-0019), via the nested
+   **seed config** (`config/seed.yaml`) or the
    [`/admin/v1` management plane](../reference/api.md#admin-v1-management-plane).
 
-> **Entitlement (ADR-0019).** A user is not automatically able to reach every client. To be issued a token
-> for an application a user must hold an **active assignment** to it; each application owns a **role
-> catalogue**, and the assignment grants a subset of it as the token's app-scoped `roles`. See
+> **Entitlement (ADR-0019 / ADR-0020).** A user is not automatically able to reach every application. To be
+> issued a token for an application a user must hold an **active assignment** to it; each application owns a
+> **role catalogue**, and the assignment grants a subset of it as the token's app-scoped `roles`. See
 > [Application role catalogues & assignments](#application-role-catalogues--assignments-adr-0019).
 
 ## Realm-wide settings (deployment env)
@@ -59,29 +64,45 @@ AUTH_LOCAL_IDP_ENABLED=true
 AUTH_ALLOWED_ROLES=platform_admin,member                           # optional vocabulary
 ```
 
-## Registering OAuth clients (Applications)
+## Registering applications & credentials (ADR-0020)
 
-An OAuth client is the registered per-consumer object: it carries the grants it may use, its redirect
-URIs, its scopes, and — for user login — the **`audience`** stamped as the token `aud`. Provision clients
-via the seed config (below) or the management plane. A raw insert looks like:
+The **application** is the registered per-consumer object: it owns the `name`, the default **`audience`**
+stamped as the token `aud`, and the **role catalogue**. **OAuth clients are credentials under it** — the
+grants + redirect URIs + scopes that authenticate *as* the application. Provision via the seed config
+(below) or the management plane: **create the application first, then add credentials.** A raw insert looks
+like:
 
 ```js
+// 1. the application — owns the audience + role catalogue
+db.applications.insertOne({
+  _id: "telemetry",
+  name: "Telemetry",
+  audience: "telemetry-workspace",         // the default token `aud` (ADR-0020)
+  roles: [{ key: "reader" }]               // the app's role catalogue (ADR-0019); may be omitted
+});
+
+// 2. a credential under it — a machine client
 db.oauth_clients.insertOne({
-  name: "Telemetry Client",
-  secretHash: "<hash of plain secret>",   // hashSecret(plainSecret) from service/src/utils/hash.ts
-  grantTypes: ["client_credentials"],     // subset of what the deployment allows
+  applicationId: "telemetry",              // REQUIRED — which application this credential belongs to
+  name: "Telemetry Runtime",
+  secretHash: "<hash of plain secret>",    // hashSecret(plainSecret) from service/src/utils/hash.ts
+  grantTypes: ["client_credentials"],      // subset of what the deployment allows
   scopes: ["telemetry:read"],
   isConfidential: true
+  // audience: "maestro-workspace"         // OPTIONAL override of the application's default (ADR-0020)
 });
 ```
 
-- `_id` (the `client_id`) auto-generates a UUID when omitted; provide your own only for a stable id.
-- A **machine** (`client_credentials`) client is confidential and carries a secret + scopes.
-- A **user-login** client (`password` or `authorization_code`) is **public** (PKCE), so `isConfidential`
-  may be `false` with no secret, and it **must** carry an `audience`.
-- A user-login client also declares a **role catalogue** — `roles: [{ key, name?, description? }]` — the
-  app-scoped roles a user may be assigned in it (ADR-0019). It can be omitted (no app-roles), seeded, or
-  edited at runtime (`GET/PUT /admin/v1/clients/{id}/roles`).
+- An application's `_id` auto-generates when omitted; provide your own only for a stable id.
+- The application's **role catalogue** — `roles: [{ key, name?, description? }]` — is the app-scoped roles a
+  user may be assigned in it (ADR-0019). Omit for no app-roles, seed it, or edit at runtime
+  (`GET/PUT /admin/v1/applications/{id}/roles`).
+- A credential's `_id` (the `client_id`) auto-generates a UUID when omitted; it **requires** an
+  `applicationId`. A **machine** (`client_credentials`) credential is confidential and carries a secret +
+  scopes; a **user-login** credential (`password` or `authorization_code`) is **public** (PKCE), so
+  `isConfidential` may be `false` with no secret.
+- The token `aud` is the **application's** `audience`; a credential may set an `audience` **override** (e.g.
+  a product runtime reporting to `maestro-workspace`).
 
 Share the `client_id` and plain secret with the product team out-of-band; encourage storing secrets in
 the product's own secrets manager. Verify with `POST /oauth2/token`.
@@ -89,16 +110,19 @@ the product's own secrets manager. Verify with `POST /oauth2/token`.
 ## User login via Google SSO (RQ-0001)
 
 Google login is enabled deployment-wide by the Google app env above. To let a consumer authenticate humans
-through Google and receive a user identity JWT, register a **public** client that allows the
-`authorization_code` grant with an `audience` + redirect URI:
+through Google and receive a user identity JWT, add a **public** user-login **credential** (allowing the
+`authorization_code` grant, with a redirect URI) under the application that carries the `audience`:
 
 ```js
+db.applications.insertOne({
+  _id: "maestro", name: "maestro", audience: "maestro-workspace"    // → the token `aud` (ADR-0020)
+});
 db.oauth_clients.insertOne({
   _id: "client-maestro",
+  applicationId: "maestro",                                         // REQUIRED (ADR-0020)
   name: "maestro web",
   grantTypes: ["authorization_code"],
   redirectUris: ["https://app.maestro.example.com/auth/callback"],  // exact-match validated
-  audience: "maestro-workspace",                                    // → the token `aud`
   scopes: [],
   isConfidential: false,
   secretHash: ""                                                    // unused by PKCE
@@ -114,7 +138,7 @@ The consumer's JWT verifier must match what this service mints. maestro, for exa
 | --- | --- | --- |
 | `IDENTITY_SERVICE_JWKS_URL` | `https://auth-dev.example.com/.well-known/jwks.json` | this service's JWKS endpoint |
 | `IDENTITY_SERVICE_ISSUER` | `https://auth-dev.example.com` | `AUTH_JWT_ISSUER` above |
-| `IDENTITY_SERVICE_AUDIENCE` | `maestro-workspace` | the client's `audience` field |
+| `IDENTITY_SERVICE_AUDIENCE` | `maestro-workspace` | the application's `audience` (or the credential's override — ADR-0020) |
 
 If `iss` / `aud` / the JWKS URL do not line up exactly, maestro rejects the token as unauthenticated
 (401) — there is no fallback.
@@ -132,13 +156,14 @@ is **denied**, never merged (account-takeover guard). Operators can link/unlink 
 
 ## Local username/password login (RQ-0002)
 
-When `AUTH_LOCAL_IDP_ENABLED` is on (the default), register a client that allows the `password` grant
-with an `audience` (binds the issued token's `aud`):
+When `AUTH_LOCAL_IDP_ENABLED` is on (the default), add a user-login credential that allows the `password`
+grant under an application carrying an `audience` (which binds the issued token's `aud`):
 
 ```js
+// reuse the "maestro" application above (it holds audience: "maestro-workspace")
 db.oauth_clients.insertOne({
-  _id: "client-local", name: "local web",
-  grantTypes: ["password"], audience: "maestro-workspace",
+  _id: "client-local", applicationId: "maestro", name: "local web",
+  grantTypes: ["password"],
   redirectUris: [], scopes: [], isConfidential: false, secretHash: ""
 });
 ```
@@ -164,9 +189,9 @@ creation only).
 
 On an `invite` deployment, operators mint codes on the management plane — `POST /admin/v1/invites` (or the
 `create_invite` MCP tool / the console) — and send them out-of-band (email, chat); **no mail provider is
-needed**. An invite now **requires a target `clientId`** and may carry `roles` from that client's catalogue
-(ADR-0019): redeeming it provisions the user **and** creates the `active` assignment, landing the invitee
-directly into one application with the intended roles. A code can also be email-bound, allow multiple uses
+needed**. An invite now **requires a target `applicationId`** and may carry `roles` from that application's
+catalogue (ADR-0019 / ADR-0020): redeeming it provisions the user **and** creates the `active` assignment,
+landing the invitee directly into one application with the intended roles. A code can also be email-bound, allow multiple uses
 (cohorts), and expires after 7 days by default. The code is **shown once**; list and revoke via
 `GET /admin/v1/invites` and `POST /admin/v1/invites/{id}/revoke`. Invitees pass the code as `inviteCode`
 on the register call; an email-bound redemption also marks the address verified (ADR-0013).
@@ -185,11 +210,12 @@ Two behaviours to plan for on non-`open` deployments:
 Since [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) roles are **app-scoped**,
 not deployment-wide: the flat `user.roles` is **removed**. Two objects replace it:
 
-- **Role catalogue** — the set of roles that exist *for one application*, declared on its client as
-  `roles: [{ key, name?, description? }]`. `key` is the stable token value; `name`/`description` are for the
-  console. Seed-bootstrapped **and** runtime-editable (`GET/PUT /admin/v1/clients/{id}/roles`).
-- **Assignment** — a user↔application entitlement (`assignments`), one per `{user, client}`, carrying the
-  app-scoped `roles` (a subset of that client's catalogue) and a `status` (`active` | `suspended`). A user
+- **Role catalogue** — the set of roles that exist *for one application*, declared on the **application** as
+  `roles: [{ key, name?, description? }]` (owned by the application since ADR-0020, not by any credential).
+  `key` is the stable token value; `name`/`description` are for the console. Seed-bootstrapped **and**
+  runtime-editable (`GET/PUT /admin/v1/applications/{id}/roles`).
+- **Assignment** — a user↔application entitlement (`assignments`), one per `{user, application}`, carrying the
+  app-scoped `roles` (a subset of that application's catalogue) and a `status` (`active` | `suspended`). A user
   **needs an active assignment** to be issued a token for the app — a hard, global gate; without one,
   `/oauth2/token` returns `access_denied`. The assignment's roles are stamped into the token's **`roles`**
   claim, re-read on every issuance (including refresh), so a change — or a revoked/suspended assignment,
@@ -203,73 +229,87 @@ Assign, update, and revoke on the management plane (or via the `assign_user` / `
 `revoke_assignment` MCP tools):
 
 ```bash
-# assign alice to the maestro app with a role from that app's catalogue
+# assign alice to the maestro application with a role from that app's catalogue
 curl -XPOST https://auth.example.com/admin/v1/assignments -H "Authorization: Bearer $ADMIN" \
-  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","clientId":"client-maestro","roles":["operator"]}'
+  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","applicationId":"maestro","roles":["operator"]}'
 
 # suspend / re-activate, change roles
 curl -XPOST https://auth.example.com/admin/v1/assignments/update -H "Authorization: Bearer $ADMIN" \
-  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","clientId":"client-maestro","status":"suspended"}'
+  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","applicationId":"maestro","status":"suspended"}'
 
 # revoke (denies further tokens for that app)
 curl -XPOST https://auth.example.com/admin/v1/assignments/revoke -H "Authorization: Bearer $ADMIN" \
-  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","clientId":"client-maestro"}'
+  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","applicationId":"maestro"}'
 ```
 
-Onboarding is either **operator-assigned** (the admin plane, above) or **invite-based** (an invite pins a
-`clientId` + `roles` and creates the assignment on redemption — see
+Onboarding is either **operator-assigned** (the admin plane, above) or **invite-based** (an invite pins an
+`applicationId` + `roles` and creates the assignment on redemption — see
 [Registration policy & invites](#registration-policy--invites)). A consumer reads `roles` from the verified
 token and authorizes accordingly; it never calls back to identity-service to check a permission.
 
 ## Bulk provisioning via seed config (RQ-0004)
 
-For more than a one-off client, use the **seed config** instead of hand-running DB inserts. It is a **flat**
-list of OAuth clients and local users — **no `tenants:` layer** (ADR-0018). Copy the committed template to a
-gitignored real file, fill it in, and run the idempotent loader:
+For more than a one-off credential, use the **seed config** instead of hand-running DB inserts. Since
+[ADR-0020](../design/decisions/0020-application-aggregate.md) it is a **nested** list of **applications**,
+each with its **credentials**, plus local users — **no `tenants:` layer** (ADR-0018). Copy the committed
+template to a gitignored real file, fill it in, and run the idempotent loader:
 
 ```bash
 cp config/seed.example.yaml config/seed.yaml     # gitignored; never committed
 # set referenced secrets in the environment / .env, e.g. SEED_DEMO_PASSWORD, SEED_ADMIN_PASSWORD
 cd service
-npm run seed                                      # validates, then upserts clients + adds users
+npm run seed                                      # validates, then upserts applications + credentials + adds users
 ```
 
 The file's shape:
 
 ```yaml
-clients:
-  - id: demo-web
-    name: Demo Web
-    grantTypes: [password]              # local email/password login (RQ-0002)
-    audience: demo-workspace            # REQUIRED for password/authorization_code — becomes the token `aud`
-    redirectUris: []
-    isConfidential: false
+applications:
+  - id: demo                            # the application (a product) — owns audience + role catalogue (ADR-0020)
+    name: Demo
+    audience: demo-workspace            # the default token `aud` for tokens minted through this app
     roles:                              # ADR-0019: the app's role catalogue
       - { key: member }
       - { key: reviewer, name: Reviewer, description: May approve filings }
+    credentials:                        # OAuth clients under the application (ADR-0020)
+      - id: demo-web
+        name: Demo Web
+        grantTypes: [password]          # local email/password login (RQ-0002)
+        redirectUris: []
+        isConfidential: false
+        # audience: maestro-workspace   # OPTIONAL per-credential override of the app default
+      - id: demo-runtime
+        name: Demo Runtime
+        grantTypes: [client_credentials]
+        scopes: [demo:read]
+        isConfidential: true
+        secret: ${SEED_DEMO_RUNTIME_SECRET}
 
 users:
   - email: demo@fps4.nl
     password: ${SEED_DEMO_PASSWORD}     # ${ENV_VAR} references resolved at run time, stored scrypt-hashed
     status: active
-    assignments:                        # ADR-0019: entitlement + app-scoped roles (replaces user.roles)
-      - { client: demo-web, roles: [member] }
+    assignments:                        # ADR-0019/0020: entitlement + app-scoped roles (replaces user.roles)
+      - { application: demo, roles: [member] }
 ```
 
 A user with **no** `assignments` can authenticate but is refused a token for any app until one is granted
-(global entitlement gate, ADR-0019). Each assignment's `roles` must be a subset of the target client's
-catalogue.
+(global entitlement gate, ADR-0019). Each assignment keys on the **`application`** id, and its `roles` must
+be a subset of that application's catalogue.
 
 **Operator safeguard:** the bootstrap operator (`admin@identity-service.fps4.nl`) is always seeded with an
 `identity-console` / `platform_admin` assignment, so the console can never be accidentally locked out under
 global enforcement.
 
-Re-running upserts clients (and their catalogues) and **leaves existing users untouched** (use
-`npm run manage-users set-password` to change a password). The loader is operator-run against the database —
-there is **no HTTP seeding endpoint** ([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It
-reads `MONGO_URI`, so run it where it can reach the target Mongo (locally against the published port, or
-inside the docker network). To migrate an existing deployment onto the assignment model, see the
-[app-entitlement migration](./deployment.md#app-entitlement-migration-backfill-assignments-adr-0019).
+Re-running upserts applications (and their catalogues) and their credentials, and **leaves existing users
+untouched** (use `npm run manage-users set-password` to change a password). The loader is operator-run
+against the database — there is **no HTTP seeding endpoint**
+([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It reads `MONGO_URI`, so run it where
+it can reach the target Mongo (locally against the published port, or inside the docker network). To migrate
+an existing deployment onto the assignment model, see the
+[app-entitlement migration](./deployment.md#app-entitlement-migration-backfill-assignments-adr-0019); to
+fold today's separate clients into applications, see the
+[application-aggregate migration](./deployment.md#application-aggregate-migration-group-clients-into-applications-adr-0020).
 
 ## Operational Tips
 
@@ -278,4 +318,4 @@ inside the docker network). To migrate an existing deployment onto the assignmen
 - Monitor structured logs for `issued client credentials token` events to validate adoption and spot unexpected grants.
 
 For full architecture context, review [architecture.md](../design/architecture.md). For endpoint contracts, see [api.md](../reference/api.md).
-> **Tip:** A client's `_id` is auto-generated as a UUID when omitted. Provide one explicitly only if you need a stable identifier determined outside the service.
+> **Tip:** An application's `_id` and a credential's `_id` (the `client_id`) are each auto-generated as a UUID when omitted. Provide one explicitly only if you need a stable identifier determined outside the service.
