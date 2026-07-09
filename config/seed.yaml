@@ -2,126 +2,127 @@
 # (ADR-0007); this file only stands up a brand-new empty deployment. Day-2 changes go through the
 # management plane (/admin/v1 + MCP + console), not a re-seed.
 #
-# ONE DEPLOYMENT = ONE REALM = ONE USER POOL (ADR-0018). There is no tenant layer: this file is a FLAT
-# list of the deployment's OAuth clients (the products' consumers all share one identity-service realm)
-# plus the bootstrap operator user. Realm-wide settings that used to live per-tenant (allowed origins,
-# registration mode, role vocabulary, IdP toggles) are now deployment ENV — see config/ds1/.env.base.
+# THE APPLICATION IS THE UNIT (ADR-0020). One deployment = one realm = one user pool (ADR-0018), and each
+# product is one APPLICATION that owns its audience + role catalogue and contains typed CREDENTIALS (a web
+# login client, a machine/runtime client, …). Users are assigned to an application with app-scoped roles
+# (ADR-0019). Realm-wide settings (allowed origins, registration mode, IdP toggles) are deployment ENV —
+# see config/ds1/.env.base.
 #
-# STRUCTURAL-ONLY (ADR-0011, ADR-0017). Per ADR-0011, OAuth clients are declarative/GitOps (this file);
-# USERS + CREDENTIALS are operational and owned by the live DB — created via the admin plane
-# (console/HTTP/MCP), NOT seeded here. So this file references ONLY the secrets identity-service ITSELF
-# owns and that already exist as Actions secrets:
+# STRUCTURAL-ONLY (ADR-0011, ADR-0017). Applications + credentials are declarative/GitOps (this file);
+# USERS + CREDENTIALS are operational and owned by the live DB — created via the admin plane, NOT seeded
+# here — EXCEPT the ONE bootstrap operator (below). This file references ONLY the secrets identity-service
+# ITSELF owns and that already exist as Actions secrets:
+#   ${MAESTRO_RUNTIME_CLIENT_SECRET}  identity-service's own product_runtime credential
+#   ${IDENTITY_ADMIN_CLIENT_SECRET}   the management-plane admin credential (MCP + break-glass)
+#   ${SEED_CONSOLE_ADMIN_PASSWORD}    the ONE bootstrap operator who then creates everyone else in the UI
 #
-#   - ${MAESTRO_RUNTIME_CLIENT_SECRET}  identity-service's own product_runtime client (self-minted telemetry)
-#   - ${IDENTITY_ADMIN_CLIENT_SECRET}   the management-plane admin client (MCP + break-glass)
-#   - ${SEED_CONSOLE_ADMIN_PASSWORD}    the ONE bootstrap operator who then creates everyone else in the UI
-#
-# COMMITTED on purpose: every secret here is an ${ENV_VAR} reference resolved at run time, so this file
-# holds NO plaintext. For the rare bootstrap of an empty DB, supply the ${ENV} values from the
-# environment (CI/Actions secrets or an operator shell), e.g. from service/:
-#
-#     IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_CONSOLE_ADMIN_PASSWORD=… \
-#       MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
-#
-# Disaster recovery is a RESTORE from the nightly off-host backup (docker/backup.sh — ADR-0008), which
-# also recovers runtime state a re-seed cannot. Idempotent: clients are upserted on every run.
-# See docs/guides/deployment.md.
+# COMMITTED on purpose: every secret is an ${ENV_VAR} reference resolved at run time; this file holds NO
+# plaintext. Bootstrap an empty DB from service/ with:
+#   IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_CONSOLE_ADMIN_PASSWORD=… \
+#     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+# DR is a RESTORE from the nightly off-host backup (docker/backup.sh — ADR-0008). Idempotent.
 
-clients:
-  # --- Product web consumers (browser password / SSO login; token `aud` = their workspace). Each declares
-  # its role CATALOGUE (ADR-0019): the roles an assignment may grant its users. Users get access + roles by
-  # being assigned to the app (console / admin API / invite) — no user can log in without an assignment. ---
-  - id: demo-web
-    name: Demo Web
-    grantTypes: [password]
-    audience: demo-workspace           # REQUIRED for password/authorization_code — becomes the token `aud`
-    redirectUris: []
-    isConfidential: false
+applications:
+  # --- Product web apps: one application per product; its credential is the browser login client, and the
+  # application owns the audience + role catalogue that its assigned users' tokens carry. ---
+  - id: demo
+    name: Demo
+    audience: demo-workspace            # inherited by the app's credentials as the token `aud`
     roles:
       - { key: member, name: Member }
+    credentials:
+      - id: demo-web
+        name: Demo Web
+        grantTypes: [password]
+        redirectUris: []
+        isConfidential: false
 
-  - id: sovereign-copilot-web
-    name: Sovereign Copilot Web
-    grantTypes: [password]
+  - id: sovereign-copilot
+    name: Sovereign Copilot
     audience: sovereign-copilot-workspace
-    redirectUris: []
-    isConfidential: false
     roles:
       - { key: member, name: Member }
+    credentials:
+      - id: sovereign-copilot-web
+        name: Sovereign Copilot Web
+        grantTypes: [password]
+        redirectUris: []
+        isConfidential: false
 
-  - id: maestro-web
-    name: Maestro Web
-    grantTypes: [password]
+  - id: maestro
+    name: Maestro
     audience: maestro-workspace
-    redirectUris: []
-    isConfidential: false
     roles:
       - { key: member, name: Member }
+    credentials:
+      - id: maestro-web
+        name: Maestro Web
+        grantTypes: [password]
+        redirectUris: []
+        isConfidential: false
 
-  - id: coach-web
-    name: Skills Coach Web
-    grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
-    audience: coach-workspace          # matches the coach API's IDENTITY_SERVICE_AUDIENCE
-    redirectUris:                      # the coach web /auth/callback (exact-match validated) — RQ-0012
-      - http://localhost:3000/auth/callback
-      - https://coach.fps4.nl/auth/callback
-    isConfidential: false
-    roles:                             # the coach role vocabulary → token `roles` claim (RQ-0005)
+  - id: coach
+    name: Skills Coach
+    audience: coach-workspace            # matches the coach API's IDENTITY_SERVICE_AUDIENCE
+    roles:                               # the coach role catalogue (RQ-0005) → token `roles`
       - { key: learner, name: Learner }
       - { key: compliance-officer, name: Compliance Officer }
+    credentials:
+      - id: coach-web
+        name: Skills Coach Web
+        grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
+        redirectUris:                    # the coach web /auth/callback (exact-match validated) — RQ-0012
+          - http://localhost:3000/auth/callback
+          - https://coach.fps4.nl/auth/callback
+        isConfidential: false
 
-  # --- identity-service's OWN product_runtime principal (US-0086). Reports its fleet health/telemetry to
-  # maestro under the "identity-service" product. Self-minted via this service's own token endpoint; the
-  # stored secret is the SAME ${MAESTRO_RUNTIME_CLIENT_SECRET} the running service presents to self-mint
-  # (deploy-ds1.yml / compose), so seed and runtime can never drift. Other products' runtime clients are
-  # NOT seeded here — each self-registers via an operator-issued invite (ADR-0017 / RQ-0018). ---
-  - id: identity-service-ds1-runtime
-    name: identity-service@ds1 runtime
-    grantTypes: [client_credentials]
-    isConfidential: true
-    secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}
-    audience: maestro-workspace
-    subject: runtime@identity-service.fps4.nl
-    claims:
-      role: product_runtime
-      email: runtime@identity-service.fps4.nl
+  # --- identity-service's OWN application: its machine credentials. The runtime reports fleet telemetry to
+  # maestro (so its token `aud` OVERRIDES to maestro-workspace); the admin credential drives the management
+  # plane. Both are identity-service's own secrets, so they STAY seeded (other products' runtimes
+  # self-register via ADR-0017). No user logs into this application, so it needs no role catalogue. ---
+  - id: identity-service
+    name: identity-service
+    credentials:
+      - id: identity-service-ds1-runtime
+        name: identity-service@ds1 runtime
+        grantTypes: [client_credentials]
+        isConfidential: true
+        secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}
+        audience: maestro-workspace      # OVERRIDE: this runtime's token is aimed at maestro (ADR-0020)
+        subject: runtime@identity-service.fps4.nl
+        claims:
+          role: product_runtime
+          email: runtime@identity-service.fps4.nl
+      - id: identity-admin-mcp
+        name: identity-service admin (MCP + break-glass)
+        grantTypes: [client_credentials]
+        isConfidential: true
+        secret: ${IDENTITY_ADMIN_CLIENT_SECRET}
+        scopes: [admin]                  # full management authority; request scope=admin
+        subject: admin-mcp@identity-service.fps4.nl
 
-  # --- identity-service's OWN management-plane principal (ADR-0007). A client_credentials client whose
-  # token carries the `admin` scope — the credential the /admin/v1 API, the MCP server, and the admin
-  # console authenticate with. The secret is injected into the container by the deploy (Actions secret).
-  #   curl -s -XPOST $AUTH_JWT_ISSUER/oauth2/token -d grant_type=client_credentials \
-  #        -d client_id=identity-admin-mcp -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin ---
-  - id: identity-admin-mcp
-    name: identity-service admin (MCP + break-glass)
-    grantTypes: [client_credentials]
-    isConfidential: true
-    secret: ${IDENTITY_ADMIN_CLIENT_SECRET}
-    scopes: [admin]                    # full management authority (see ADMIN_SCOPES); request scope=admin
-    subject: admin-mcp@identity-service.fps4.nl   # attributed in the /admin audit log
-
-  # --- The admin CONSOLE's browser client (RQ-0007, ADR-0010, ADR-0019). A human logs in with the
-  # `password` grant via this client; their token carries `roles:[platform_admin]` — now sourced from
-  # their identity-console ASSIGNMENT (ADR-0019, folding ADR-0010) — which the management plane maps to
-  # admin authority (ADMIN_OPERATOR_ROLES). `platform_admin` is therefore this app's role, declared in its
-  # catalogue below. The console verifies tokens by iss+JWKS, not aud, so `audience` is just a label. ---
+  # --- The admin CONSOLE application (RQ-0007, ADR-0010, ADR-0019, ADR-0020). A human logs into its web
+  # credential with the `password` grant; their token carries `roles:[platform_admin]` sourced from their
+  # identity-console ASSIGNMENT, which the management plane maps to admin authority (ADMIN_OPERATOR_ROLES).
+  # `platform_admin` is therefore this application's role. The console verifies tokens by iss+JWKS, not aud. ---
   - id: identity-console
     name: identity-service admin console
-    grantTypes: [password]
     audience: identity-console
-    redirectUris: []
-    isConfidential: false
     roles:
       - { key: platform_admin, name: Platform Admin, description: Full management-plane authority (ADMIN_OPERATOR_ROLES) }
+    credentials:
+      - id: identity-console
+        name: identity-service admin console
+        grantTypes: [password]
+        redirectUris: []
+        isConfidential: false
 
 users:
-  # The ONE bootstrap ROOT operator: once seeded, this human logs into the console and creates every
-  # other user + registers each product's runtime client (ADR-0017). Its ${SEED_CONSOLE_ADMIN_PASSWORD}
-  # is identity-service's own secret (already set). All other users are operational — created via the
-  # console / invites, never seeded (ADR-0011). Re-running the seed leaves existing users untouched.
+  # The ONE bootstrap ROOT operator. Its assignment to the identity-console application is upserted on
+  # EVERY seed run — the safety net that guarantees this human can always log into the console (the
+  # assignment gate can never lock them out). All other users are operational (console / invites).
   - email: admin@identity-service.fps4.nl
     password: ${SEED_CONSOLE_ADMIN_PASSWORD}
     status: active
-    # The operator's console access (ADR-0019). This assignment is upserted on every seed run, so this
-    # user can never be locked out of the console by the assignment gate — it is the safety net.
     assignments:
-      - { client: identity-console, roles: [platform_admin] }
+      - { application: identity-console, roles: [platform_admin] }

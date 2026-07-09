@@ -16,6 +16,11 @@ related:
   - ../../guides/ds1-delivery-pipeline-findings.md
 ---
 
+> **Reworked by [ADR-0020](0020-application-aggregate.md) (2026-07-09):** a product runtime no longer
+> self-registers a standalone *client* — it registers a runtime **credential under its Application**. The
+> application (and its role catalogue) is the durable, reviewed object; the runtime credential is the
+> rotatable auth material beneath it, carrying an `audience` override (e.g. `maestro-workspace`).
+
 ## Context
 
 A managed product's runtime authenticates to maestro as a `product_runtime` principal by exchanging a

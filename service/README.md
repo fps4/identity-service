@@ -48,20 +48,21 @@ Optional:
 
 ## Mongo Collections
 
+- `applications` – the first-class product objects (ADR-0020): `name`, default `audience`, and role catalogue; users are assigned to these.
 - `users` – local-credential + federated user accounts (globally-unique email; no `roles` field — ADR-0019).
-- `assignments` – user↔application entitlements: app-scoped roles + status, gating token issuance (ADR-0019).
+- `assignments` – user↔application entitlements, keyed on `applicationId`: app-scoped roles + status, gating token issuance (ADR-0019/0020).
 - `sessions` – session records, keyed by UUID.
-- `oauth_clients` – registered OAuth clients (confidential & public), each with its role catalogue (ADR-0019).
+- `oauth_clients` – OAuth-client **credentials** under an application (`applicationId`; confidential & public), with an optional `audience` override — no role catalogue (ADR-0020).
 - `oauth_tokens` – access/refresh token metadata.
 - `key_store` – RSA signing key material.
 
-See `../docs/guides/tenant-config.md` for deployment configuration and registering OAuth clients.
+See `../docs/guides/tenant-config.md` for deployment configuration and registering applications & credentials.
 
-Register OAuth clients (with their role catalogues), users, and per-user **assignments** with the
-idempotent seed loader (`npm run seed`) from `config/seed.yaml` — a flat `clients:` / `users:` list, no
-tenant layer (ADR-0018); roles are app-scoped via assignments, not a deployment-wide `user.roles` (ADR-0019).
-Realm-wide settings (`CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`) are deployment
-env, not DB rows.
+Register **applications** (with their role catalogues and credentials), users, and per-user **assignments**
+with the idempotent seed loader (`npm run seed`) from `config/seed.yaml` — a nested `applications:` (each with
+`credentials:`) / `users:` list, no tenant layer (ADR-0018/0020); roles are app-scoped via assignments, not a
+deployment-wide `user.roles` (ADR-0019). Realm-wide settings (`CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`,
+`AUTH_LOCAL_IDP_ENABLED`) are deployment env, not DB rows.
 
 ## Docker
 

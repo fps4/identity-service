@@ -42,23 +42,33 @@ async function main() {
   for (const u of config.users) assertPasswordPolicy(u.password);
 
   const connection = await getMasterConnection();
-  const { OAuthClient, User, Assignment } = makeModels(connection);
+  const { Application, OAuthClient, User, Assignment } = makeModels(connection);
   const now = new Date();
-  let clientsUpserted = 0, usersCreated = 0, usersSkipped = 0, assignmentsUpserted = 0;
+  let appsUpserted = 0, clientsUpserted = 0, usersCreated = 0, usersSkipped = 0, assignmentsUpserted = 0;
 
-  for (const c of config.clients) {
-    const set: Record<string, unknown> = {
-      name: c.name, grantTypes: c.grantTypes,
-      redirectUris: c.redirectUris, scopes: c.scopes, audience: c.audience,
-      roles: c.roles ?? [],        // the application's role catalogue (ADR-0019)
-      isConfidential: c.isConfidential, updatedAt: now
-    };
-    // A client-credentials machine principal (US-0086): the runtime subject + additive claims.
-    if (c.subject !== undefined) set.subject = c.subject;
-    if (c.claims !== undefined) set.claims = c.claims;
-    if (c.secret) set.secretHash = hashSecret(c.secret);
-    await OAuthClient.updateOne({ _id: c.id }, { $set: set }, { upsert: true }).exec();
-    clientsUpserted++;
+  for (const app of config.applications) {
+    // The application owns its name, default audience, and role catalogue (ADR-0020).
+    await Application.updateOne(
+      { _id: app.id },
+      { $set: { name: app.name, audience: app.audience, roles: app.roles ?? [], updatedAt: now } },
+      { upsert: true }
+    ).exec();
+    appsUpserted++;
+
+    // Each credential (OAuth client) under the application.
+    for (const c of app.credentials ?? []) {
+      const set: Record<string, unknown> = {
+        applicationId: app.id, name: c.name, grantTypes: c.grantTypes,
+        redirectUris: c.redirectUris, scopes: c.scopes, audience: c.audience,
+        isConfidential: c.isConfidential, updatedAt: now
+      };
+      // A client-credentials machine principal (US-0086): the runtime subject + additive claims.
+      if (c.subject !== undefined) set.subject = c.subject;
+      if (c.claims !== undefined) set.claims = c.claims;
+      if (c.secret) set.secretHash = hashSecret(c.secret);
+      await OAuthClient.updateOne({ _id: c.id }, { $set: set }, { upsert: true }).exec();
+      clientsUpserted++;
+    }
   }
 
   for (const u of config.users) {
@@ -78,15 +88,15 @@ async function main() {
       usersCreated++;
     }
 
-    // Application assignments (ADR-0019): entitlement + app-scoped roles. Upserted every run so the
+    // Application assignments (ADR-0019/0020): entitlement + app-scoped roles. Upserted every run so the
     // seed is the safety net for the operator — admin@identity-service.fps4.nl always keeps its
     // identity-console/platform_admin assignment and thus console access.
     for (const a of u.assignments ?? []) {
       await Assignment.updateOne(
-        { userId, clientId: a.client },
+        { userId, applicationId: a.application },
         {
           $set: { roles: a.roles ?? [], status: 'active', updatedAt: now },
-          $setOnInsert: { _id: randomUUID(), userId, clientId: a.client, createdBy: 'seed', createdAt: now }
+          $setOnInsert: { _id: randomUUID(), userId, applicationId: a.application, createdBy: 'seed', createdAt: now }
         },
         { upsert: true }
       ).exec();
@@ -94,7 +104,7 @@ async function main() {
     }
   }
 
-  console.log(`seed: ${clientsUpserted} clients upserted; ${usersCreated} users created, ${usersSkipped} existing skipped; ${assignmentsUpserted} assignments upserted`);
+  console.log(`seed: ${appsUpserted} applications, ${clientsUpserted} credentials upserted; ${usersCreated} users created, ${usersSkipped} existing skipped; ${assignmentsUpserted} assignments upserted`);
 }
 
 main()

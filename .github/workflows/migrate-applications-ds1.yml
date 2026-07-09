@@ -1,0 +1,72 @@
+name: migrate-applications-ds1
+
+# One-shot data migration for ADR-0020 (the Application aggregate). Runs
+# scripts/migrate-application-aggregate.ts against the live ds1 MongoDB: groups OAuth clients into
+# applications, moves the role catalogue + default audience up to the application, sets applicationId on
+# each credential, re-keys assignments + invites, and UNCONDITIONALLY ensures the operator keeps an
+# identity-console/platform_admin assignment. Idempotent — safe to re-dispatch.
+#
+# Run --dry-run FIRST: it prints the proposed clientId → applicationId grouping. If the heuristic
+# mis-groups a product runtime (its subject domain differs from its web app's id), pass an override in
+# `grouping`, e.g. `skills-coach-ds1=coach,sovereign-llm-gateway-ds1=sovereign-copilot`.
+#
+# Run AFTER the ADR-0020 image deploys. Take a backup first (docker/backup.sh nightly).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report the proposed grouping + changes without writing (recommended first).
+        type: boolean
+        default: true
+      grouping:
+        description: 'Optional grouping overrides: clientId=appId,clientId=appId'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-applications-ds1
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, ds1]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the migrator image (carries scripts/ + tsx)
+        run: docker build -f docker/seed.Dockerfile -t ids-migrate-app:${{ github.sha }} .
+
+      - name: Run the migration against the live stack
+        run: |
+          NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' identity-service-mongo 2>/dev/null | awk '{print $1}')
+          [ -n "$NET" ] || { echo "::error::identity-service-mongo not running — deploy the stack first"; exit 1; }
+          echo "mongo network: $NET"
+
+          FLAGS=""
+          [ "${{ inputs.dry_run }}" = "true" ] && FLAGS="--dry-run"
+          echo "::group::migrate-application-aggregate $FLAGS"
+          docker run --rm --network "$NET" \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB_NAME=identity-service \
+            -e ADMIN_OPERATOR_ROLES=platform_admin \
+            -e APP_GROUPING="${{ inputs.grouping }}" \
+            ids-migrate-app:${{ github.sha }} \
+            npx tsx scripts/migrate-application-aggregate.ts $FLAGS
+          echo "::endgroup::"
+
+      - name: Verify (operator console access + shape)
+        run: |
+          docker exec identity-service-mongo mongosh identity-service --quiet --eval '
+            const u = db.users.findOne({ email: "admin@identity-service.fps4.nl" });
+            const a = u ? db.assignments.findOne({ userId: u._id, applicationId: "identity-console", status: "active" }) : null;
+            print("applications:", db.applications.countDocuments({}),
+                  " credentials w/o applicationId:", db.oauth_clients.countDocuments({ applicationId: { $exists: false } }),
+                  " assignments w/ clientId:", db.assignments.countDocuments({ clientId: { $exists: true } }),
+                  " operator console assignment:", a ? JSON.stringify(a.roles) : "MISSING");
+            if (!a) { print("::error::operator has NO active identity-console assignment"); quit(1); }
+          '

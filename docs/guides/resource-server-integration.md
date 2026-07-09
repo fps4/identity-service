@@ -7,6 +7,7 @@ owners: [architect]
 related:
   - docs/design/decisions/0005-decentralized-authorization.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
+  - docs/design/decisions/0020-application-aggregate.md
   - docs/product/RQ-0005-user-roles-in-identity-token.md
   - docs/reference/api.md
   - docs/guides/tenant-config.md
@@ -47,10 +48,11 @@ own permissions. (ADR-0005, RQ-0005 scope §5; ADR-0019 for the app-scoping and 
 
 ## What identity-service gives you
 
-- **A verifiable RS256 identity token** with `sub` (stable), `email`, `iss`, per-consumer `aud`,
-  `exp`/`iat`, and an **optional `roles` claim** — the user's **app-scoped** roles for that `aud`
-  (omitted when the assignment grants none). Because issuance is entitlement-gated (ADR-0019), a token
-  only exists for a user assigned to your app. See [`reference/api.md`](../reference/api.md) for the exact contract.
+- **A verifiable RS256 identity token** with `sub` (stable), `email`, `iss`, an `aud` (your **application's**
+  audience, or a credential override — ADR-0020), `exp`/`iat`, and an **optional `roles` claim** — the user's
+  **app-scoped** roles for that `aud` (omitted when the assignment grants none). Because issuance is
+  entitlement-gated (ADR-0019), a token only exists for a user assigned to your app. See
+  [`reference/api.md`](../reference/api.md) for the exact contract.
 - **JWKS** at `/.well-known/jwks.json` for signature verification.
 - **OAuth2 endpoints** — `/oauth2/token` (local password grant) and authorization-code + PKCE
   (Google SSO).
@@ -111,8 +113,8 @@ Don't re-implement JWKS handling per product. The integration surface is:
 
 ## Operational notes
 
-- **Adding roles and access is operator config, not code.** Define your app's role **catalogue** on its
-  client, then **assign** users to the app with roles (`POST /admin/v1/assignments` or the console — ADR-0019).
+- **Adding roles and access is operator config, not code.** Define your app's role **catalogue** on the
+  **application** (ADR-0020), then **assign** users to the app with roles (`POST /admin/v1/assignments` or the console — ADR-0019).
   The catalogue, assignments, and the admin surface already ship — no identity-service code change is
   needed to light up RBAC in a consuming product.
 - **Role and entitlement changes have a refresh-window latency.** The assignment is re-read at each token

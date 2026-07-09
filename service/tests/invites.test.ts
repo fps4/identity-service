@@ -75,10 +75,10 @@ function fakeCollection(items: any[]) {
 const NOW = new Date('2026-07-03T12:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
 
-// The application an invite entitles its redeemer to (ADR-0019), with a role catalogue the invite's
+// The application an invite entitles its redeemer to (ADR-0020), with a role catalogue the invite's
 // roles are validated against.
-const APP_CLIENT = {
-  _id: 'app-web', name: 'App Web', grantTypes: ['password'], audience: 'app-workspace',
+const APP = {
+  _id: 'app-web', name: 'App Web', audience: 'app-workspace',
   roles: [{ key: 'tenant_admin' }, { key: 'member' }]
 };
 
@@ -88,7 +88,8 @@ function makeState() {
     Invite: fakeCollection([]),
     Assignment: fakeCollection([]),
     AuditLog: fakeCollection([]),
-    OAuthClient: fakeCollection([{ ...APP_CLIENT }]),
+    Application: fakeCollection([{ ...APP }]),
+    OAuthClient: fakeCollection([]),
     OAuthToken: fakeCollection([]),
     KeyStore: fakeCollection([])
   };
@@ -135,7 +136,7 @@ describe('admin service — invites (RQ-0013)', () => {
   afterEach(() => { (CONFIG.auth as any).allowedRoles = savedRoles; });
 
   it('creates an invite, returns the code once, and stores only its digest', async () => {
-    const { inviteId, code, expiresAt } = await admin.createInvite({ clientId: 'app-web' });
+    const { inviteId, code, expiresAt } = await admin.createInvite({ applicationId: 'app-web' });
     expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(expiresAt).toEqual(new Date(NOW.getTime() + 7 * 24 * HOUR)); // 7-day default
     const stored = state.Invite._items.find((i) => i._id === inviteId);
@@ -144,26 +145,26 @@ describe('admin service — invites (RQ-0013)', () => {
     expect(stored).toMatchObject({ maxUses: 1, usesRemaining: 1, roles: [] });
   });
 
-  it('normalizes a bound email, stores the clientId, and validates roles against the app catalogue (ADR-0019)', async () => {
-    const { inviteId } = await admin.createInvite({ clientId: 'app-web', email: ' New@Example.COM ', roles: ['member'] });
-    expect(state.Invite._items.find((i) => i._id === inviteId)).toMatchObject({ clientId: 'app-web', email: 'new@example.com', roles: ['member'] });
-    // A role outside the client's catalogue is rejected loud at creation, not at the invitee's redemption.
-    await expect(admin.createInvite({ clientId: 'app-web', roles: ['superuser'] }))
+  it('normalizes a bound email, stores the applicationId, and validates roles against the app catalogue (ADR-0020)', async () => {
+    const { inviteId } = await admin.createInvite({ applicationId: 'app-web', email: ' New@Example.COM ', roles: ['member'] });
+    expect(state.Invite._items.find((i) => i._id === inviteId)).toMatchObject({ applicationId: 'app-web', email: 'new@example.com', roles: ['member'] });
+    // A role outside the application's catalogue is rejected loud at creation, not at the invitee's redemption.
+    await expect(admin.createInvite({ applicationId: 'app-web', roles: ['superuser'] }))
       .rejects.toMatchObject({ status: 400, code: 'invalid_role' });
-    await expect(admin.createInvite({ clientId: 'app-web', email: 'not-an-email' }))
+    await expect(admin.createInvite({ applicationId: 'app-web', email: 'not-an-email' }))
       .rejects.toMatchObject({ status: 400, code: 'invalid_email' });
-    await expect(admin.createInvite({ clientId: 'app-web', maxUses: 0 }))
+    await expect(admin.createInvite({ applicationId: 'app-web', maxUses: 0 }))
       .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
-    // clientId is required (ADR-0019), and must reference a known application.
+    // applicationId is required (ADR-0020), and must reference a known application.
     await expect(admin.createInvite({} as any))
       .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
-    await expect(admin.createInvite({ clientId: 'ghost' }))
-      .rejects.toMatchObject({ status: 404, code: 'client_not_found' });
+    await expect(admin.createInvite({ applicationId: 'ghost' }))
+      .rejects.toMatchObject({ status: 404, code: 'application_not_found' });
   });
 
   it('lists invites with derived status and usedCount, never the code digest', async () => {
-    const { inviteId } = await admin.createInvite({ clientId: 'app-web', maxUses: 2, note: 'March cohort' });
-    await admin.createInvite({ clientId: 'app-web', expiresInHours: -1 }).catch(() => {}); // rejected, not stored
+    const { inviteId } = await admin.createInvite({ applicationId: 'app-web', maxUses: 2, note: 'March cohort' });
+    await admin.createInvite({ applicationId: 'app-web', expiresInHours: -1 }).catch(() => {}); // rejected, not stored
     state.Invite._items.find((i) => i._id === inviteId).usesRemaining = 1; // one redemption happened
 
     const listed = await admin.listInvites();
@@ -173,7 +174,7 @@ describe('admin service — invites (RQ-0013)', () => {
   });
 
   it('revokes an invite (listing it as revoked) and 404s on an unknown id', async () => {
-    const { inviteId } = await admin.createInvite({ clientId: 'app-web' });
+    const { inviteId } = await admin.createInvite({ applicationId: 'app-web' });
     expect(await admin.revokeInvite(inviteId)).toEqual({ inviteId, revoked: true });
     expect((await admin.listInvites())[0].status).toBe('revoked');
     await expect(admin.revokeInvite('nope')).rejects.toMatchObject({ status: 404, code: 'invite_not_found' });
@@ -216,30 +217,30 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
     await expect(register('a@x.test')).rejects.toMatchObject({ status: 403, code: 'invite_required' });
     await expect(register('a@x.test', 'NOPE-NOPE-NOPE')).rejects.toMatchObject({ status: 403, code: 'invalid_invite' });
 
-    const expired = await admin.createInvite({ clientId: 'app-web', expiresInHours: 1 });
+    const expired = await admin.createInvite({ applicationId: 'app-web', expiresInHours: 1 });
     state.Invite._items.find((i) => i._id === expired.inviteId).expiresAt = new Date(NOW.getTime() - HOUR);
     await expect(register('a@x.test', expired.code)).rejects.toMatchObject({ code: 'invalid_invite' });
 
-    const revoked = await admin.createInvite({ clientId: 'app-web' });
+    const revoked = await admin.createInvite({ applicationId: 'app-web' });
     await admin.revokeInvite(revoked.inviteId);
     await expect(register('a@x.test', revoked.code)).rejects.toMatchObject({ code: 'invalid_invite' });
   });
 
   it('redeems a valid code: user created, roles stamped, a use consumed, redemption audited', async () => {
     setup('invite');
-    const { inviteId, code } = await admin.createInvite({ clientId: 'app-web', roles: ['member'] });
+    const { inviteId, code } = await admin.createInvite({ applicationId: 'app-web', roles: ['member'] });
 
     const user = await register('new@x.test', code.toLowerCase().replace(/-/g, '')); // humane entry forms work
     // The user itself no longer carries roles (ADR-0019) — they live on the assignment created on redemption.
     expect(state.User._items[0]).toMatchObject({ email: 'new@x.test', emailVerified: false });
     expect(state.User._items[0]).not.toHaveProperty('roles');
     expect(state.Assignment._items[0]).toMatchObject({
-      userId: user.id, clientId: 'app-web', roles: ['member'], status: 'active'
+      userId: user.id, applicationId: 'app-web', roles: ['member'], status: 'active'
     });
     expect(state.Invite._items[0].usesRemaining).toBe(0);
     expect(state.AuditLog._items[0]).toMatchObject({
       action: 'invite.redeem', targetType: 'invite', targetId: inviteId,
-      meta: { userId: user.id, email: 'new@x.test', clientId: 'app-web' }
+      meta: { userId: user.id, email: 'new@x.test', applicationId: 'app-web' }
     });
 
     // Single-use: the same code cannot admit a second person.
@@ -248,7 +249,7 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
 
   it('a multi-use cohort code admits exactly maxUses people', async () => {
     setup('invite');
-    const { code } = await admin.createInvite({ clientId: 'app-web', maxUses: 2 });
+    const { code } = await admin.createInvite({ applicationId: 'app-web', maxUses: 2 });
     await register('one@x.test', code);
     await register('two@x.test', code);
     await expect(register('three@x.test', code)).rejects.toMatchObject({ code: 'invalid_invite' });
@@ -257,7 +258,7 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
 
   it('an email-bound invite only admits (and then vouches) its address; a mismatch refunds the use', async () => {
     setup('invite');
-    const { code } = await admin.createInvite({ clientId: 'app-web', email: 'invited@x.test' });
+    const { code } = await admin.createInvite({ applicationId: 'app-web', email: 'invited@x.test' });
 
     await expect(register('intruder@x.test', code)).rejects.toMatchObject({ code: 'invalid_invite' });
     expect(state.Invite._items[0].usesRemaining).toBe(1); // refunded — the mismatch burned nothing
@@ -269,7 +270,7 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
   it('email_taken after a valid code refunds the use (a rejected registration never burns one)', async () => {
     setup('invite');
     state.User._items.push({ _id: 'u0', email: 'taken@x.test', createdAt: new Date(0) });
-    const { code } = await admin.createInvite({ clientId: 'app-web' });
+    const { code } = await admin.createInvite({ applicationId: 'app-web' });
     await expect(register('taken@x.test', code)).rejects.toMatchObject({ status: 409, code: 'email_taken' });
     expect(state.Invite._items[0].usesRemaining).toBe(1);
     await expect(register('fresh@x.test', code)).resolves.toBeTruthy(); // still redeemable
@@ -277,7 +278,7 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
 
   it('input validation fires before any invite is consulted (no use burned on a weak password)', async () => {
     setup('invite');
-    const { code } = await admin.createInvite({ clientId: 'app-web' });
+    const { code } = await admin.createInvite({ applicationId: 'app-web' });
     await expect(users.registerUser({ email: 'a@x.test', password: 'short', inviteCode: code }))
       .rejects.toMatchObject({ code: 'weak_password' });
     expect(state.Invite._items[0].usesRemaining).toBe(1);

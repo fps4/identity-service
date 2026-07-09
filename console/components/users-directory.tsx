@@ -15,7 +15,7 @@ import { Field } from '@/components/field';
 import { UserDetailDrawer } from '@/components/user-detail-drawer';
 import { statusLabel, statusTone } from '@/lib/users';
 import { createUser } from '@/app/actions';
-import type { User, Client } from '@/lib/api';
+import type { User, Application } from '@/lib/api';
 
 type StatusFilter = 'all' | 'active' | 'disabled' | 'locked';
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -23,9 +23,9 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const inputCls =
   'h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
 
-export function UsersDirectory({ users, clients = [], loadError }: {
+export function UsersDirectory({ users, applications = [], loadError }: {
   users: User[];
-  clients?: Client[];
+  applications?: Application[];
   loadError?: string;
 }) {
   const [query, setQuery] = useState('');
@@ -128,7 +128,7 @@ export function UsersDirectory({ users, clients = [], loadError }: {
       </div>
 
       {selected && (
-        <UserDetailDrawer user={selected} clients={clients} onClose={() => setSelectedId(null)} />
+        <UserDetailDrawer user={selected} applications={applications} onClose={() => setSelectedId(null)} />
       )}
 
       {creating && (

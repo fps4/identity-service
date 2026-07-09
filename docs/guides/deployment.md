@@ -9,6 +9,7 @@ related:
   - docs/guides/tenant-config.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
+  - docs/design/decisions/0020-application-aggregate.md
 ---
 
 # Deployment
@@ -97,12 +98,12 @@ git, and no `age` master key.
   must stay equal to its consumer-repo mirror (`MAESTRO_RUNTIME_CLIENT_SECRET` in the
   gateway/copilot/skills-coach repos, US-0086).
 
-  The seed also carries the ADR-0019 shape: each client may declare its **role catalogue** (`roles:`) and
-  each user their **assignments** (`assignments: [{ client, roles? }]`) — see the
+  The seed carries the ADR-0020 nested shape: **applications** (each with its **role catalogue** `roles:` and
+  its **credentials**) and each user's **assignments** (`assignments: [{ application, roles? }]`) — see the
   [deployment-configuration guide](./tenant-config.md#application-role-catalogues--assignments-adr-0019).
   **Operator safeguard:** the bootstrap operator (`admin@identity-service.fps4.nl`) is always seeded with an
-  `identity-console` / `platform_admin` assignment, so with global entitlement enforcement the console is
-  never accidentally lockable.
+  assignment to the **`identity-console` application** granting `platform_admin`, so with global entitlement
+  enforcement the console is never accidentally lockable.
 
 ### Nightly backups & point-in-time recovery — ADR-0008
 
@@ -175,6 +176,36 @@ enforcing image deploys and is idempotent (`--dry-run` first):
 # dry-run first (reports the backfill it would write), then apply:
 npm run migrate-app-assignments -- --dry-run
 npm run migrate-app-assignments
+```
+
+## Application-aggregate migration: group clients into applications (ADR-0020)
+
+[ADR-0020](../design/decisions/0020-application-aggregate.md) makes the **Application** the first-class unit:
+the role catalogue + audience move off each OAuth client and up to an application, clients become
+**credentials** under an `applicationId`, and assignments/invites re-key from `clientId` to `applicationId`.
+Because folding today's separate clients into applications is a judgment call (a product runtime's `aud` is
+maestro's, not its product's), the migration **proposes** a grouping and an operator **confirms** it before
+it runs. It is idempotent (`--dry-run` writes nothing).
+
+`scripts/migrate-application-aggregate.ts` (driven by the `migrate-applications-ds1` GitHub workflow):
+
+1. **Propose applications** — group credentials on a product key derived from client id / `subject` domain
+   (e.g. `coach-web` + `skills-coach-ds1` → application `coach`) and **print the mapping** for operator
+   confirmation. Override the proposal with `APP_GROUPING` when the inferred grouping is wrong.
+2. **Create applications** — move each group's role catalogue (the union) and a default `audience` (the
+   user-login credential's audience) onto the application.
+3. **Set `applicationId`** on every credential, keeping a per-credential `audience` **override** where it
+   differs from the app default (product runtimes → `maestro-workspace`).
+4. **Re-key** `assignments` and `invites` from `clientId` to `applicationId`.
+5. **Operator safeguard (unconditional)** — ensure an `identity-console` **application** with `platform_admin`
+   in its catalogue, the identity-console credential under it, and `admin@identity-service.fps4.nl` holding an
+   active assignment to that application. The workflow's verify step fails if that assignment is missing.
+
+```bash
+# dry-run first — PROPOSES the grouping and writes nothing; confirm it, then apply:
+npm run migrate-application-aggregate -- --dry-run
+# override the inferred grouping if needed, then apply:
+APP_GROUPING=… npm run migrate-application-aggregate
 ```
 
 ## Management-plane admin client & MCP server — ADR-0007

@@ -47,6 +47,7 @@ function userMatches(u: any, query: any): boolean {
 
 interface Store {
   clients: any[];
+  applications: any[];
   authorizations: any[];
   tokens: any[];
   sessions: any[];
@@ -55,18 +56,18 @@ interface Store {
 }
 
 function makeStore(): Store {
-  return { clients: [], authorizations: [], tokens: [], sessions: [], users: [], assignments: [] };
+  return { clients: [], applications: [], authorizations: [], tokens: [], sessions: [], users: [], assignments: [] };
 }
 
-// The ADR-0019 entitlement gate: an assignment matches on clientId + status, honouring `userId` when the
-// seeded record pins one and treating it as a wildcard (any user of the client) when omitted. A federated
+// The ADR-0020 entitlement gate: an assignment matches on applicationId + status, honouring `userId` when
+// the seeded record pins one and treating it as a wildcard (any user of the app) when omitted. A federated
 // login JIT-provisions a user with a random `_id`, so wildcard seeding lets these flows issue a token.
 const assignmentMatches = (a: any, q: any): boolean =>
-  a.clientId === q.clientId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
+  a.applicationId === q.applicationId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
 
-// Seed a single active entitlement to the maestro client with the given app-scoped roles.
+// Seed a single active entitlement to the maestro application with the given app-scoped roles.
 function seedAssignment(store: Store, roles: string[] = [], overrides: Record<string, any> = {}) {
-  store.assignments = [{ _id: 'assign-1', clientId: 'client-maestro', roles, status: 'active', ...overrides }];
+  store.assignments = [{ _id: 'assign-1', applicationId: 'app-maestro', roles, status: 'active', ...overrides }];
 }
 
 function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthServerDependencies {
@@ -77,6 +78,9 @@ function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthSer
     makeModels: () => ({
       OAuthClient: {
         findById: (id: string) => ({ lean: () => ({ exec: async () => store.clients.find((c) => c._id === id) ?? null }) })
+      },
+      Application: {
+        findById: (id: string) => ({ lean: () => ({ exec: async () => store.applications.find((a) => a._id === id) ?? null }) })
       },
       OAuthAuthorization: {
         create: async (doc: any) => { store.authorizations.push(doc); return doc; },
@@ -122,14 +126,21 @@ function makeStubIdp(overrides: Partial<GoogleIdp> = {}): GoogleIdp {
 const pkceChallenge = (verifier: string) => createHash('sha256').update(verifier).digest('base64url');
 
 function seedClient(store: Store) {
+  // The application (ADR-0020) owns the default audience; the credential just points at it.
+  store.applications.push({
+    _id: 'app-maestro',
+    name: 'Maestro',
+    audience: 'maestro-workspace',
+    roles: []
+  });
   store.clients.push({
     _id: 'client-maestro',
     name: 'maestro web',
+    applicationId: 'app-maestro',
     secretHash: 'unused',
     grantTypes: ['authorization_code'],
     redirectUris: ['https://maestro.test/callback'],
     scopes: [],
-    audience: 'maestro-workspace',
     isConfidential: false
   });
 }
@@ -216,8 +227,8 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
     })).rejects.toBeInstanceOf(InvalidRequestError);
   });
 
-  it('rejects a client without an audience configured', async () => {
-    store.clients[0].audience = undefined;
+  it('rejects an application without an audience configured', async () => {
+    store.applications[0].audience = undefined;
     await expect(server.startAuthorization({
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback',

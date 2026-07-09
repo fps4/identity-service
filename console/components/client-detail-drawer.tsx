@@ -1,20 +1,21 @@
 'use client';
 
-// Per-application (OAuth client) detail drawer (RQ-0017, ADR-0014). Opened from the clients directory;
-// routes rotate-secret and delete through the existing audited server actions. Rotate is offered only
-// for confidential clients (public/PKCE clients have no secret). The new secret comes back once and is
-// shown via ActionForm's show-once dialog.
+// Credential (OAuth client) detail drawer (ADR-0020, ADR-0014 pattern). A credential is now a leaf under
+// an application — the role catalogue + members moved UP to the application. This drawer shows the
+// credential's config (including the application it belongs to) and routes rotate-secret / delete through
+// the audited server actions. Rotate is offered only for confidential clients (public/PKCE have no
+// secret). The new secret comes back once and is shown via ActionForm's show-once dialog.
 
 import { Drawer } from '@/components/ui/drawer';
 import { Badge } from '@/components/ui/badge';
 import { ActionForm } from '@/components/action-form';
 import { Hidden } from '@/components/field';
-import { ClientAccessSection } from '@/components/client-access-section';
 import { rotateClientSecret, deleteClient } from '@/app/actions';
 import type { Client } from '@/lib/api';
 
-export function ClientDetailDrawer({ client, onClose }: {
+export function ClientDetailDrawer({ client, applicationName, onClose }: {
   client: Client;
+  applicationName?: string;
   onClose: () => void;
 }) {
   const confidential = client.isConfidential !== false;
@@ -22,7 +23,7 @@ export function ClientDetailDrawer({ client, onClose }: {
 
   return (
     <Drawer
-      ariaLabel={`Application ${client.name}`}
+      ariaLabel={`Credential ${client.name}`}
       title={client.name}
       subtitle={client._id}
       badges={confidential
@@ -37,7 +38,7 @@ export function ClientDetailDrawer({ client, onClose }: {
             </ActionForm>
           )}
           <div className="ml-auto">
-            <ActionForm action={deleteClient} submitLabel="Delete" variant="destructive" confirm={`Delete application ${client.name}? Tokens it issued stop validating.`} inline>
+            <ActionForm action={deleteClient} submitLabel="Delete" variant="destructive" confirm={`Delete credential ${client.name}? Tokens it issued stop validating.`} inline>
               <Hidden name="clientId" value={client._id} />
             </ActionForm>
           </div>
@@ -47,6 +48,11 @@ export function ClientDetailDrawer({ client, onClose }: {
       <div className="section">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Configuration</h3>
         <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5">
+          <dt className="text-muted-foreground">Application</dt>
+          <dd>
+            {applicationName ? <span>{applicationName} </span> : null}
+            <span className="font-mono text-xs text-muted-foreground">{client.applicationId}</span>
+          </dd>
           <dt className="text-muted-foreground">Client id</dt>
           <dd className="font-mono text-xs">{client._id}</dd>
           <dt className="text-muted-foreground">Grant types</dt>
@@ -54,7 +60,7 @@ export function ClientDetailDrawer({ client, onClose }: {
           <dt className="text-muted-foreground">Scopes</dt>
           <dd>{client.scopes?.length ? client.scopes.map((sc) => <span key={sc} className="mr-1 rounded bg-secondary px-1.5 py-0.5 text-xs">{sc}</span>) : '—'}</dd>
           <dt className="text-muted-foreground">Audience</dt>
-          <dd className="font-mono text-xs">{client.audience || '—'}</dd>
+          <dd className="font-mono text-xs">{client.audience || <span className="text-muted-foreground">inherits application</span>}</dd>
           {redirectUris.length > 0 && (
             <>
               <dt className="text-muted-foreground">Redirect URIs</dt>
@@ -63,8 +69,6 @@ export function ClientDetailDrawer({ client, onClose }: {
           )}
         </dl>
       </div>
-
-      <ClientAccessSection clientId={client._id} />
 
       <div className="section">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Secret</h3>

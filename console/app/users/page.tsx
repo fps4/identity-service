@@ -8,12 +8,12 @@ export const dynamic = 'force-dynamic';
 // read still leaves the create action usable.
 export default async function UsersPage() {
   let users: Awaited<ReturnType<typeof api.listUsers>> = [];
-  let clients: Awaited<ReturnType<typeof api.listClients>> = [];
+  let applications: Awaited<ReturnType<typeof api.listApplications>> = [];
   let loadError: string | undefined;
   try { users = await api.listUsers(); } catch (e) { loadError = (e as Error).message; }
-  // Applications feed the assign-to-app picker in the user drawer (ADR-0019). A failed read just leaves
-  // the picker empty; the rest of the page still works.
-  try { clients = await api.listClients(); } catch { /* non-fatal */ }
+  // Applications feed the assign-to-app picker + role catalogues in the user drawer (ADR-0020). A failed
+  // read just leaves the picker empty; the rest of the page still works.
+  try { applications = await api.listApplications(); } catch { /* non-fatal */ }
 
   return (
     <div className="space-y-6">
@@ -24,7 +24,7 @@ export default async function UsersPage() {
         </p>
       </div>
 
-      <UsersDirectory users={users} clients={clients} loadError={loadError} />
+      <UsersDirectory users={users} applications={applications} loadError={loadError} />
     </div>
   );
 }

@@ -33,6 +33,7 @@ import { createGoogleIdp, type GoogleIdp } from './google.js';
 import type { OAuthClientDocument } from '../models/oauth-client.js';
 import type { UserDocument } from '../models/user.js';
 import type { AssignmentDocument } from '../models/assignment.js';
+import type { ApplicationDocument } from '../models/application.js';
 
 const GRANT_CLIENT_CREDENTIALS = 'client_credentials';
 const GRANT_AUTHORIZATION_CODE = 'authorization_code';
@@ -131,7 +132,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // RFC 8707 resource indicator (ADR-0009 Phase 2): if the caller names a recognized protected
     // resource, bind the token's `aud` to it instead — so the token is only accepted at that resource.
     // An unrecognized resource is rejected rather than silently issuing a broadly-scoped token.
-    let audience = client.audience ?? CONFIG.auth.jwtAudience;
+    // Audience: a credential override wins, else the application default, else the service-wide default.
+    const application = client.applicationId
+      ? await models.Application.findById(client.applicationId).lean().exec() as ApplicationDocument | null
+      : null;
+    let audience = effectiveAudience(client, application) ?? CONFIG.auth.jwtAudience;
     if (input.resource) {
       const allowedResources = [CONFIG.mcp.resourceUrl];
       if (!allowedResources.includes(input.resource)) {
@@ -210,9 +215,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!client.redirectUris?.includes(input.redirectUri)) {
       throw new InvalidRequestError('redirect_uri is not registered for this client');
     }
-    // A user token is only meaningful if it can be audience-bound to a consumer (RQ-0001 AC4).
-    if (!client.audience) {
-      throw new UnauthorizedClientError('Client has no audience configured for user tokens');
+    // A user token is only meaningful if it can be audience-bound to a consumer (RQ-0001 AC4). The
+    // audience is inherited from the application (ADR-0020).
+    const application = await requireApplication(models, client);
+    if (!effectiveAudience(client, application)) {
+      throw new UnauthorizedClientError('Application has no audience configured for user tokens');
     }
 
     const requestedScope = input.scope ?? [];
@@ -345,15 +352,17 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       registration: CONFIG.auth.registrationMode
     });
 
-    // Entitlement gate (ADR-0019): even a freshly JIT-provisioned federated user needs an active
-    // assignment for this application (created by an invite or an operator) before a token is issued.
-    const assignment = await findActiveAssignment(models, user._id, client._id);
+    // Entitlement gate (ADR-0019/0020): even a freshly JIT-provisioned federated user needs an active
+    // assignment for this credential's application (created by an invite or an operator) before a token.
+    const application = await requireApplication(models, client);
+    const assignment = await findActiveAssignment(models, user._id, application._id);
     if (!assignment) {
       throw new AccessDeniedError('User is not assigned to this application');
     }
 
     return issueUserTokens(models, {
       client,
+      audience: effectiveAudience(client, application),
       // Token claims are unchanged from RQ-0001: the email + stable Google `sub` Google asserted. The
       // user record is a resolution layer behind the token, never a change to it (ADR-0012).
       email: record.email,
@@ -405,15 +414,17 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       await user.save();
     }
 
-    // Entitlement gate (ADR-0019): the user must hold an active assignment for this application; the
-    // token's roles are the app-scoped roles from that assignment.
-    const assignment = await findActiveAssignment(models, user._id, client._id);
+    // Entitlement gate (ADR-0019/0020): the user must hold an active assignment for this credential's
+    // application; the token's roles are the app-scoped roles from that assignment.
+    const application = await requireApplication(models, client);
+    const assignment = await findActiveAssignment(models, user._id, application._id);
     if (!assignment) {
       throw new AccessDeniedError('User is not assigned to this application');
     }
 
     return issueUserTokens(models, {
       client,
+      audience: effectiveAudience(client, application),
       email: user.email,
       sub: user._id, // the stable subject id
       scope: [],
@@ -466,7 +477,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidGrantError('User no longer exists');
     }
     assertUserActive(user);
-    const assignment = await findActiveAssignment(models, user._id, tokenDoc.clientId);
+    const application = await requireApplication(models, client);
+    const assignment = await findActiveAssignment(models, user._id, application._id);
     if (!assignment) {
       throw new InvalidGrantError('Access to this application was revoked');
     }
@@ -477,6 +489,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     return issueUserTokens(models, {
       client,
+      audience: effectiveAudience(client, application),
       email,
       sub,
       scope: tokenDoc.scope ?? [],
@@ -608,6 +621,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     models: ModelsBucket,
     args: {
       client: OAuthClientDocument;
+      audience?: string; // resolved from the credential override / application default (ADR-0020)
       email?: string;
       sub: string;
       scope: string[];
@@ -615,8 +629,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       session?: { _id: string; expiresAt: Date };
     }
   ): Promise<UserTokenResponse> {
-    if (!args.client.audience) {
-      throw new UnauthorizedClientError('Client has no audience configured for user tokens');
+    if (!args.audience) {
+      throw new UnauthorizedClientError('Application has no audience configured for user tokens');
     }
     const issuedAt = nowFn();
     const accessExpiresIn = CONFIG.oauth.accessTokenTtlSec;
@@ -643,7 +657,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const jti = randomUUID();
     const accessToken = await signUserAccessToken({
       jti,
-      audience: args.client.audience,
+      audience: args.audience,
       email: args.email,
       sub: args.sub,
       scope: args.scope,
@@ -735,14 +749,30 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   };
 }
 
-/** The user's active entitlement to an application (ADR-0019), or null if none/suspended. Keyed on the
- *  user record `_id` (not the token `sub`, which for a federated login is the provider subject). */
+/** The user's active entitlement to an application (ADR-0019/0020), or null if none/suspended. Keyed on
+ *  the user record `_id` (not the token `sub`, which for a federated login is the provider subject) and
+ *  the APPLICATION id (a user assigned to an app may log in through any of its credentials). */
 async function findActiveAssignment(
   models: ModelsBucket,
   userId: string,
-  clientId: string
+  applicationId: string
 ): Promise<AssignmentDocument | null> {
-  return models.Assignment.findOne({ userId, clientId, status: 'active' }).lean().exec() as Promise<AssignmentDocument | null>;
+  return models.Assignment.findOne({ userId, applicationId, status: 'active' }).lean().exec() as Promise<AssignmentDocument | null>;
+}
+
+/** Resolve the application a credential belongs to (ADR-0020). Required for user grants — it supplies the
+ *  entitlement key and the default token audience. */
+async function requireApplication(models: ModelsBucket, client: { applicationId?: string }): Promise<ApplicationDocument> {
+  if (!client.applicationId) throw new UnauthorizedClientError('Client is not part of an application');
+  const application = await models.Application.findById(client.applicationId).lean().exec() as ApplicationDocument | null;
+  if (!application) throw new UnauthorizedClientError('Client application not found');
+  return application;
+}
+
+/** The token `aud`: a credential-level override wins, else the application default, else the
+ *  service-wide default (ADR-0020). */
+function effectiveAudience(client: { audience?: string }, application: { audience?: string } | null): string | undefined {
+  return client.audience ?? application?.audience ?? undefined;
 }
 
 async function enforceRateLimit(models: ReturnType<OAuthServerDependencies['makeModels']>, issuedAt: Date, maxPerMinute: number) {
