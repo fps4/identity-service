@@ -15,7 +15,6 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
  */
 export interface OAuthAuthorizationDocument extends Document<string> {
   _id: string;                 // internal authorization id
-  tenantId: string;
   clientId: string;
   consumerRedirectUri: string; // where we 302 back to the consumer (must be registered on the client)
   consumerState?: string;      // the consumer's opaque state, echoed back untouched
@@ -35,7 +34,6 @@ export interface OAuthAuthorizationDocument extends Document<string> {
 
 const oauthAuthorizationSchema = new mongoose.Schema<OAuthAuthorizationDocument>({
   _id: { type: String, required: true, default: () => randomUUID() },
-  tenantId: { type: String, required: true, index: true },
   clientId: { type: String, required: true, index: true },
   consumerRedirectUri: { type: String, required: true },
   consumerState: { type: String },

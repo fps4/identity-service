@@ -39,8 +39,8 @@ issued token (`accessToken` + `refreshToken` + …) to `onSuccess`. **Token stor
 and refresh are intentionally the host app's responsibility** — this is a login form, not a session
 manager.
 
-> Requires a tenant with the **local IdP** enabled (`oauth.idp.provider: 'local'` + the `password`
-> grant) and a client with an `audience`. See [tenant-config](../docs/guides/tenant-config.md).
+> Requires the deployment's **local IdP** enabled (`AUTH_LOCAL_IDP_ENABLED=true`, the default) and a
+> client allowing the `password` grant with an `audience`. See [deployment configuration](../docs/guides/tenant-config.md).
 
 ## Continue with Google (RQ-0012)
 
@@ -66,9 +66,9 @@ const token = await completeGoogleLoginFromRedirect({
 // store token.accessToken, then navigate into the app
 ```
 
-> Requires the client to allow the **`authorization_code`** grant with the `redirectUri` registered,
-> the tenant's Google IdP configured, and the deployment's Google app env set. See
-> [tenant-config](../docs/guides/tenant-config.md) and [RQ-0012](../docs/product/RQ-0012-react-google-login.md).
+> Requires the client to allow the **`authorization_code`** grant with the `redirectUri` registered and
+> the deployment's Google app env set. See
+> [deployment configuration](../docs/guides/tenant-config.md) and [RQ-0012](../docs/product/RQ-0012-react-google-login.md).
 
 ## Signup with `<Register/>` (RQ-0015)
 
@@ -81,18 +81,17 @@ import { Register } from '@fps4/identity-service-react';
 
 <Register
   baseUrl="https://auth-dev.example.com"
-  tenantId="tenant-local"
   onSuccess={(user) => {
-    // user = { id, email, tenantId }. Now log them in — render <Login/> or call loginWithPassword.
+    // user = { id, email }. Now log them in — render <Login/> or call loginWithPassword.
     router.push('/login?registered=1');
   }}
   onError={(err) => console.error(err)}
 />
 ```
 
-### Invite-only tenants
+### Invite-only deployments
 
-On a tenant whose registration policy is `invite` (RQ-0013), the operator sends the invitee a code (or
+When the deployment's registration mode is `invite` (RQ-0013), the operator sends the invitee a code (or
 a link carrying it). Pass `invite` to collect it — prefill from a `?invite=` link so the invitee types
 nothing:
 
@@ -102,7 +101,6 @@ const invite = new URLSearchParams(window.location.search).get('invite') ?? unde
 
 <Register
   baseUrl={baseUrl}
-  tenantId="tenant-local"
   invite={{ required: true, defaultCode: invite, hint: 'Sent to you by your workspace admin.' }}
   onSuccess={onSuccess}
 />
@@ -111,12 +109,12 @@ const invite = new URLSearchParams(window.location.search).get('invite') ?? unde
 `invite={true}` shows an optional field; the options form requires/prefills/annotates it. Even without
 `invite`, an `invite_required` response **auto-reveals** the field. The component maps the server's
 deliberately generic codes — `invite_required`, `invalid_invite`, `registration_closed` — to short
-messages that never reveal *why* a code failed (RQ-0013 §5). On invite-only tenants a **new** user's
+messages that never reveal *why* a code failed (RQ-0013 §5). On invite-only deployments a **new** user's
 first "Continue with Google" is denied (`error=access_denied` on the callback) — route new users here
 first; their Google account links automatically on the next login once the verified email matches (see
-[tenant-config](../docs/guides/tenant-config.md)).
+[deployment configuration](../docs/guides/tenant-config.md)).
 
-> Prefer to build your own form? `requestRegistration({ baseUrl, tenantId, email, password, inviteCode? })`
+> Prefer to build your own form? `requestRegistration({ baseUrl, email, password, inviteCode? })`
 > is the underlying fetch-only call (or use the SDK's `registerWithPassword` on the server).
 
 ## Card chrome (RQ-0016)
@@ -179,10 +177,10 @@ dry-run) is also available. Consumers install with an `.npmrc` mapping `@fps4` t
 ## API
 
 - `<Login baseUrl clientId onSuccess [onError title submitLabel emailLabel passwordLabel className classNames unstyled fetchImpl google hidePasswordForm card] />`
-- `<Register baseUrl tenantId onSuccess [onError title submitLabel emailLabel passwordLabel invite className classNames unstyled fetchImpl card] />` — the signup counterpart (RQ-0015); `invite` is `true` or `{ required, defaultCode, label, hint }`.
+- `<Register baseUrl onSuccess [onError title submitLabel emailLabel passwordLabel invite className classNames unstyled fetchImpl card] />` — the signup counterpart (RQ-0015); `invite` is `true` or `{ required, defaultCode, label, hint }`.
 - `card` (both) — `true` or `{ logo, subtitle, footer, width, fullViewport }`; opt-in Auth0-style card chrome (RQ-0016). `<AuthCard options title>{children}</AuthCard>` is exported for reuse.
 - `requestPasswordToken({ baseUrl, clientId, username, password, fetchImpl? })` — the underlying call, for custom UIs.
-- `requestRegistration({ baseUrl, tenantId, email, password, inviteCode?, fetchImpl? })` — the underlying signup call, for custom UIs.
+- `requestRegistration({ baseUrl, email, password, inviteCode?, fetchImpl? })` — the underlying signup call, for custom UIs.
 - `RegisterError` — thrown on a rejected registration (carries `status` and the server `code`).
 - `beginGoogleLogin(req)` / `completeGoogleLogin(req)` — pure helpers (build authorize URL + PKCE / exchange code).
 - `startGoogleLoginRedirect(req)` / `completeGoogleLoginFromRedirect(req)` — turnkey redirect helpers (stash + navigate / read URL + validate state + exchange), used by the `<Login/>` button.

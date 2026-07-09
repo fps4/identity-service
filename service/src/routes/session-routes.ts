@@ -3,7 +3,6 @@ import type { Request, Response } from 'express';
 import {
   InvalidInputError,
   MissingJwtSecretError,
-  TenantNotFoundError,
   SessionNotFoundError,
   NoSessionUpdatesProvidedError
 } from '../core/errors.js';
@@ -15,34 +14,24 @@ import logger from '../utils/logger.js';
 const router = express.Router();
 
 // Self-service local-credential registration (RQ-0002). Login is the separate `password` grant.
-router.post('/tenants/:tenantId/register', async (req: Request, res: Response) => {
-  const tenantId = req.params?.tenantId;
-  if (!tenantId) {
-    return res.status(400).json({ message: 'tenantId parameter is required' });
-  }
+router.post('/register', async (req: Request, res: Response) => {
   try {
     const user = await userService.registerUser({
-      tenantId,
       email: typeof req.body?.email === 'string' ? req.body.email : '',
       password: typeof req.body?.password === 'string' ? req.body.password : '',
       inviteCode: typeof req.body?.inviteCode === 'string' ? req.body.inviteCode : undefined
     });
-    return res.status(201).json({ id: user.id, email: user.email, tenantId: user.tenantId });
+    return res.status(201).json({ id: user.id, email: user.email });
   } catch (error: any) {
     if (error instanceof UserServiceError) {
       return res.status(error.status).json({ error: error.code, message: error.message });
     }
-    logger.error({ err: error, tenantId }, 'register user failed');
+    logger.error({ err: error }, 'register user failed');
     return res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
-router.post('/tenants/:tenantId/sessions', async (req: Request, res: Response) => {
-  const tenantId = req.params?.tenantId;
-  if (!tenantId) {
-    return res.status(400).json({ message: 'tenantId parameter is required' });
-  }
-
+router.post('/sessions', async (req: Request, res: Response) => {
   const visitorId = typeof req.body?.visitorId === 'string' ? req.body.visitorId : undefined;
   const subject = typeof req.body?.subject === 'string' ? req.body.subject : undefined;
   const metaFromHeaders = extractClientMeta(req);
@@ -55,7 +44,6 @@ router.post('/tenants/:tenantId/sessions', async (req: Request, res: Response) =
 
   try {
     const result = await authorizer.createSession({
-      tenantId,
       visitorId,
       subject,
       clientMeta
@@ -69,11 +57,8 @@ router.post('/tenants/:tenantId/sessions', async (req: Request, res: Response) =
       visitorId: result.visitorId
     });
   } catch (error: any) {
-    logger.error({ err: error, tenantId }, 'create session failed');
+    logger.error({ err: error }, 'create session failed');
 
-    if (error instanceof TenantNotFoundError) {
-      return res.status(404).json({ message: 'Tenant not found' });
-    }
     if (error instanceof MissingJwtSecretError) {
       return res.status(500).json({ message: 'Server configuration error: missing AUTH_JWT_SECRET' });
     }

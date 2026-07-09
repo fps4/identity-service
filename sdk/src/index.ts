@@ -1,7 +1,6 @@
 export interface ComponentAuthClientOptions {
   baseUrl: string;
   apiKey?: string;
-  defaultTenantId?: string;
   fetchImpl?: typeof fetch;
   defaultHeaders?: Record<string, string>;
   defaultClientId?: string;
@@ -9,7 +8,6 @@ export interface ComponentAuthClientOptions {
 }
 
 export interface CreateSessionParams {
-  tenantId?: string;
   visitorId?: string;
   subject?: string;
   clientMeta?: Record<string, unknown>;
@@ -91,10 +89,9 @@ export interface RevokeUserTokenParams {
 }
 
 export interface RegisterWithPasswordParams {
-  tenantId?: string;
   email: string;
   password: string;
-  /** Operator-issued invite code — required when the tenant's registration policy is 'invite' (RQ-0013). */
+  /** Operator-issued invite code — required when the registration policy is 'invite' (RQ-0013). */
   inviteCode?: string;
   headers?: Record<string, string>;
 }
@@ -102,7 +99,6 @@ export interface RegisterWithPasswordParams {
 export interface RegisteredUser {
   id: string;
   email: string;
-  tenantId: string;
 }
 
 export interface LoginWithPasswordParams {
@@ -131,7 +127,6 @@ interface RequestOptions {
 export class ComponentAuthClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
-  private readonly defaultTenantId?: string;
   private readonly fetchImpl?: typeof fetch;
   private readonly defaultHeaders: Record<string, string>;
   private readonly defaultClientId?: string;
@@ -143,7 +138,6 @@ export class ComponentAuthClient {
     }
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
-    this.defaultTenantId = options.defaultTenantId;
     this.fetchImpl = options.fetchImpl;
     this.defaultHeaders = options.defaultHeaders ? { ...options.defaultHeaders } : {};
     this.defaultClientId = options.defaultClientId;
@@ -151,12 +145,7 @@ export class ComponentAuthClient {
   }
 
   async createSession(params: CreateSessionParams): Promise<CreateSessionResponse> {
-    const tenantId = params.tenantId ?? this.defaultTenantId;
-    if (!tenantId) {
-      throw new Error('tenantId is required when creating a session');
-    }
-
-    const url = `${this.baseUrl}/v1/tenants/${encodeURIComponent(tenantId)}/sessions`;
+    const url = `${this.baseUrl}/v1/sessions`;
     const payload: Record<string, unknown> = {};
     if (params.visitorId) payload.visitorId = params.visitorId;
     if (params.subject) payload.subject = params.subject;
@@ -318,15 +307,11 @@ export class ComponentAuthClient {
 
   /**
    * Self-service local-credential registration (RQ-0002). Login is a separate `loginWithPassword`.
-   * On an invite-only tenant (RQ-0013) pass the operator-issued `inviteCode`; the server rejects
+   * On an invite-only deployment (RQ-0013) pass the operator-issued `inviteCode`; the server rejects
    * with `invite_required` / `invalid_invite` (403) otherwise.
    */
   async registerWithPassword(params: RegisterWithPasswordParams): Promise<RegisteredUser> {
-    const tenantId = params.tenantId ?? this.defaultTenantId;
-    if (!tenantId) {
-      throw new Error('tenantId is required to register');
-    }
-    const url = `${this.baseUrl}/v1/tenants/${encodeURIComponent(tenantId)}/register`;
+    const url = `${this.baseUrl}/v1/register`;
     return this.request<RegisteredUser>(url, {
       method: 'POST',
       headers: params.headers,

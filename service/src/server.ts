@@ -9,7 +9,6 @@ import { startMaestroTelemetry } from './maestro/telemetry.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
-import { refreshTenantOrigins, scheduleTenantCorsRefresh } from './utils/tenant-cors.js';
 import { buildCorsOptions, corsErrorHandler } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
 import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from './mcp/http-transport.js';
@@ -32,9 +31,6 @@ async function bootstrap() {
         'http://127.0.0.1:8080'
       ];
   const allowedOrigins = new Set([...staticOrigins, ...devOrigins]);
-
-  await refreshTenantOrigins();
-  scheduleTenantCorsRefresh(CONFIG.corsRefreshIntervalMs);
 
   app.use(cors(buildCorsOptions({ allowedOrigins, isProd, methods: Array.from(CONFIG.cors.allowedMethods) })));
 

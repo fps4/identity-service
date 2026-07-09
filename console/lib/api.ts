@@ -40,30 +40,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface Stats {
-  tenants: { total: number; active: number };
   clients: { total: number };
   users: { total: number; locked: number; disabled: number };
   tokens: { accessLastHour: number; accessLastDay: number; activeRefresh: number };
   keys: { active: number };
   at: string;
 }
-export interface Tenant { _id: string; name: string; status: string; region?: string; oauth?: TenantOAuth }
-export interface TenantOAuth { enabled?: boolean; allowedGrantTypes?: string[]; allowedScopes?: string[]; allowedRoles?: string[]; registration?: 'open' | 'invite' | 'closed'; idp?: { provider?: string } }
-export interface Invite { _id: string; tenantId: string; email?: string | null; roles?: string[]; maxUses: number; usedCount: number; expiresAt: string; note?: string; status: 'pending' | 'redeemed' | 'expired' | 'revoked'; createdAt?: string; createdBy?: string }
-export interface Client { _id: string; tenantId: string; name: string; grantTypes: string[]; scopes: string[]; audience?: string; isConfidential?: boolean; redirectUris?: string[] }
+export interface Invite { _id: string; email?: string | null; roles?: string[]; maxUses: number; usedCount: number; expiresAt: string; note?: string; status: 'pending' | 'redeemed' | 'expired' | 'revoked'; createdAt?: string; createdBy?: string }
+export interface Client { _id: string; name: string; grantTypes: string[]; scopes: string[]; audience?: string; isConfidential?: boolean; redirectUris?: string[] }
 export interface FederatedIdentity { provider: string; subject: string; email?: string; emailVerified?: boolean; linkedAt?: string }
-export interface User { _id: string; tenantId: string; email: string; status: string; roles?: string[]; emailVerified?: boolean; lockedUntil?: string | null; failedAttempts?: number; identities?: FederatedIdentity[] }
+export interface User { _id: string; email: string; status: string; roles?: string[]; emailVerified?: boolean; lockedUntil?: string | null; failedAttempts?: number; identities?: FederatedIdentity[] }
 export interface AuditEntry { _id: string; at: string; action: string; principalClientId?: string; targetId?: string; status: number }
 
 export const api = {
   getStats: () => request<Stats>('/stats'),
-  listTenants: () => request<{ tenants: Tenant[] }>('/tenants').then((r) => r.tenants),
-  getTenant: (tenantId: string) => request<Tenant>(`/tenants/${tenantId}`),
-  listClients: (tenantId: string) => request<{ clients: Client[] }>(`/tenants/${tenantId}/clients`).then((r) => r.clients),
-  listUsers: (tenantId: string) => request<{ users: User[] }>(`/tenants/${tenantId}/users`).then((r) => r.users),
+  listClients: () => request<{ clients: Client[] }>('/clients').then((r) => r.clients),
+  listUsers: () => request<{ users: User[] }>('/users').then((r) => r.users),
   recentAudit: (limit = 25) => request<{ entries: AuditEntry[] }>(`/audit?limit=${limit}`).then((r) => r.entries),
 
-  upsertTenant: (body: Record<string, unknown>) => request<Tenant>('/tenants', { method: 'POST', body: JSON.stringify(body) }),
   createClient: (body: Record<string, unknown>) => request<{ clientId: string; secret: string }>('/clients', { method: 'POST', body: JSON.stringify(body) }),
   rotateClientSecret: (clientId: string) => request<{ clientId: string; secret: string }>(`/clients/${clientId}/rotate-secret`, { method: 'POST' }),
   deleteClient: (clientId: string) => request<{ clientId: string; deleted: true }>(`/clients/${clientId}`, { method: 'DELETE' }),
@@ -74,8 +68,8 @@ export const api = {
   deleteUser: (body: Record<string, unknown>) => request<{ email: string; deleted: true }>('/users/delete', { method: 'POST', body: JSON.stringify(body) }),
   linkIdentity: (body: Record<string, unknown>) => request<{ email: string; provider: string; subject: string; linked: true }>('/users/link-identity', { method: 'POST', body: JSON.stringify(body) }),
   unlinkIdentity: (body: Record<string, unknown>) => request<{ email: string; provider: string; subject: string; unlinked: true }>('/users/unlink-identity', { method: 'POST', body: JSON.stringify(body) }),
-  listInvites: (tenantId: string) => request<{ invites: Invite[] }>(`/tenants/${tenantId}/invites`).then((r) => r.invites),
-  createInvite: (tenantId: string, body: Record<string, unknown>) => request<{ inviteId: string; code: string; expiresAt: string }>(`/tenants/${tenantId}/invites`, { method: 'POST', body: JSON.stringify(body) }),
+  listInvites: () => request<{ invites: Invite[] }>('/invites').then((r) => r.invites),
+  createInvite: (body: Record<string, unknown>) => request<{ inviteId: string; code: string; expiresAt: string }>('/invites', { method: 'POST', body: JSON.stringify(body) }),
   revokeInvite: (inviteId: string) => request<{ inviteId: string; revoked: true }>(`/invites/${inviteId}/revoke`, { method: 'POST' }),
   rotateKey: () => request<{ kid: string }>('/keys/rotate', { method: 'POST' })
 };

@@ -1,6 +1,7 @@
 # Component Auth Service
 
-Express-based REST + OAuth service for multi-tenant authentication.
+Express-based REST + OAuth service for authentication. One deployment is one realm with a single shared
+user pool (ADR-0018).
 
 ## Setup
 
@@ -18,22 +19,24 @@ npm start
 | Variable | Description |
 | --- | --- |
 | `MONGO_URI` | Connection string to the MongoDB host (no database appended). |
-| `MONGO_DB_NAME` | Database that stores `tenants` and `sessions`. |
+| `MONGO_DB_NAME` | Database that stores users, clients, and sessions. |
 | `AUTH_JWT_SECRET` | Legacy secret used to sign session JWTs (HS256); kept for compatibility. |
 | `AUTH_JWT_ISSUER` | JWT/OAuth issuer claim. |
 | `AUTH_JWT_AUDIENCE` | JWT/OAuth audience claim. |
 | `SESSION_TTL_MINUTES` | Session lifetime in minutes (legacy flows). |
 | `OAUTH_ACCESS_TOKEN_TTL_SEC` | Access token lifetime in seconds. |
 | `OAUTH_REFRESH_TOKEN_TTL_SEC` | Refresh token lifetime (future use). |
-| `OAUTH_TENANT_MAX_CLIENTS` | Default per-tenant client cap. |
-| `OAUTH_TENANT_MAX_TOKENS_PER_MINUTE` | Default access token rate limit per tenant. |
-| `OAUTH_TENANT_MAX_REFRESH_TOKENS` | Default refresh token cap per tenant. |
+| `OAUTH_MAX_CLIENTS` | Deployment-wide registered-client cap. |
+| `OAUTH_MAX_TOKENS_PER_MINUTE` | Deployment-wide access-token rate limit. |
+| `OAUTH_MAX_REFRESH_TOKENS` | Deployment-wide refresh-token cap. |
 | `OAUTH_KEY_PASSPHRASE` | Optional passphrase to encrypt stored private keys. |
 | `OAUTH_KEY_ROTATION_HOURS` | Desired key rotation cadence. |
 
 Optional:
-- `CORS_ORIGINS` – comma-separated list of static origins.
-- `TENANT_CORS_REFRESH_INTERVAL_MS` – refresh interval for tenant-scoped origins.
+- `CORS_ORIGINS` – comma-separated, deployment-wide allow-list of browser origins.
+- `AUTH_REGISTRATION_MODE` – self-registration mode: `open` (default) \| `invite` \| `closed`.
+- `AUTH_LOCAL_IDP_ENABLED` – enable the local email/password IdP (default `true`).
+- `AUTH_ALLOWED_ROLES` – comma-separated role vocabulary validated at seed time (optional).
 - `LOG_LEVEL`, `LOG_PRETTY` – logging configuration.
 - `OAUTH_CLIENT_CREDENTIALS_SCOPE` – global scopes auto-assigned when none requested.
 
@@ -45,24 +48,17 @@ Optional:
 
 ## Mongo Collections
 
-- `tenants` – tenant metadata and allowed origins.
+- `users` – local-credential + federated user accounts (globally-unique email).
 - `sessions` – session records, keyed by UUID.
 - `oauth_clients` – registered OAuth clients (confidential & public).
 - `oauth_tokens` – access/refresh token metadata.
 - `key_store` – RSA signing key material.
 
-See `../docs/guides/tenant-config.md` for guidance on enabling OAuth for a tenant and registering clients.
+See `../docs/guides/tenant-config.md` for deployment configuration and registering OAuth clients.
 
-Seed tenants by inserting documents similar to:
-
-```js
-db.tenants.insertOne({
-  _id: 'tenant-123',
-  name: 'Tenant Name',
-  status: 'active',
-  allowedOrigins: ['https://widget.example.com']
-});
-```
+Register OAuth clients and users with the idempotent seed loader (`npm run seed`) from `config/seed.yaml`
+— a flat `clients:` / `users:` list, no tenant layer (ADR-0018). Realm-wide settings (`CORS_ORIGINS`,
+`AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `AUTH_ALLOWED_ROLES`) are deployment env, not DB rows.
 
 ## Docker
 

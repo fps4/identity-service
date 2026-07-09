@@ -30,7 +30,6 @@ import { verifySecret, sha256Hex } from '../utils/hash.js';
 import { getActiveKeyPair } from '../utils/key-store.js';
 import { verifyPkceS256 } from './pkce.js';
 import { createGoogleIdp, type GoogleIdp } from './google.js';
-import type { TenantOAuthConfig, TenantDocument } from '../models/tenant.js';
 import type { OAuthClientDocument } from '../models/oauth-client.js';
 import type { UserDocument } from '../models/user.js';
 
@@ -82,27 +81,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new UnauthorizedClientError('Grant type not allowed for client');
     }
 
-    const tenantId = client.tenantId;
-    const tenant = await models.Tenant.findOne({ _id: tenantId, status: 'active' }).lean().exec();
-    if (!tenant) {
-      throw new UnauthorizedClientError('Tenant inactive or missing');
-    }
-
-    const tenantOAuthConfig = ((tenant as unknown as { oauth?: TenantOAuthConfig })?.oauth) ?? undefined;
-    if (!tenantOAuthConfig?.enabled) {
-      throw new UnauthorizedClientError('Tenant not configured for OAuth');
-    }
-
-    const tenantGrantTypes = new Set(
-      (tenantOAuthConfig.allowedGrantTypes && tenantOAuthConfig.allowedGrantTypes.length
-        ? tenantOAuthConfig.allowedGrantTypes
-        : [GRANT_CLIENT_CREDENTIALS]
-      )
-    );
-    if (!tenantGrantTypes.has(GRANT_CLIENT_CREDENTIALS)) {
-      throw new UnauthorizedClientError('Grant type not enabled for tenant');
-    }
-
+    // Scope is constrained by the client's own allow-list (ADR-0018: no tenant layer above the client).
     const requestedScope = input.scope ?? [];
     let candidateScopes = requestedScope.length ? [...requestedScope] : [...(client.scopes ?? [])];
     if (!candidateScopes.length && CONFIG.oauth.defaultClientCredentialsScopes.length) {
@@ -110,40 +89,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     }
 
     const allowedScopes = new Set(client.scopes ?? []);
-    const tenantScopeAllowlist = tenantOAuthConfig.allowedScopes && tenantOAuthConfig.allowedScopes.length
-      ? new Set(tenantOAuthConfig.allowedScopes)
-      : null;
     const effectiveScopes: string[] = [];
-
-    if (candidateScopes.length) {
-      for (const scope of candidateScopes) {
-        if (!allowedScopes.has(scope)) {
-          throw new InvalidScopeError(`Scope ${scope} not permitted for client`);
-        }
-        if (tenantScopeAllowlist && !tenantScopeAllowlist.has(scope)) {
-          throw new InvalidScopeError(`Scope ${scope} not permitted for tenant`);
-        }
-        if (!effectiveScopes.includes(scope)) {
-          effectiveScopes.push(scope);
-        }
-      }
-    } else if (tenantScopeAllowlist) {
-      for (const scope of tenantScopeAllowlist) {
-        if (allowedScopes.has(scope)) {
-          effectiveScopes.push(scope);
-        }
-      }
-    }
-
-    for (const scope of effectiveScopes) {
+    for (const scope of candidateScopes) {
       if (!allowedScopes.has(scope)) {
-        throw new InvalidScopeError(`Scope ${scope} not permitted`);
+        throw new InvalidScopeError(`Scope ${scope} not permitted for client`);
+      }
+      if (!effectiveScopes.includes(scope)) {
+        effectiveScopes.push(scope);
       }
     }
 
     const issuedAt = nowFn();
-    const tenantTokenLimit = tenantOAuthConfig.limits?.tokensPerMinute ?? CONFIG.oauth.tenantDefaults.maxAccessTokensPerMinute;
-    await enforceRateLimit(models, tenantId, issuedAt, tenantTokenLimit);
+    await enforceRateLimit(models, issuedAt, CONFIG.oauth.limits.maxAccessTokensPerMinute);
     const expiresIn = CONFIG.oauth.accessTokenTtlSec;
     const expDate = new Date(issuedAt.getTime() + expiresIn * 1000);
     const jti = randomUUID();
@@ -158,7 +115,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const extraClaims = (client.claims && typeof client.claims === 'object') ? client.claims : {};
     const payload: Record<string, unknown> = {
       ...extraClaims,
-      tid: tenantId,
       cid: client._id,
       scope: effectiveScopes.join(' '),
       sub: input.subject ?? client.subject ?? client._id
@@ -194,7 +150,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     await models.OAuthToken.create({
       _id: jti,
-      tenantId,
       clientId: client._id,
       subject: payload.sub,
       sessionId: input.sessionId,
@@ -205,7 +160,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       status: 'active'
     });
 
-    deps.logger?.info?.({ tenantId, clientId: client._id, scopes: effectiveScopes }, 'issued client credentials token');
+    deps.logger?.info?.({ clientId: client._id, scopes: effectiveScopes }, 'issued client credentials token');
 
     return {
       accessToken: token,
@@ -218,13 +173,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   // --- User login flow (RQ-0001: Google SSO, OIDC Authorization Code + PKCE) ---
 
   /**
-   * Load + validate a client and its tenant for a user-token grant (`authorization_code` or
-   * `password`). Mirrors the client-credentials checks: tenant active + OAuth enabled, and the grant
-   * permitted by both tenant and client.
+   * Load + validate a client for a user-token grant (`authorization_code` or `password`). The client's
+   * own `grantTypes` is the sole gate (ADR-0018: no tenant layer above the client).
    */
   async function loadFlowClient(models: ModelsBucket, clientId: string, grantType: string): Promise<{
     client: OAuthClientDocument;
-    tenant: TenantDocument;
   }> {
     const client = await models.OAuthClient.findById(clientId).lean().exec() as OAuthClientDocument | null;
     if (!client) {
@@ -233,20 +186,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!client.grantTypes.includes(grantType)) {
       throw new UnauthorizedClientError(`Grant ${grantType} not allowed for client`);
     }
-
-    const tenant = await models.Tenant.findOne({ _id: client.tenantId, status: 'active' }).lean().exec() as TenantDocument | null;
-    if (!tenant) {
-      throw new UnauthorizedClientError('Tenant inactive or missing');
-    }
-    const oauthConfig = ((tenant as unknown as { oauth?: TenantOAuthConfig })?.oauth) ?? undefined;
-    if (!oauthConfig?.enabled) {
-      throw new UnauthorizedClientError('Tenant not configured for OAuth');
-    }
-    const tenantGrants = new Set(oauthConfig.allowedGrantTypes ?? []);
-    if (!tenantGrants.has(grantType)) {
-      throw new UnauthorizedClientError(`Grant ${grantType} not enabled for tenant`);
-    }
-    return { client, tenant };
+    return { client };
   }
 
   async function startAuthorization(input: StartAuthorizationInput): Promise<StartAuthorizationResult> {
@@ -285,7 +225,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     await models.OAuthAuthorization.create({
       _id: randomUUID(),
-      tenantId: client.tenantId,
       clientId: client._id,
       consumerRedirectUri: input.redirectUri,
       consumerState: input.state,
@@ -299,7 +238,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     });
 
     const redirectTo = idp.buildAuthorizationUrl({ state: googleState, nonce, scope: GOOGLE_SCOPE });
-    deps.logger?.info?.({ tenantId: client.tenantId, clientId: client._id }, 'started user authorization');
+    deps.logger?.info?.({ clientId: client._id }, 'started user authorization');
     return { redirectTo };
   }
 
@@ -328,18 +267,16 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       const { idToken } = await idp.exchangeCode(input.code);
       const identity = await idp.verifyIdToken(idToken, { nonce: record.nonce });
 
-      // Invite-only/closed tenants do not JIT-provision new people (RQ-0013). Pre-empt here so the
+      // Invite-only/closed deployments do not JIT-provision new people (RQ-0013). Pre-empt here so the
       // user lands back at the consumer with a standard OAuth error instead of a late token-exchange
       // failure; `provisionFederatedUser` re-enforces this at exchange as the authoritative gate.
-      const tenant = await models.Tenant.findOne({ _id: record.tenantId, status: 'active' }).lean().exec() as TenantDocument | null;
-      const registration = ((tenant as unknown as { oauth?: TenantOAuthConfig } | null)?.oauth)?.registration ?? 'open';
+      const registration = CONFIG.auth.registrationMode;
       if (registration !== 'open') {
         const existing = await models.User.findOne({
-          tenantId: record.tenantId,
           $or: [{ 'identities.subject': identity.sub }, { email: identity.email.trim().toLowerCase() }]
         }).lean().exec();
         if (!existing) {
-          throw new AccessDeniedError('Sign-up is not open for this tenant');
+          throw new AccessDeniedError('Sign-up is not open');
         }
       }
 
@@ -354,7 +291,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       const params = new URLSearchParams({ code: record.code });
       if (record.consumerState) params.set('state', record.consumerState);
       const redirectTo = `${record.consumerRedirectUri}${sep}${params.toString()}`;
-      deps.logger?.info?.({ tenantId: record.tenantId, clientId: record.clientId }, 'google authentication succeeded');
+      deps.logger?.info?.({ clientId: record.clientId }, 'google authentication succeeded');
       return { redirectTo };
     } catch (error) {
       // Google leg failed — redirect back to the (registered, therefore trusted) consumer with a
@@ -388,7 +325,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidGrantError('Authorization has no established identity');
     }
 
-    const { client, tenant } = await loadFlowClient(models, record.clientId, GRANT_AUTHORIZATION_CODE);
+    const { client } = await loadFlowClient(models, record.clientId, GRANT_AUTHORIZATION_CODE);
 
     // Single-use: consume the code before issuing, so a replay cannot mint a second token.
     record.status = 'consumed';
@@ -397,20 +334,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     // JIT-provision (or link) the person behind this federated identity and apply the same status +
     // roles rules the password grant enforces (RQ-0011 US-2/US-3/US-4). `provisionFederatedUser`
-    // throws if the account is disabled/locked, an unverified email would collide, or the tenant's
+    // throws if the account is disabled/locked, an unverified email would collide, or the deployment's
     // registration policy forbids creating a new user (RQ-0013).
     const user = await provisionFederatedUser(models, {
-      tenantId: record.tenantId,
       provider: 'google',
       subject: record.sub,
       email: record.email,
       emailVerified: record.emailVerified === true,
-      registration: ((tenant as unknown as { oauth?: TenantOAuthConfig }).oauth)?.registration ?? 'open'
+      registration: CONFIG.auth.registrationMode
     });
 
     return issueUserTokens(models, {
       client,
-      tenantId: record.tenantId,
       // Token claims are unchanged from RQ-0001: the email + stable Google `sub` Google asserted. The
       // user record is a resolution layer behind the token, never a change to it (ADR-0012).
       email: record.email,
@@ -429,7 +364,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const { client } = await loadFlowClient(models, input.clientId, GRANT_PASSWORD);
 
     const email = input.username.trim().toLowerCase();
-    const user = await models.User.findOne({ tenantId: client.tenantId, email }).exec();
+    const user = await models.User.findOne({ email }).exec();
     const now = nowFn();
 
     // Uniform failure for unknown email vs wrong password — no user enumeration. A federated-only user
@@ -449,7 +384,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       if (user.failedAttempts >= CONFIG.auth.password.maxFailedAttempts) {
         user.lockedUntil = new Date(now.getTime() + CONFIG.auth.password.lockoutMinutes * 60 * 1000);
         user.failedAttempts = 0;
-        deps.logger?.info?.({ tenantId: client.tenantId, userId: user._id }, 'user locked after failed logins');
+        deps.logger?.info?.({ userId: user._id }, 'user locked after failed logins');
       }
       await user.save();
       throw genericDenied();
@@ -464,7 +399,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     return issueUserTokens(models, {
       client,
-      tenantId: client.tenantId,
       email: user.email,
       sub: user._id, // the stable subject id
       scope: [],
@@ -512,7 +446,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // A refresh must honour a user disabled/locked since login, and re-read current roles (RQ-0011
     // US-3). Resolve by identity subject or local _id; a token with no backing user (should not happen
     // post-provisioning) simply refreshes with no roles rather than failing closed.
-    const user = await resolveUserBySubject(models, tokenDoc.tenantId, sub);
+    const user = await resolveUserBySubject(models, sub);
     if (user) assertUserActive(user);
 
     // Rotate: the presented refresh token is single-use.
@@ -521,7 +455,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     return issueUserTokens(models, {
       client,
-      tenantId: tokenDoc.tenantId,
       email,
       sub,
       scope: tokenDoc.scope ?? [],
@@ -565,9 +498,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
   /** Resolve the person behind a token subject: a federated `sub` matches a linked identity, a local
    *  `sub` matches the user `_id` (RQ-0011 US-3). Read-only; used to re-read roles/status on refresh. */
-  async function resolveUserBySubject(models: ModelsBucket, tenantId: string, sub: string): Promise<UserDocument | null> {
+  async function resolveUserBySubject(models: ModelsBucket, sub: string): Promise<UserDocument | null> {
     return models.User.findOne({
-      tenantId,
       $or: [{ _id: sub }, { 'identities.subject': sub }]
     }).lean().exec() as Promise<UserDocument | null>;
   }
@@ -577,7 +509,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    *   1. the identity `(provider, subject)` is already linked → returning user (refresh email + login).
    *   2. a user with the same email exists → link this identity onto it, but ONLY if the provider
    *      vouched the email (`email_verified`); an unverified collision is denied, never merged (US-4).
-   *   3. otherwise → create a new federated-only user (no password) — unless the tenant's
+   *   3. otherwise → create a new federated-only user (no password) — unless the deployment's
    *      registration policy is `invite`/`closed`, which gates JIT creation too (RQ-0013): an
    *      invitee registers locally with their code first, then Google links via rule 2.
    * Enforces `status`/lockout on an existing account before issuing (US-3). Idempotent under the
@@ -585,14 +517,14 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    */
   async function provisionFederatedUser(
     models: ModelsBucket,
-    args: { tenantId: string; provider: 'google'; subject: string; email: string; emailVerified: boolean; registration?: 'open' | 'invite' | 'closed' }
+    args: { provider: 'google'; subject: string; email: string; emailVerified: boolean; registration?: 'open' | 'invite' | 'closed' }
   ): Promise<UserDocument> {
     const now = nowFn();
     const emailNorm = args.email.trim().toLowerCase();
-    const { tenantId, provider, subject } = args;
+    const { provider, subject } = args;
 
     // 1) Identity already linked.
-    const linked = await models.User.findOne({ tenantId, 'identities.provider': provider, 'identities.subject': subject }).exec();
+    const linked = await models.User.findOne({ 'identities.provider': provider, 'identities.subject': subject }).exec();
     if (linked) {
       assertUserActive(linked);
       const identity = linked.identities?.find((i) => i.provider === provider && i.subject === subject);
@@ -606,7 +538,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     }
 
     // 2) An account with this email exists — link only on a verified email (account-takeover guard).
-    const byEmail = await models.User.findOne({ tenantId, email: emailNorm }).exec();
+    const byEmail = await models.User.findOne({ email: emailNorm }).exec();
     if (byEmail) {
       if (!args.emailVerified) {
         throw new AccessDeniedError('Cannot link an unverified email to an existing account');
@@ -620,14 +552,13 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     }
 
     // 3) First sighting of this person — create a federated-only user. On an invite-only/closed
-    //    tenant this is exactly the walk-around ADR-0013 closes: deny instead of provisioning.
+    //    deployment this is exactly the walk-around ADR-0013 closes: deny instead of provisioning.
     if ((args.registration ?? 'open') !== 'open') {
-      throw new AccessDeniedError('Sign-up is not open for this tenant');
+      throw new AccessDeniedError('Sign-up is not open');
     }
     try {
       return await models.User.create({
         _id: randomUUID(),
-        tenantId,
         email: emailNorm,
         emailVerified: args.emailVerified,
         status: 'active',
@@ -638,7 +569,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     } catch (err) {
       // Concurrent first login: the unique identity index rejected the duplicate insert — re-read it.
       if ((err as { code?: number }).code === 11000) {
-        const raced = await models.User.findOne({ tenantId, 'identities.provider': provider, 'identities.subject': subject }).exec();
+        const raced = await models.User.findOne({ 'identities.provider': provider, 'identities.subject': subject }).exec();
         if (raced) {
           assertUserActive(raced);
           return raced;
@@ -656,7 +587,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     models: ModelsBucket,
     args: {
       client: OAuthClientDocument;
-      tenantId: string;
       email?: string;
       sub: string;
       scope: string[];
@@ -682,7 +612,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       sessionExpiresAt = new Date(issuedAt.getTime() + CONFIG.oauth.refreshTokenTtlSec * 1000);
       await models.Session.create({
         _id: sessionId,
-        tenantId: args.tenantId,
         contactId: args.sub,
         context: args.email ? { email: args.email } : {},
         status: 'active',
@@ -704,7 +633,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     await models.OAuthToken.create({
       _id: jti,
-      tenantId: args.tenantId,
       clientId: args.client._id,
       subject: args.sub,
       sessionId,
@@ -720,7 +648,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const refreshJti = randomUUID();
     await models.OAuthToken.create({
       _id: refreshJti,
-      tenantId: args.tenantId,
       clientId: args.client._id,
       subject: args.sub,
       sessionId,
@@ -733,7 +660,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     });
 
     const refreshExpiresIn = Math.max(0, Math.floor((sessionExpiresAt.getTime() - issuedAt.getTime()) / 1000));
-    deps.logger?.info?.({ tenantId: args.tenantId, clientId: args.client._id, sub: args.sub }, 'issued user token');
+    deps.logger?.info?.({ clientId: args.client._id, sub: args.sub }, 'issued user token');
 
     return {
       accessToken,
@@ -787,13 +714,12 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   };
 }
 
-async function enforceRateLimit(models: ReturnType<OAuthServerDependencies['makeModels']>, tenantId: string, issuedAt: Date, maxPerMinute: number) {
+async function enforceRateLimit(models: ReturnType<OAuthServerDependencies['makeModels']>, issuedAt: Date, maxPerMinute: number) {
   if (!Number.isFinite(maxPerMinute) || maxPerMinute <= 0) {
     return;
   }
   const windowStart = new Date(issuedAt.getTime() - 60 * 1000);
   const count = await models.OAuthToken.countDocuments({
-    tenantId,
     type: 'access',
     issuedAt: { $gte: windowStart }
   }).exec();

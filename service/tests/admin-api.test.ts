@@ -82,7 +82,6 @@ function fakeCollection(items: any[]) {
 
 function makeState() {
   return {
-    Tenant: fakeCollection([{ _id: 't1', name: 'Acme', status: 'active' }]),
     OAuthClient: fakeCollection([]),
     User: fakeCollection([]),
     OAuthToken: fakeCollection([]),
@@ -101,19 +100,9 @@ describe('admin service', () => {
   let state: ReturnType<typeof makeState>;
   beforeEach(() => { state = makeState(); });
 
-  it('upserts a tenant idempotently', async () => {
-    const admin = makeAdmin(state);
-    const created = await admin.upsertTenant({ name: 'New Co' });
-    expect((created as any).name).toBe('New Co');
-    const again = await admin.upsertTenant({ id: (created as any)._id, name: 'Renamed Co' });
-    expect((again as any).name).toBe('Renamed Co');
-    // started with 1 tenant + 1 new = 2 (the update did not add a third)
-    expect(state.Tenant._items.length).toBe(2);
-  });
-
   it('creates a client, returns the secret once, and stores only its hash', async () => {
     const admin = makeAdmin(state);
-    const { clientId, secret } = await admin.createClient({ tenantId: 't1', name: 'svc', grantTypes: ['client_credentials'], scopes: ['admin'] });
+    const { clientId, secret } = await admin.createClient({ name: 'svc', grantTypes: ['client_credentials'], scopes: ['admin'] });
     expect(secret).toBeTruthy();
     const stored = state.OAuthClient._items.find((c) => c._id === clientId);
     expect(stored.secretHash).not.toContain(secret);
@@ -123,7 +112,7 @@ describe('admin service', () => {
   it('persists additive token claims on the created client (product_runtime, ADR-0017)', async () => {
     const admin = makeAdmin(state);
     const { clientId } = await admin.createClient({
-      tenantId: 't1', id: 'skills-coach-ds1', name: 'skills-coach@ds1 runtime',
+      id: 'skills-coach-ds1', name: 'skills-coach@ds1 runtime',
       grantTypes: ['client_credentials'], audience: 'maestro-workspace',
       subject: 'runtime@skills-coach.fps4.nl',
       claims: { role: 'product_runtime', email: 'runtime@skills-coach.fps4.nl' }
@@ -134,22 +123,22 @@ describe('admin service', () => {
 
   it('rejects non-object claims', async () => {
     const admin = makeAdmin(state);
-    await expect(admin.createClient({ tenantId: 't1', name: 'x', grantTypes: ['client_credentials'], claims: ['nope'] as any }))
+    await expect(admin.createClient({ name: 'x', grantTypes: ['client_credentials'], claims: ['nope'] as any }))
       .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
   });
 
   it('honors an explicit client id and rejects reusing it', async () => {
     const admin = makeAdmin(state);
-    const { clientId } = await admin.createClient({ tenantId: 't1', id: 'coach-web', name: 'Coach Web', grantTypes: ['password'], audience: 'coach-workspace' });
+    const { clientId } = await admin.createClient({ id: 'coach-web', name: 'Coach Web', grantTypes: ['password'], audience: 'coach-workspace' });
     expect(clientId).toBe('coach-web');
     expect(state.OAuthClient._items.find((c) => c._id === 'coach-web')).toBeTruthy();
-    await expect(admin.createClient({ tenantId: 't1', id: 'coach-web', name: 'dupe', grantTypes: ['password'] }))
+    await expect(admin.createClient({ id: 'coach-web', name: 'dupe', grantTypes: ['password'] }))
       .rejects.toMatchObject({ status: 409, code: 'client_exists' });
   });
 
   it('rotates a client secret and 404s on an unknown client', async () => {
     const admin = makeAdmin(state);
-    const { clientId } = await admin.createClient({ tenantId: 't1', name: 'svc', grantTypes: ['client_credentials'] });
+    const { clientId } = await admin.createClient({ name: 'svc', grantTypes: ['client_credentials'] });
     const before = state.OAuthClient._items.find((c) => c._id === clientId).secretHash;
     const { secret } = await admin.rotateClientSecret(clientId);
     const after = state.OAuthClient._items.find((c) => c._id === clientId).secretHash;
@@ -160,32 +149,26 @@ describe('admin service', () => {
 
   it('deletes a client and 404s on an unknown client', async () => {
     const admin = makeAdmin(state);
-    const { clientId } = await admin.createClient({ tenantId: 't1', id: 'gone', name: 'tmp', grantTypes: ['password'] });
+    const { clientId } = await admin.createClient({ id: 'gone', name: 'tmp', grantTypes: ['password'] });
     const res = await admin.deleteClient(clientId);
     expect(res).toEqual({ clientId: 'gone', deleted: true });
     expect(state.OAuthClient._items.find((c) => c._id === 'gone')).toBeUndefined();
     await expect(admin.deleteClient('gone')).rejects.toMatchObject({ status: 404, code: 'client_not_found' });
   });
 
-  it('rejects creating a client for a missing tenant', async () => {
-    const admin = makeAdmin(state);
-    await expect(admin.createClient({ tenantId: 'ghost', name: 'x', grantTypes: ['client_credentials'] }))
-      .rejects.toMatchObject({ status: 404, code: 'tenant_not_found' });
-  });
-
   it('creates a user and rejects a duplicate email', async () => {
     const admin = makeAdmin(state);
-    const u = await admin.createUser({ tenantId: 't1', email: 'A@Example.com', password: 'secret-pass' });
+    const u = await admin.createUser({ email: 'A@Example.com', password: 'secret-pass' });
     expect(u.email).toBe('a@example.com'); // normalized
-    await expect(admin.createUser({ tenantId: 't1', email: 'a@example.com', password: 'x' }))
+    await expect(admin.createUser({ email: 'a@example.com', password: 'x' }))
       .rejects.toMatchObject({ status: 409, code: 'email_taken' });
   });
 
   it('links a federated identity onto a user, is idempotent, and lists it (RQ-0011)', async () => {
     const admin = makeAdmin(state);
-    await admin.createUser({ tenantId: 't1', email: 'op@acme.test', password: 'secret-pass' });
+    await admin.createUser({ email: 'op@acme.test', password: 'secret-pass' });
 
-    const res = await admin.linkUserIdentity('t1', 'op@acme.test', { provider: 'google', subject: 'g-1', emailVerified: true });
+    const res = await admin.linkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1', emailVerified: true });
     expect(res).toMatchObject({ email: 'op@acme.test', provider: 'google', subject: 'g-1', linked: true });
 
     const user = state.User._items.find((u) => u.email === 'op@acme.test');
@@ -193,38 +176,39 @@ describe('admin service', () => {
     expect(user.identities[0]).toMatchObject({ provider: 'google', subject: 'g-1', emailVerified: true });
 
     // Idempotent: linking the same identity again does not duplicate it.
-    await admin.linkUserIdentity('t1', 'op@acme.test', { provider: 'google', subject: 'g-1' });
+    await admin.linkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1' });
     expect(user.identities).toHaveLength(1);
 
     // listUsers surfaces identities and never the password hash.
-    const listed = (await admin.listUsers('t1')).find((u: any) => u.email === 'op@acme.test');
+    const listed = (await admin.listUsers()).find((u: any) => u.email === 'op@acme.test');
     expect(listed.identities[0].subject).toBe('g-1');
   });
 
   it('refuses to link an identity already owned by another user', async () => {
     const admin = makeAdmin(state);
-    await admin.createUser({ tenantId: 't1', email: 'a@acme.test', password: 'p1' });
-    await admin.createUser({ tenantId: 't1', email: 'b@acme.test', password: 'p2' });
-    await admin.linkUserIdentity('t1', 'a@acme.test', { provider: 'google', subject: 'shared' });
-    await expect(admin.linkUserIdentity('t1', 'b@acme.test', { provider: 'google', subject: 'shared' }))
+    await admin.createUser({ email: 'a@acme.test', password: 'p1' });
+    await admin.createUser({ email: 'b@acme.test', password: 'p2' });
+    await admin.linkUserIdentity('a@acme.test', { provider: 'google', subject: 'shared' });
+    await expect(admin.linkUserIdentity('b@acme.test', { provider: 'google', subject: 'shared' }))
       .rejects.toMatchObject({ status: 409, code: 'identity_linked' });
   });
 
   it('unlinks a federated identity and 404s on an unknown user', async () => {
     const admin = makeAdmin(state);
-    await admin.createUser({ tenantId: 't1', email: 'op@acme.test', password: 'p' });
-    await admin.linkUserIdentity('t1', 'op@acme.test', { provider: 'google', subject: 'g-1' });
-    const res = await admin.unlinkUserIdentity('t1', 'op@acme.test', { provider: 'google', subject: 'g-1' });
+    await admin.createUser({ email: 'op@acme.test', password: 'p' });
+    await admin.linkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1' });
+    const res = await admin.unlinkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1' });
     expect(res).toMatchObject({ unlinked: true });
     expect(state.User._items.find((u) => u.email === 'op@acme.test').identities).toHaveLength(0);
-    await expect(admin.unlinkUserIdentity('t1', 'nobody@acme.test', { provider: 'google', subject: 'g-1' }))
+    await expect(admin.unlinkUserIdentity('nobody@acme.test', { provider: 'google', subject: 'g-1' }))
       .rejects.toMatchObject({ status: 404, code: 'user_not_found' });
   });
 
   it('reports stats in the console shape', async () => {
     const admin = makeAdmin(state);
     const stats = await admin.getStats();
-    expect(stats.tenants.total).toBe(1);
+    expect(stats).not.toHaveProperty('tenants');
+    expect(stats.clients.total).toBe(0);
     expect(stats.keys.active).toBe(1);
     expect(stats).toHaveProperty('tokens.accessLastHour');
   });
@@ -255,13 +239,13 @@ describe('admin-auth (requireAdmin)', () => {
   };
 
   it('401s without a token', async () => {
-    const { statusCode, nexted } = await run(null, ADMIN_SCOPES.tenants);
+    const { statusCode, nexted } = await run(null, ADMIN_SCOPES.users);
     expect(statusCode).toBe(401);
     expect(nexted).toBe(false);
   });
 
   it('allows a token with the superscope and attaches the principal', async () => {
-    const token = await sign({ cid: 'admin-client', tid: 't1', sub: 'svc', scope: 'admin' });
+    const token = await sign({ cid: 'admin-client', sub: 'svc', scope: 'admin' });
     const { nexted, req } = await run(token, ADMIN_SCOPES.users);
     expect(nexted).toBe(true);
     expect(req.admin.clientId).toBe('admin-client');
@@ -274,7 +258,7 @@ describe('admin-auth (requireAdmin)', () => {
   });
 
   it('403s a valid token lacking the required scope', async () => {
-    const token = await sign({ cid: 'c', scope: 'admin:tenants' });
+    const token = await sign({ cid: 'c', scope: 'admin:keys' });
     const { statusCode, nexted } = await run(token, ADMIN_SCOPES.users);
     expect(statusCode).toBe(403);
     expect(nexted).toBe(false);
@@ -290,7 +274,7 @@ describe('admin-auth (requireAdmin)', () => {
   // ADR-0010: a user identity token whose `roles` claim carries a configured operator role is an
   // operator principal, mapped to the superscope and attributed per-actor by `sub`.
   it('allows a user token whose roles include an operator role and attaches an operator principal', async () => {
-    const token = await sign({ sub: 'ada@fps4.nl', tid: 't1', roles: ['platform_admin'] });
+    const token = await sign({ sub: 'ada@fps4.nl', roles: ['platform_admin'] });
     const { nexted, req } = await run(token, ADMIN_SCOPES.keys);
     expect(nexted).toBe(true);
     expect(req.admin.kind).toBe('operator');
@@ -299,7 +283,7 @@ describe('admin-auth (requireAdmin)', () => {
   });
 
   it('403s a user token whose roles do not include an operator role', async () => {
-    const token = await sign({ sub: 'member@x.com', tid: 't1', roles: ['member'] });
+    const token = await sign({ sub: 'member@x.com', roles: ['member'] });
     const { statusCode, nexted } = await run(token, ADMIN_SCOPES.users);
     expect(statusCode).toBe(403);
     expect(nexted).toBe(false);

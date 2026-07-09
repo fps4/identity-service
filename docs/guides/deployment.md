@@ -30,7 +30,7 @@ default pattern is a **manual deploy over SSH to a Docker host**.
 
 Secrets live in a **gitignored `docker/.env`** and are **never committed**:
 
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — the Google OIDC app (service-level, not per tenant).
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — the Google OIDC app (service-level, one per deployment).
 - `OAUTH_KEY_PASSPHRASE` — optional AES-256-GCM encryption of signing keys at rest.
 - `AUTH_JWT_ISSUER` — the public HTTPS issuer URL; becomes the token `iss`.
 - `MONGO_URI` and the rest of the knobs documented in `service/.env.example`.
@@ -68,14 +68,14 @@ host-port access). `workflow_dispatch` runs it on demand.
   `config/ds1/.env` (base + Actions secrets) runner-local and deletes it afterwards.
 - **Secrets** (repo Actions secrets, appended only when set — the ds1 SMOKE posture runs without them):
   `OAUTH_KEY_PASSPHRASE`, and `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI`.
-- **Seeding stays manual** (RQ-0004): the pipeline ships the service; provisioning tenants/clients/users
+- **Seeding stays manual** (RQ-0004): the pipeline ships the service; provisioning clients/users
   (`npm run seed`) remains an operator step — see *Seed & recovery* below.
 
 The SSH / `DOCKER_HOST` runbook above still works for a laptop-driven deploy or a host without the runner.
 
 ## System of record, seeding & recovery — ADR-0007 / ADR-0008
 
-The **live MongoDB is the system of record** for the auth data (tenants, app clients, users, secrets).
+The **live MongoDB is the system of record** for the auth data (clients, users, secrets).
 SOPS/seed-as-code is **dropped** (ADR-0008, superseding ADR-0006): there is no encrypted secret file in
 git, and no `age` master key.
 
@@ -91,8 +91,8 @@ git, and no `age` master key.
     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
   ```
 
-  Idempotent: tenants/clients are upserted; **existing users are left untouched** — change a password with
-  `npm run manage-users -- set-password --tenant=<id> --email=<e> --password=<p>`. A runtime client secret
+  Idempotent: clients are upserted; **existing users are left untouched** — change a password with
+  `npm run manage-users -- set-password --email=<e> --password=<p>`. A runtime client secret
   must stay equal to its consumer-repo mirror (`MAESTRO_RUNTIME_CLIENT_SECRET` in the
   gateway/copilot/skills-coach repos, US-0086).
 
@@ -147,8 +147,8 @@ consumer's own choice of name).
 ## Management-plane admin client & MCP server — ADR-0007
 
 The `/admin/v1` API, the MCP server, and the admin console all authenticate with a `client_credentials`
-token carrying the `admin` scope. That principal is seeded as a dedicated tenant + client
-(`identity-service-ops` / `identity-admin-mcp`) in [`config/seed.yaml`](../../config/seed.yaml).
+token carrying the `admin` scope. That principal is seeded as a dedicated client
+(`identity-admin-mcp`) in [`config/seed.yaml`](../../config/seed.yaml).
 
 The **one** secret value lives in **two** places (it must be identical in both — same pattern as
 `MAESTRO_RUNTIME_CLIENT_SECRET`):
@@ -164,7 +164,7 @@ Provision it:
    Mongo on its published port `27019`; SOPS dropped per ADR-0008 — pass the value via the env):
 
    ```bash
-   # from service/ (the seed upserts the identity-service-ops tenant + identity-admin-mcp client):
+   # from service/ (the seed upserts the identity-admin-mcp client):
    IDENTITY_ADMIN_CLIENT_SECRET=<the same value> SEED_FILE=../config/seed.yaml \
      MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
    ```
@@ -243,4 +243,4 @@ tracked in ADR-0009/RQ-0019; stdio-over-SSH stays as break-glass.
 - `GET /health` returns `{ "status": "ok" }`.
 - `GET /.well-known/jwks.json` serves the RS256 public keys consumers verify against.
 - A consumer's verifier env (`*_ISSUER` / `*_AUDIENCE` / `*_JWKS_URL`) must line up **exactly** with
-  what this service mints — see [`tenant-config.md`](./tenant-config.md).
+  what this service mints — see [deployment configuration](./tenant-config.md).

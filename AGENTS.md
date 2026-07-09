@@ -35,7 +35,7 @@ A change is not done until **all** of these hold (CI enforces them — `.github/
   not introduce a second signing path or a second JWKS.
 - **Secrets never in the repo or the DB.** Google client secret, key passphrase, and issuer URL come
   from env (`service/.env.example` documents every knob); the Google app's secret is service-level,
-  never stored on a tenant document. `docker/.env` is gitignored.
+  never stored in the database. `docker/.env` is gitignored.
 - **`redirect_uri` is exact-match validated** against the client's registered list — never redirect
   to an unvalidated URI.
 - **Token contract is load-bearing.** User tokens MUST carry `email`, the stable `sub`, `iss`, a

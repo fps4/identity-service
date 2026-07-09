@@ -12,11 +12,10 @@ export interface AuditLogDocument extends Document<string> {
   at: Date;
   principalClientId?: string;  // token `cid`
   principalSubject?: string;   // token `sub`
-  principalTenantId?: string;  // token `tid`
-  action: string;              // e.g. 'tenant.upsert', 'client.rotateSecret', 'user.create'
+  action: string;              // e.g. 'client.rotateSecret', 'user.create', 'invite.create'
   method: string;
   path: string;
-  targetType?: string;         // 'tenant' | 'client' | 'user' | 'key'
+  targetType?: string;         // 'client' | 'user' | 'key' | 'invite'
   targetId?: string;
   status: number;              // HTTP status the request resolved to
   meta?: Record<string, unknown>;
@@ -27,7 +26,6 @@ const auditLogSchema = new mongoose.Schema<AuditLogDocument>({
   at: { type: Date, default: Date.now, index: true },
   principalClientId: { type: String, index: true },
   principalSubject: { type: String },
-  principalTenantId: { type: String },
   action: { type: String, required: true },
   method: { type: String, required: true },
   path: { type: String, required: true },

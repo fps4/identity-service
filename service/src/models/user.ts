@@ -26,13 +26,12 @@ export interface FederatedIdentity {
 
 export interface UserDocument extends Document<string> {
   _id: string;              // stable subject id (the token `sub` for local logins)
-  tenantId: string;
-  email: string;            // unique per tenant (stored lowercased)
+  email: string;            // unique within the deployment (stored lowercased)
   passwordHash?: string;    // optional — absent for federated-only users
   identities: FederatedIdentity[]; // linked upstream IdP identities (RQ-0011)
   emailVerified: boolean;   // whether the email is vouched (by a provider or, later, a verify channel)
   status: 'active' | 'locked' | 'disabled';
-  roles: string[];          // coarse, tenant-scoped roles stamped into the token `roles` claim (RQ-0005)
+  roles: string[];          // coarse, deployment-scoped roles stamped into the token `roles` claim (RQ-0005)
   failedAttempts: number;
   lockedUntil?: Date | null;
   passwordUpdatedAt?: Date;
@@ -51,7 +50,6 @@ const federatedIdentitySchema = new mongoose.Schema<FederatedIdentity>({
 
 const userSchema = new mongoose.Schema<UserDocument>({
   _id: { type: String, required: true, default: () => randomUUID() },
-  tenantId: { type: String, required: true, index: true },
   email: { type: String, required: true, lowercase: true, trim: true },
   passwordHash: { type: String },
   identities: { type: [federatedIdentitySchema], default: [] },
@@ -66,13 +64,13 @@ const userSchema = new mongoose.Schema<UserDocument>({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// One account per email within a tenant; the same email may exist under different tenants.
-userSchema.index({ tenantId: 1, email: 1 }, { unique: true });
+// One account per email within the deployment (ADR-0018: one realm per deployment).
+userSchema.index({ email: 1 }, { unique: true });
 
-// A given upstream identity (provider + subject) links to at most one user per tenant (RQ-0011).
+// A given upstream identity (provider + subject) links to at most one user in the deployment (RQ-0011).
 // Partial so password-only users (no identities) are not indexed and cannot collide on null keys.
 userSchema.index(
-  { tenantId: 1, 'identities.provider': 1, 'identities.subject': 1 },
+  { 'identities.provider': 1, 'identities.subject': 1 },
   { unique: true, partialFilterExpression: { 'identities.provider': { $exists: true } } }
 );
 

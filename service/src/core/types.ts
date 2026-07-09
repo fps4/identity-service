@@ -5,12 +5,6 @@ export interface LoggerLike {
   error?: (...args: any[]) => void;
 }
 
-export interface TenantModelLike {
-  findOne(query: Record<string, unknown>): {
-    lean(): { exec(): Promise<any> };
-  };
-}
-
 export interface SessionDocumentLike {
   contactId?: string | null;
   context?: Record<string, unknown> | null;
@@ -25,7 +19,6 @@ export interface SessionModelLike {
 }
 
 export interface AuthorizerModels {
-  Tenant: TenantModelLike;
   Session: SessionModelLike;
   [key: string]: unknown;
 }
@@ -40,7 +33,6 @@ export interface ClientMeta {
 }
 
 export interface CreateSessionInput {
-  tenantId: string;
   visitorId?: string;
   clientMeta?: ClientMeta;
   subject?: string;
@@ -56,7 +48,6 @@ export interface CreateSessionResult {
 
 export interface SignSessionJwtArgs {
   sessionId: string;
-  tenantId: string;
   subject?: string;
   expiresInSec: number;
 }

@@ -2,212 +2,109 @@
 # (ADR-0007); this file only stands up a brand-new empty deployment. Day-2 changes go through the
 # management plane (/admin/v1 + MCP + console), not a re-seed.
 #
-# STRUCTURAL-ONLY (ADR-0011, ADR-0017). Per ADR-0011, tenants + OAuth clients are declarative/GitOps
-# (this file); USERS + CREDENTIALS are operational and owned by the live DB — created via the admin
-# plane (console/HTTP/MCP), NOT seeded here. So this file references ONLY the secrets identity-service
-# ITSELF owns and that already exist as Actions secrets:
+# ONE DEPLOYMENT = ONE REALM = ONE USER POOL (ADR-0018). There is no tenant layer: this file is a FLAT
+# list of the deployment's OAuth clients (the products' consumers all share one identity-service realm)
+# plus the bootstrap operator user. Realm-wide settings that used to live per-tenant (allowed origins,
+# registration mode, role vocabulary, IdP toggles) are now deployment ENV — see config/ds1/.env.base.
+#
+# STRUCTURAL-ONLY (ADR-0011, ADR-0017). Per ADR-0011, OAuth clients are declarative/GitOps (this file);
+# USERS + CREDENTIALS are operational and owned by the live DB — created via the admin plane
+# (console/HTTP/MCP), NOT seeded here. So this file references ONLY the secrets identity-service ITSELF
+# owns and that already exist as Actions secrets:
 #
 #   - ${MAESTRO_RUNTIME_CLIENT_SECRET}  identity-service's own product_runtime client (self-minted telemetry)
 #   - ${IDENTITY_ADMIN_CLIENT_SECRET}   the management-plane admin client (MCP + break-glass)
 #   - ${SEED_CONSOLE_ADMIN_PASSWORD}    the ONE bootstrap operator who then creates everyone else in the UI
 #
-# What is NO LONGER seeded here (moved off this file on purpose):
-#   - Other products' product_runtime clients (gateway / copilot / skills-coach) and their
-#     ${MAESTRO_*_DS1_SECRET}s — each product now self-registers its runtime client via an
-#     operator-issued client-registration invite (ADR-0017 / RQ-0018), so this repo's bootstrap is no
-#     longer coupled to other products' secrets (which caused the all-or-nothing seed to abort — see
-#     docs/guides/ds1-delivery-pipeline-findings.md).
-#   - Every product tenant's demo/admin users and their ${SEED_*_PASSWORD}s — created via the console /
-#     invites (ADR-0011, ADR-0013). The live ds1 DB already holds them; the seeder is insert-if-absent
-#     and never deletes, so dropping them here does not touch running credentials.
-#
 # COMMITTED on purpose: every secret here is an ${ENV_VAR} reference resolved at run time, so this file
-# holds NO plaintext. SOPS is DROPPED (ADR-0008, superseding ADR-0006): there is no encrypted values
-# file in git. For the rare bootstrap of an empty DB, supply the ${ENV} values from the environment
-# (CI/Actions secrets or an operator shell), e.g. from service/:
+# holds NO plaintext. For the rare bootstrap of an empty DB, supply the ${ENV} values from the
+# environment (CI/Actions secrets or an operator shell), e.g. from service/:
 #
 #     IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_CONSOLE_ADMIN_PASSWORD=… \
 #       MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
 #
 # Disaster recovery is a RESTORE from the nightly off-host backup (docker/backup.sh — ADR-0008), which
-# also recovers runtime state a re-seed cannot. Idempotent: tenants + clients are upserted on every run.
+# also recovers runtime state a re-seed cannot. Idempotent: clients are upserted on every run.
 # See docs/guides/deployment.md.
 
-tenants:
-  - id: demo
-    name: Demo Tenant
-    status: active
-    allowedOrigins:
-      - http://localhost:3000
-    oauth:
-      enabled: true
-      allowedGrantTypes: [password]      # local email/password login (RQ-0002)
-      allowedScopes: []
-      idp: { provider: local }           # required when the tenant has users
-      limits: { tokensPerMinute: 200 }
-    clients:
-      - id: demo-web
-        name: Demo Web
-        grantTypes: [password]
-        audience: demo-workspace         # REQUIRED for password/authorization_code — becomes the token `aud`
-        redirectUris: []
-        isConfidential: false
-    # users are operational (ADR-0011) — demo@ / admin@fps4.nl are created via the console / invites,
-    # not seeded. The live DB already holds them.
+clients:
+  # --- Product web consumers (browser password / SSO login; token `aud` = their workspace). ---
+  - id: demo-web
+    name: Demo Web
+    grantTypes: [password]
+    audience: demo-workspace           # REQUIRED for password/authorization_code — becomes the token `aud`
+    redirectUris: []
+    isConfidential: false
 
-  - id: sovereign-copilot
-    name: Sovereign Copilot
-    status: active
-    allowedOrigins:
-      - http://localhost:3033        # local dev (web runs on :3033)
-      - http://ds1:3033              # ds1 demo
-      - https://copilot.fps4.nl      # NL production surface
-      - https://copilot.fps4.com     # .com production surface
-    oauth:
-      enabled: true
-      allowedGrantTypes: [password]
-      allowedScopes: []
-      idp: { provider: local }
-      limits: { tokensPerMinute: 200 }
-    clients:
-      - id: sovereign-copilot-web
-        name: Sovereign Copilot Web
-        grantTypes: [password]
-        audience: sovereign-copilot-workspace   # becomes the token `aud`
-        redirectUris: []
-        isConfidential: false
-    # users operational (ADR-0011) — demo@ / admin@sovereign-copilot.fps4.nl via the console / invites.
+  - id: sovereign-copilot-web
+    name: Sovereign Copilot Web
+    grantTypes: [password]
+    audience: sovereign-copilot-workspace
+    redirectUris: []
+    isConfidential: false
 
-  - id: maestro
-    name: Maestro
-    status: active
-    allowedOrigins:
-      - http://localhost:3034        # local dev (web runs on :3034)
-      - http://ds1:3034              # ds1 demo
-      - https://maestro.fps4.nl      # NL production surface
-      - https://maestro.fps4.com     # .com production surface
-    oauth:
-      enabled: true
-      allowedGrantTypes: [password, client_credentials]
-      allowedScopes: []
-      idp: { provider: local }
-      limits: { tokensPerMinute: 200 }
-    clients:
-      - id: maestro-web
-        name: Maestro Web
-        grantTypes: [password]
-        audience: maestro-workspace             # becomes the token `aud`
-        redirectUris: []
-        isConfidential: false
-      # identity-service's OWN product_runtime principal: it reports its fleet health/telemetry to maestro
-      # under the "identity-service" product (maestro/config/products.yaml — runtime@identity-service.fps4.nl).
-      # Self-minted via this service's own token endpoint. The stored secret is ${MAESTRO_RUNTIME_CLIENT_SECRET}
-      # — the SAME value the running service presents to self-mint (deploy-ds1.yml / compose), so seed and
-      # runtime can never drift. This is identity-service's own secret, so it STAYS seeded (unlike the other
-      # products' runtime clients, which self-register via ADR-0017 / RQ-0018).
-      - id: identity-service-ds1-runtime
-        name: identity-service@ds1 runtime
-        grantTypes: [client_credentials]
-        isConfidential: true
-        secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}
-        audience: maestro-workspace
-        subject: runtime@identity-service.fps4.nl
-        claims:
-          role: product_runtime
-          email: runtime@identity-service.fps4.nl
-      # Other products' runtime clients (sovereign-llm-gateway-ds1, sovereign-copilot-ds1, skills-coach-ds1)
-      # are NO LONGER seeded here — each product self-registers its runtime client via an operator-issued
-      # client-registration invite (ADR-0017 / RQ-0018), so this bootstrap is not coupled to their secrets.
-    # users operational (ADR-0011) — po@ / sa@ / admin@maestro.fps4.nl via the console / invites.
+  - id: maestro-web
+    name: Maestro Web
+    grantTypes: [password]
+    audience: maestro-workspace
+    redirectUris: []
+    isConfidential: false
 
-  # Skills Coach — resource server verifies aud=coach-workspace + the `roles` claim. Kept in sync with
-  # the structural config/seed.coach.yaml (which is dispatchable on its own).
-  - id: coach
-    name: Skills Coach
-    status: active
-    allowedOrigins:
-      - http://localhost:3000        # local dev (web runs on :3000)
-      - https://coach.fps4.nl        # NL production surface
-    oauth:
-      # Both IdPs: local email/password (seeded users) AND Google SSO (RQ-0001) via the redirect flow.
-      # The effective gate is the grant types; `idp.provider` is a single-valued declarative marker, so
-      # it stays `local` (the seeded-credential IdP) — Google is enabled by allowing authorization_code.
-      enabled: true
-      allowedGrantTypes: [password, authorization_code]
-      allowedScopes: []
-      allowedRoles: [learner, compliance-officer]   # RQ-0005: coach role vocabulary → token `roles`
-      idp: { provider: local }
-      limits: { tokensPerMinute: 200 }
-    clients:
-      - id: coach-web
-        name: Skills Coach Web
-        grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
-        audience: coach-workspace     # becomes the token `aud` (matches the coach API's IDENTITY_SERVICE_AUDIENCE)
-        redirectUris:                 # the coach web /auth/callback (exact-match validated) — RQ-0012
-          - http://localhost:3000/auth/callback   # local dev
-          - https://coach.fps4.nl/auth/callback   # NL production surface
-        isConfidential: false
-    # users operational (ADR-0011) — admin@ / learner@ / officer@coach.fps4.nl (with roles) via the
-    # console / invites; roles are validated against allowedRoles at creation.
+  - id: coach-web
+    name: Skills Coach Web
+    grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
+    audience: coach-workspace          # matches the coach API's IDENTITY_SERVICE_AUDIENCE
+    redirectUris:                      # the coach web /auth/callback (exact-match validated) — RQ-0012
+      - http://localhost:3000/auth/callback
+      - https://coach.fps4.nl/auth/callback
+    isConfidential: false
 
-  # identity-service's OWN management-plane principal (ADR-0007). A client_credentials client whose
+  # --- identity-service's OWN product_runtime principal (US-0086). Reports its fleet health/telemetry to
+  # maestro under the "identity-service" product. Self-minted via this service's own token endpoint; the
+  # stored secret is the SAME ${MAESTRO_RUNTIME_CLIENT_SECRET} the running service presents to self-mint
+  # (deploy-ds1.yml / compose), so seed and runtime can never drift. Other products' runtime clients are
+  # NOT seeded here — each self-registers via an operator-issued invite (ADR-0017 / RQ-0018). ---
+  - id: identity-service-ds1-runtime
+    name: identity-service@ds1 runtime
+    grantTypes: [client_credentials]
+    isConfidential: true
+    secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}
+    audience: maestro-workspace
+    subject: runtime@identity-service.fps4.nl
+    claims:
+      role: product_runtime
+      email: runtime@identity-service.fps4.nl
+
+  # --- identity-service's OWN management-plane principal (ADR-0007). A client_credentials client whose
   # token carries the `admin` scope — the credential the /admin/v1 API, the MCP server, and the admin
-  # console authenticate with. Isolated in its own tenant so management authority never rides on a
-  # product tenant. The secret is the ${IDENTITY_ADMIN_CLIENT_SECRET} reference, resolved from the env at
-  # seed time and injected into the container by the deploy (GitHub Actions secret — ADR-0008). Mint with:
+  # console authenticate with. The secret is injected into the container by the deploy (Actions secret).
   #   curl -s -XPOST $AUTH_JWT_ISSUER/oauth2/token -d grant_type=client_credentials \
-  #        -d client_id=identity-admin-mcp -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin
-  - id: identity-service-ops
-    name: identity-service operations
-    status: active
-    oauth:
-      enabled: true
-      allowedGrantTypes: [client_credentials]
-      allowedScopes: [admin, "admin:tenants", "admin:clients", "admin:users", "admin:keys", "admin:stats"]
-      idp: { provider: local }
-      limits: { tokensPerMinute: 60 }
-    clients:
-      - id: identity-admin-mcp
-        name: identity-service admin (MCP + break-glass)
-        grantTypes: [client_credentials]
-        isConfidential: true
-        secret: ${IDENTITY_ADMIN_CLIENT_SECRET}
-        scopes: [admin]              # full management authority (see ADMIN_SCOPES); request scope=admin
-        subject: admin-mcp@identity-service.fps4.nl   # attributed in the /admin audit log
+  #        -d client_id=identity-admin-mcp -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin ---
+  - id: identity-admin-mcp
+    name: identity-service admin (MCP + break-glass)
+    grantTypes: [client_credentials]
+    isConfidential: true
+    secret: ${IDENTITY_ADMIN_CLIENT_SECRET}
+    scopes: [admin]                    # full management authority (see ADMIN_SCOPES); request scope=admin
+    subject: admin-mcp@identity-service.fps4.nl   # attributed in the /admin audit log
 
-  # HUMAN operators of the admin console (RQ-0007, ADR-0010). Distinct from identity-service-ops above
-  # (the MACHINE admin client for MCP/curl/break-glass): here a person logs into the console with the
-  # `password` grant via the `identity-console` client, and their user token carries `roles:[platform_admin]`.
-  # The management plane maps that operator role to admin authority and audits the action against the
-  # human `sub` — the per-actor audit ADR-0007 promised. The console verifies tokens by `iss`+JWKS, not
-  # `aud`, so the client `audience` is just a label. allowedOrigins MUST list every browser origin the
-  # console is served from (the OAuth token endpoint enforces CORS per tenant — service/src/server.ts).
-  #
-  # This ONE operator is the bootstrap ROOT: its ${SEED_CONSOLE_ADMIN_PASSWORD} is identity-service's own
-  # secret (already set), and once seeded this human logs into the console and creates every other tenant's
-  # users + registers each product's runtime client (ADR-0017) — so no other product secret is needed here.
-  - id: operators
-    name: identity-service operators
+  # --- The admin CONSOLE's browser client (RQ-0007, ADR-0010). A human logs in with the `password` grant
+  # via this client; their user token carries `roles:[platform_admin]`, which the management plane maps to
+  # admin authority (ADMIN_OPERATOR_ROLES). The console verifies tokens by iss+JWKS, not aud, so the
+  # `audience` is just a label. Browser origins are the deployment's CORS_ORIGINS (config/ds1/.env.base). ---
+  - id: identity-console
+    name: identity-service admin console
+    grantTypes: [password]
+    audience: identity-console
+    redirectUris: []
+    isConfidential: false
+
+users:
+  # The ONE bootstrap ROOT operator: once seeded, this human logs into the console and creates every
+  # other user + registers each product's runtime client (ADR-0017). Its ${SEED_CONSOLE_ADMIN_PASSWORD}
+  # is identity-service's own secret (already set). All other users are operational — created via the
+  # console / invites, never seeded (ADR-0011). Re-running the seed leaves existing users untouched.
+  - email: admin@identity-service.fps4.nl
+    password: ${SEED_CONSOLE_ADMIN_PASSWORD}
     status: active
-    allowedOrigins:
-      - http://localhost:7306        # local console dev (next dev / next start -p 7306)
-      - https://ids.fps4.nl          # ds1 console behind Cloudflare
-    oauth:
-      enabled: true
-      allowedGrantTypes: [password]
-      allowedScopes: []
-      allowedRoles: [platform_admin]   # RQ-0005 allow-list; mapped to admin by ADMIN_OPERATOR_ROLES (ADR-0010)
-      idp: { provider: local }
-      limits: { tokensPerMinute: 120 }
-    clients:
-      - id: identity-console
-        name: identity-service admin console
-        grantTypes: [password]
-        audience: identity-console     # token `aud` (label only — the admin plane checks iss+JWKS, not aud)
-        redirectUris: []
-        isConfidential: false
-    users:
-      - email: admin@identity-service.fps4.nl
-        password: ${SEED_CONSOLE_ADMIN_PASSWORD}   # identity-service's own secret; supplied at seed time
-        status: active
-        roles: [platform_admin]
+    roles: [platform_admin]

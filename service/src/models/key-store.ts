@@ -2,7 +2,6 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
 
 export interface KeyStoreDocument extends Document {
   kid: string;
-  tenantId?: string | null;
   privateKey: string; // PEM, encrypted if configured
   publicKey: string; // PEM
   algorithm: 'RS256';
@@ -13,7 +12,6 @@ export interface KeyStoreDocument extends Document {
 
 const keyStoreSchema = new mongoose.Schema<KeyStoreDocument>({
   kid: { type: String, required: true, unique: true },
-  tenantId: { type: String, default: null, index: true },
   privateKey: { type: String, required: true },
   publicKey: { type: String, required: true },
   algorithm: { type: String, enum: ['RS256'], default: 'RS256' },

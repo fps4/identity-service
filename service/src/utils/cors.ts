@@ -1,6 +1,5 @@
 import type cors from 'cors';
 import type { Request, Response, NextFunction } from 'express';
-import { isTenantOriginAllowed, hasTenantOrigins } from './tenant-cors.js';
 
 /** Marker on the Error a rejected CORS origin produces, so the error handler can map it to a 403. */
 export const CORS_FORBIDDEN = 'cors_forbidden';
@@ -35,11 +34,11 @@ export function buildCorsOptions(opts: {
   return {
     origin(origin, callback) {
       if (!origin) return callback(null, true);
-      if (allowedOrigins.has(origin) || isTenantOriginAllowed(origin) || isPrivateNetworkOriginAllowed(origin, isProd)) {
+      if (allowedOrigins.has(origin) || isPrivateNetworkOriginAllowed(origin, isProd)) {
         return callback(null, true);
       }
-      // No allow-list configured at all → permissive (single-tenant / bootstrap).
-      if (allowedOrigins.size === 0 && !hasTenantOrigins()) {
+      // No allow-list configured at all → permissive (bootstrap). Set CORS_ORIGINS to lock it down.
+      if (allowedOrigins.size === 0) {
         return callback(null, true);
       }
       return callback(Object.assign(new Error('Origin not allowed by CORS'), { code: CORS_FORBIDDEN }));

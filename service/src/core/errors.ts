@@ -11,12 +11,6 @@ export class InvalidInputError extends ComponentAuthError {
   }
 }
 
-export class TenantNotFoundError extends ComponentAuthError {
-  constructor(public readonly tenantId: string) {
-    super(`Tenant ${tenantId} not found`);
-  }
-}
-
 export class MissingJwtSecretError extends ComponentAuthError {
   constructor() {
     super('JWT secret is not configured');

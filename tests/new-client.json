@@ -1,0 +1,8 @@
+{
+  "id": "manual-harness-client",
+  "name": "Manual Harness Client",
+  "grantTypes": ["client_credentials"],
+  "scopes": ["telemetry:read"],
+  "audience": "manual-harness-workspace",
+  "isConfidential": true
+}

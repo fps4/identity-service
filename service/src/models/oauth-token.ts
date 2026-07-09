@@ -2,7 +2,6 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
 
 export interface OAuthTokenDocument extends Document<string> {
   _id: string; // access token id (jti) or refresh token id
-  tenantId: string;
   clientId: string;
   subject?: string;
   sessionId?: string;
@@ -17,7 +16,6 @@ export interface OAuthTokenDocument extends Document<string> {
 
 const oauthTokenSchema = new mongoose.Schema<OAuthTokenDocument>({
   _id: { type: String, required: true },
-  tenantId: { type: String, required: true, index: true },
   clientId: { type: String, required: true, index: true },
   subject: { type: String },
   sessionId: { type: String },
@@ -30,8 +28,8 @@ const oauthTokenSchema = new mongoose.Schema<OAuthTokenDocument>({
   hashedToken: { type: String }
 }, { timestamps: false });
 
-oauthTokenSchema.index({ tenantId: 1, clientId: 1, status: 1 });
-oauthTokenSchema.index({ tenantId: 1, type: 1, issuedAt: 1 });
+oauthTokenSchema.index({ clientId: 1, status: 1 });
+oauthTokenSchema.index({ type: 1, issuedAt: 1 });
 
 export function getOAuthTokenModel(connection: Connection): Model<OAuthTokenDocument> {
   return (connection.models.OAuthToken as Model<OAuthTokenDocument>) ??

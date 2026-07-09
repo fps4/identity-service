@@ -30,7 +30,7 @@ consuming side.
 |---|---|---|
 | Login, credentials, password reset, Google SSO | **identity-service** | the IdP |
 | Users, the user store, JWKS, token issuance | **identity-service** | the IdP |
-| **Coarse, tenant-scoped role assignment** ("alice is a `reviewer`") | **identity-service** | the `roles` claim on the signed token; provisioned by operators |
+| **Coarse, deployment-scoped role assignment** ("alice is a `reviewer`") | **identity-service** | the `roles` claim on the signed token; provisioned by operators |
 | **Token verification** (signature, `iss`/`aud`/`exp`) | **the product** | a verifier at the product's edge |
 | **Fine-grained role → capability mapping** ("`reviewer` may approve a filing") | **the product** | the product's own config/code |
 | **Enforcement** of capabilities on operations | **the product** | the product's request path |
@@ -50,8 +50,8 @@ RQ-0005 scope §5.)
   (Google SSO).
 - **A login widget** — the `@fps4/identity-service-react` `<Login/>` component.
 - **Operator role provisioning** — `manage-users set-roles` and the seed config (`users[].roles`),
-  optionally constrained by a per-tenant `oauth.allowedRoles` vocabulary (see
-  [`tenant-config.md`](./tenant-config.md)).
+  optionally constrained by the deployment's `AUTH_ALLOWED_ROLES` vocabulary (see
+  [deployment configuration](./tenant-config.md)).
 
 ## What your product owns
 
@@ -68,17 +68,17 @@ RQ-0005 scope §5.)
    log it. An absent `roles` claim means a single-role / unprovisioned deployment — pick a documented
    default (e.g. a baseline role) rather than failing closed silently.
 
-## Roles are tenant-scoped, not product-scoped
+## Roles are deployment-scoped, not product-scoped
 
-identity-service stamps **one `roles` array per user per tenant**, independent of `audience`. If two
-products share a tenant, they see the **same** role strings. Handle this by convention:
+identity-service stamps **one `roles` array per user** (deployment-wide), independent of `audience`. If two
+products share the deployment, they see the **same** role strings. Handle this by convention:
 
 - **Namespace role strings per product** — `copilot:reviewer`, `maestro:operator` — and have each
   product map only its own prefix; or
-- **Agree a shared vocabulary** across the products in that tenant.
+- **Agree a shared vocabulary** across the products in the deployment.
 
 Either way, an unknown role → no capabilities (logged). Keep the product's role vocabulary a subset
-of the tenant's `oauth.allowedRoles`.
+of the deployment's `AUTH_ALLOWED_ROLES`.
 
 ## Admin UI is identity-service's job — build once
 
@@ -103,8 +103,8 @@ Don't re-implement JWKS handling per product. The integration surface is:
 
 ## Operational notes
 
-- **Adding roles to a deployment is operator config, not code.** Declare the vocabulary in the
-  tenant's `oauth.allowedRoles`, then `manage-users set-roles --tenant=<id> --email=<e> --roles=…`.
+- **Adding roles to a deployment is operator config, not code.** Declare the vocabulary in
+  `AUTH_ALLOWED_ROLES`, then `manage-users set-roles --email=<e> --roles=…`.
   The `roles` claim, per-user storage, and the CLI already ship — no identity-service code change is
   needed to light up RBAC in a consuming product.
 - **Role changes have a refresh-window latency.** Roles are re-read at each token issuance

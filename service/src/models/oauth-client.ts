@@ -3,7 +3,6 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
 
 export interface OAuthClientDocument extends Document<string> {
   _id: string; // client_id
-  tenantId: string;
   name: string;
   secretHash: string;
   grantTypes: string[];
@@ -29,7 +28,6 @@ export interface OAuthClientDocument extends Document<string> {
 
 const oauthClientSchema = new mongoose.Schema<OAuthClientDocument>({
   _id: { type: String, required: true, default: () => randomUUID() },
-  tenantId: { type: String, required: true, index: true },
   name: { type: String, required: true },
   secretHash: { type: String, required: true },
   grantTypes: { type: [String], default: [] },
@@ -42,8 +40,6 @@ const oauthClientSchema = new mongoose.Schema<OAuthClientDocument>({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
-
-oauthClientSchema.index({ tenantId: 1, _id: 1 }, { unique: true });
 
 export function getOAuthClientModel(connection: Connection): Model<OAuthClientDocument> {
   return (connection.models.OAuthClient as Model<OAuthClientDocument>) ??

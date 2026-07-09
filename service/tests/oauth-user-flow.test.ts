@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createHash, generateKeyPairSync } from 'crypto';
 import { SignJWT, jwtVerify, importSPKI, importPKCS8 } from 'jose';
 import { createOAuthServer } from '../src/oauth/server.js';
@@ -46,7 +46,6 @@ function userMatches(u: any, query: any): boolean {
 }
 
 interface Store {
-  tenants: any[];
   clients: any[];
   authorizations: any[];
   tokens: any[];
@@ -55,7 +54,7 @@ interface Store {
 }
 
 function makeStore(): Store {
-  return { tenants: [], clients: [], authorizations: [], tokens: [], sessions: [], users: [] };
+  return { clients: [], authorizations: [], tokens: [], sessions: [], users: [] };
 }
 
 function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthServerDependencies {
@@ -64,9 +63,6 @@ function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthSer
     googleIdp,
     now,
     makeModels: () => ({
-      Tenant: {
-        findOne: (query: any) => ({ lean: () => ({ exec: async () => store.tenants.find((t) => matches(t, query)) ?? null }) })
-      },
       OAuthClient: {
         findById: (id: string) => ({ lean: () => ({ exec: async () => store.clients.find((c) => c._id === id) ?? null }) })
       },
@@ -109,16 +105,9 @@ function makeStubIdp(overrides: Partial<GoogleIdp> = {}): GoogleIdp {
 
 const pkceChallenge = (verifier: string) => createHash('sha256').update(verifier).digest('base64url');
 
-function seedTenantAndClient(store: Store) {
-  store.tenants.push({
-    _id: 'tenant-maestro',
-    name: 'maestro',
-    status: 'active',
-    oauth: { enabled: true, allowedGrantTypes: ['authorization_code'], allowedScopes: [], idp: { provider: 'google' } }
-  });
+function seedClient(store: Store) {
   store.clients.push({
     _id: 'client-maestro',
-    tenantId: 'tenant-maestro',
     name: 'maestro web',
     secretHash: 'unused',
     grantTypes: ['authorization_code'],
@@ -157,7 +146,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
 
   beforeEach(() => {
     store = makeStore();
-    seedTenantAndClient(store);
+    seedClient(store);
     server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
   });
 
@@ -339,7 +328,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
 
   beforeEach(() => {
     store = makeStore();
-    seedTenantAndClient(store);
+    seedClient(store);
     build(makeStubIdp()); // verified email by default
   });
 
@@ -363,7 +352,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   it('stamps the provisioned user\'s roles into the token (RQ-0005 now works for Google users)', async () => {
     // Pre-seed the same federated identity with a role an operator assigned.
     store.users.push({
-      _id: 'u-existing', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', status: 'active',
+      _id: 'u-existing', email: 'reviewer@fps4.test', status: 'active',
       roles: ['workspace_admin'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     });
     const token = await exchange(await runToCode());
@@ -373,7 +362,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
 
   it('denies a disabled user on the Google path (closing the status bypass)', async () => {
     store.users.push({
-      _id: 'u-disabled', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', status: 'disabled',
+      _id: 'u-disabled', email: 'reviewer@fps4.test', status: 'disabled',
       roles: [], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     });
     const code = await runToCode();
@@ -384,7 +373,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   it('links the identity onto an existing account when the email is verified and matches', async () => {
     // A local password user already exists with this email.
     store.users.push({
-      _id: 'local-1', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
+      _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
       status: 'active', roles: ['member'], identities: []
     });
     const token = await exchange(await runToCode());
@@ -403,7 +392,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   it('refuses to merge onto an existing account when the Google email is unverified', async () => {
     build(makeStubIdp({ verifyIdToken: async () => ({ email: 'reviewer@fps4.test', sub: 'google-sub-123', emailVerified: false }) }));
     store.users.push({
-      _id: 'local-1', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
+      _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
       status: 'active', roles: ['member'], identities: []
     });
     const code = await runToCode();
@@ -415,7 +404,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   it('is idempotent under the concurrent-first-login race (unique index rejects the duplicate insert)', async () => {
     // Simulate: another concurrent login already inserted the user; our create loses the race with 11000.
     const raced = {
-      _id: 'u-raced', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', status: 'active',
+      _id: 'u-raced', email: 'reviewer@fps4.test', status: 'active',
       roles: ['fast'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     };
     const deps = makeDeps(store, makeStubIdp(), () => fixedNow);
@@ -435,10 +424,9 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   });
 
   it('a federated-only user (no password) cannot use the password grant', async () => {
-    store.tenants[0].oauth.allowedGrantTypes = ['authorization_code', 'password'];
     store.clients[0].grantTypes = ['authorization_code', 'password'];
     store.users.push({
-      _id: 'u-fed', tenantId: 'tenant-maestro', email: 'fed@fps4.test', status: 'active', roles: [],
+      _id: 'u-fed', email: 'fed@fps4.test', status: 'active', roles: [],
       identities: [{ provider: 'google', subject: 'google-sub-999', emailVerified: true }]
     });
     await expect(server.issuePasswordToken({ username: 'fed@fps4.test', password: 'anything', clientId: 'client-maestro' }))
@@ -448,9 +436,10 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
 
 // --- Registration policy gates federated JIT provisioning (RQ-0013, ADR-0013) -----------------
 
-describe('OAuth server – invite-only tenants gate federated sign-up (RQ-0013)', () => {
+describe('OAuth server – invite-only deployments gate federated sign-up (RQ-0013)', () => {
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
+  let savedMode: 'open' | 'invite' | 'closed';
   const fixedNow = new Date('2026-06-01T12:00:00.000Z');
   const verifier = 'test-code-verifier-0123456789-abcdefghijklmnop';
 
@@ -470,12 +459,15 @@ describe('OAuth server – invite-only tenants gate federated sign-up (RQ-0013)'
     code, codeVerifier: verifier, clientId: 'client-maestro', redirectUri: 'https://maestro.test/callback'
   });
 
+  // Registration policy is deployment config now (AUTH_REGISTRATION_MODE), not a tenant field.
   beforeEach(() => {
+    savedMode = CONFIG.auth.registrationMode;
+    (CONFIG.auth as any).registrationMode = 'invite';
     store = makeStore();
-    seedTenantAndClient(store);
-    store.tenants[0].oauth.registration = 'invite';
+    seedClient(store);
     server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
   });
+  afterEach(() => { (CONFIG.auth as any).registrationMode = savedMode; });
 
   it('redirects a NEW Google identity back with access_denied at the callback (no code, no user)', async () => {
     const { authRecord, result } = await startAndCallback();
@@ -485,9 +477,9 @@ describe('OAuth server – invite-only tenants gate federated sign-up (RQ-0013)'
     expect(store.tokens).toHaveLength(0);
   });
 
-  it('lets an EXISTING linked user log in unchanged on an invite-only tenant', async () => {
+  it('lets an EXISTING linked user log in unchanged on an invite-only deployment', async () => {
     store.users.push({
-      _id: 'u-existing', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', status: 'active',
+      _id: 'u-existing', email: 'reviewer@fps4.test', status: 'active',
       roles: ['member'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     });
     const { authRecord } = await startAndCallback();
@@ -499,7 +491,7 @@ describe('OAuth server – invite-only tenants gate federated sign-up (RQ-0013)'
   it('still links Google onto an existing local account via verified email (the invitee path)', async () => {
     // The invitee registered locally with their code; first Google login must link, not be denied.
     store.users.push({
-      _id: 'local-1', tenantId: 'tenant-maestro', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
+      _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
       status: 'active', roles: ['member'], identities: []
     });
     const { authRecord } = await startAndCallback();
@@ -509,16 +501,16 @@ describe('OAuth server – invite-only tenants gate federated sign-up (RQ-0013)'
   });
 
   it('the token exchange re-enforces the gate even if the policy flips mid-flow (authoritative check)', async () => {
-    store.tenants[0].oauth.registration = 'open';       // callback preflight passes...
+    (CONFIG.auth as any).registrationMode = 'open';       // callback preflight passes...
     const { authRecord } = await startAndCallback();
-    store.tenants[0].oauth.registration = 'closed';     // ...but the tenant closes before the exchange
+    (CONFIG.auth as any).registrationMode = 'closed';     // ...but the deployment closes before the exchange
     await expect(exchange(authRecord.code as string)).rejects.toBeInstanceOf(AccessDeniedError);
     expect(store.users).toHaveLength(0);
     expect(store.tokens).toHaveLength(0);
   });
 
-  it('a closed tenant behaves like invite for a new federated identity', async () => {
-    store.tenants[0].oauth.registration = 'closed';
+  it('a closed deployment behaves like invite for a new federated identity', async () => {
+    (CONFIG.auth as any).registrationMode = 'closed';
     const { result } = await startAndCallback();
     expect(result.redirectTo).toContain('error=access_denied');
     expect(store.users).toHaveLength(0);

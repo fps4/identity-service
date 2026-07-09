@@ -25,12 +25,21 @@ export const CONFIG = {
     jwtSecret: process.env.AUTH_JWT_SECRET ?? '',
     jwtIssuer: process.env.AUTH_JWT_ISSUER ?? 'identity-service',
     jwtAudience: process.env.AUTH_JWT_AUDIENCE ?? 'identity-service-clients',
+    // Deployment realm config (ADR-0018). One deployment = one realm = one user pool, so what used to
+    // be per-tenant Tenant fields is now deployment-wide configuration here:
+    //   - registrationMode: self-registration policy (RQ-0013) — open (default) | invite | closed.
+    //   - localIdpEnabled: whether identity-service's own email/password IdP (RQ-0002) accepts logins
+    //     and self-registration. Google SSO (RQ-0001) is independently gated by the GOOGLE_* config.
+    //   - allowedRoles: optional role vocabulary for invites/users (RQ-0005); empty = any role allowed.
+    registrationMode: ((process.env.AUTH_REGISTRATION_MODE ?? 'open') as 'open' | 'invite' | 'closed'),
+    localIdpEnabled: (process.env.AUTH_LOCAL_IDP_ENABLED ?? 'true') !== 'false',
+    allowedRoles: parseOrigins(process.env.AUTH_ALLOWED_ROLES),
     // Local-credential IdP (RQ-0002): password policy + brute-force lockout.
     password: {
       minLength: toNumber(process.env.AUTH_PASSWORD_MIN_LENGTH, 10),
       maxFailedAttempts: toNumber(process.env.AUTH_PASSWORD_MAX_ATTEMPTS, 5),
       lockoutMinutes: toNumber(process.env.AUTH_PASSWORD_LOCKOUT_MINUTES, 15),
-      // Per-tenant self-service registration rate limit (abuse guard on the public endpoint).
+      // Deployment-wide self-service registration rate limit (abuse guard on the public endpoint).
       registrationsPerMinute: toNumber(process.env.AUTH_REGISTRATIONS_PER_MINUTE, 20)
     }
   },
@@ -45,10 +54,12 @@ export const CONFIG = {
       encryptionPassphrase: process.env.OAUTH_KEY_PASSPHRASE ?? '',
       rotationIntervalHours: toNumber(process.env.OAUTH_KEY_ROTATION_HOURS, 24 * 30)
     },
-    tenantDefaults: {
-      maxClients: toNumber(process.env.OAUTH_TENANT_MAX_CLIENTS, 50),
-      maxAccessTokensPerMinute: toNumber(process.env.OAUTH_TENANT_MAX_TOKENS_PER_MINUTE, 200),
-      maxRefreshTokens: toNumber(process.env.OAUTH_TENANT_MAX_REFRESH_TOKENS, 10_000)
+    // Deployment-wide OAuth limits (ADR-0018 — formerly per-tenant `tenantDefaults`). One realm per
+    // deployment, so these are simply the limits, applied globally.
+    limits: {
+      maxClients: toNumber(process.env.OAUTH_MAX_CLIENTS, 50),
+      maxAccessTokensPerMinute: toNumber(process.env.OAUTH_MAX_TOKENS_PER_MINUTE, 200),
+      maxRefreshTokens: toNumber(process.env.OAUTH_MAX_REFRESH_TOKENS, 10_000)
     }
   },
   // Management plane (ADR-0007): the authenticated admin API (/admin/v1) + MCP server. Admin principals
@@ -59,7 +70,7 @@ export const CONFIG = {
     enabled: (process.env.ADMIN_API_ENABLED ?? 'true') !== 'false',
     basePath: process.env.ADMIN_API_BASE_PATH ?? '/admin/v1',
     // The scope a client-credentials token must carry to reach the management plane. Granular
-    // per-area scopes (`admin:tenants`, `admin:users`, …) also satisfy their own routes for
+    // per-area scopes (`admin:clients`, `admin:users`, …) also satisfy their own routes for
     // least-privilege agents; this superscope satisfies all of them.
     requiredScope: process.env.ADMIN_API_SCOPE ?? 'admin',
     // Per-actor operator login (ADR-0010): a USER identity token (`sub`, no `cid`) whose `roles` claim
@@ -105,10 +116,11 @@ export const CONFIG = {
     redirectUri: process.env.GOOGLE_REDIRECT_URI ?? ''
   },
   cors: {
+    // Allowed browser origins for the deployment (ADR-0018). Formerly the union of per-tenant
+    // `allowedOrigins`; now a single deployment-wide list from CORS_ORIGINS.
     staticOrigins: parseOrigins(process.env.CORS_ORIGINS),
     allowedMethods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS']
   },
-  corsRefreshIntervalMs: toNumber(process.env.TENANT_CORS_REFRESH_INTERVAL_MS, 5 * 60 * 1000),
   // Outbound fleet-monitoring to maestro (managed-product platform: heartbeat US-0070 + telemetry
   // US-0076). Reports under the "identity-service" product / ds1 deployment that maestro's register already
   // declares (runtime@identity-service.fps4.nl). Stays fully INERT when apiUrl is empty (local dev / tests /

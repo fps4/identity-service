@@ -1,5 +1,4 @@
 import type { Connection, Model } from 'mongoose';
-import { getTenantModel, Tenant, type TenantDocument } from './tenant.js';
 import { getSessionModel, Session, type SessionDocument } from './session.js';
 import { getOAuthClientModel, OAuthClient, type OAuthClientDocument } from './oauth-client.js';
 import { getOAuthTokenModel, OAuthToken, type OAuthTokenDocument } from './oauth-token.js';
@@ -10,7 +9,6 @@ import { getKeyStoreModel, KeyStore, type KeyStoreDocument } from './key-store.j
 import { getAuditLogModel, AuditLog, type AuditLogDocument } from './audit-log.js';
 
 export const makeModels = (connection: Connection) => ({
-  Tenant: getTenantModel(connection) as Model<TenantDocument>,
   Session: getSessionModel(connection) as Model<SessionDocument>,
   OAuthClient: getOAuthClientModel(connection) as Model<OAuthClientDocument>,
   OAuthToken: getOAuthTokenModel(connection) as Model<OAuthTokenDocument>,
@@ -21,7 +19,6 @@ export const makeModels = (connection: Connection) => ({
   AuditLog: getAuditLogModel(connection) as Model<AuditLogDocument>
 });
 
-export { Tenant, type TenantDocument } from './tenant.js';
 export { Session, type SessionDocument } from './session.js';
 export { OAuthClient, type OAuthClientDocument } from './oauth-client.js';
 export { OAuthToken, type OAuthTokenDocument } from './oauth-token.js';

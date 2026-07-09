@@ -1,6 +1,7 @@
 # identity-service
 
-A standalone, multi-tenant identity service (a self-hosted IdP) shared across products. It ships the
+A standalone identity service (a self-hosted IdP) shared across products — one deployment is one realm
+with a single shared user pool ([ADR-0018](docs/design/decisions/0018-collapse-tenant-into-deployment.md)). It ships the
 service (OAuth 2.0 + OIDC token issuance), a headless SDK, an optional drop-in React `<Login/>`, an
 authenticated management plane (HTTP `/admin/v1` + an MCP server for agents), and an optional operator
 admin console. It owns **authentication** (who you are); consuming products keep their own
@@ -20,7 +21,7 @@ identity-service/
  │    └── src/
  ├── console/          # Optional operator admin console (Next.js, @fps4/identity-service-console)
  │    └── app/
- ├── config/           # seed.example.yaml → seed.yaml (gitignored): tenants + clients + users
+ ├── config/           # seed.example.yaml → seed.yaml (gitignored): clients + users
  ├── docs/             # Two-plane docs: design/ · reference/ · guides/ · product/ (index: docs/README.md)
  └── README.md
 ```
@@ -30,7 +31,7 @@ identity-service/
 1. Copy `service/.env.example` to `.env` and set values:
    - `MONGO_URI`, `MONGO_DB_NAME`
    - `AUTH_JWT_SECRET`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`
-   - OAuth settings: token TTLs, tenant limits, optional key passphrase (see comments in `.env.example`)
+   - OAuth settings: token TTLs, deployment limits, optional key passphrase (see comments in `.env.example`)
    - Optionally update `SESSION_TTL_MINUTES`, `CORS_ORIGINS`
 2. Install dependencies & build:
 
@@ -55,9 +56,9 @@ The service listens on `PORT` (default `7305`). Health check at `GET /health`.
 
 - `POST /oauth2/token` – client credentials grant issuing RS256 access tokens.
 - `GET /.well-known/jwks.json` – JWKS for verifying issued tokens.
-- `POST /v1/tenants/:tenantId/sessions` – validate tenant, persist session, issue legacy session JWT (in migration).
+- `POST /v1/sessions` – persist session, issue legacy session JWT (in migration).
 - `PATCH /v1/sessions/:sessionId` – attach contact identifiers or cookie context.
-- `/admin/v1/*` – the authenticated **management plane** (ADR-0007): tenants, clients, users, signing keys, stats, and audit. Network-restricted, scoped per actor, append-only audited. The same operations are exposed to agents over an **MCP server** (`npm run mcp`).
+- `/admin/v1/*` – the authenticated **management plane** (ADR-0007): clients, users, signing keys, stats, and audit. Network-restricted, scoped per actor, append-only audited. The same operations are exposed to agents over an **MCP server** (`npm run mcp`).
 - See `docs/reference/api.md` for full payloads and responses.
 
 ## SDK Usage
@@ -66,8 +67,7 @@ The service listens on `PORT` (default `7305`). Health check at `GET /health`.
 import { ComponentAuthClient } from '@fps4/identity-service-sdk';
 
 const client = new ComponentAuthClient({
-  baseUrl: 'https://auth.example.com',
-  defaultTenantId: 'tenant-123'
+  baseUrl: 'https://auth.example.com'
 });
 
 const session = await client.createSession({ visitorId: 'visitor-001' });
@@ -131,7 +131,7 @@ See [`react/README.md`](react/README.md) for styling (Tailwind/shadcn) and the f
 ### Operator admin console
 
 For day-2 operations, `@fps4/identity-service-console` (in `console/`) is an **optional** Next.js app — a
-thin server-side client over the `/admin/v1` management plane (ADR-0007): dashboards plus tenant, client,
+thin server-side client over the `/admin/v1` management plane (ADR-0007): dashboards plus client,
 user, and signing-key management. The admin bearer token stays in server env and never reaches the
 browser; no direct database access. Distinct from the consumer-facing `<Login/>` widget. See
 [`console/README.md`](console/README.md).
@@ -143,7 +143,7 @@ Docs follow a two-plane structure — see [`docs/README.md`](docs/README.md) for
 
 - [`docs/design/architecture.md`](docs/design/architecture.md) – overall architecture, OAuth components, and the management plane.
 - [`docs/reference/api.md`](docs/reference/api.md) – endpoint contract (incl. `/admin/v1`) and token shape.
-- [`docs/guides/tenant-config.md`](docs/guides/tenant-config.md) – tenant onboarding & OAuth configuration.
+- [`docs/guides/tenant-config.md`](docs/guides/tenant-config.md) – deployment configuration & OAuth clients.
 - [`docs/guides/deployment.md`](docs/guides/deployment.md) – how the service is deployed, plus nightly backups & recovery.
 - [`console/README.md`](console/README.md) – the optional operator admin console over `/admin/v1`.
 - [`docs/product/`](docs/product) – the `RQ-*` functional specs (e.g. `RQ-0001` adds user identity via Google SSO, issued as a verifiable JWT).

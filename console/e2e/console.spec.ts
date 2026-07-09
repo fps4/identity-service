@@ -11,14 +11,13 @@ test('authenticated operator sees the dashboard and the signed-in shell', async 
   await page.goto('/');
 
   // Stats served by the stub render (proves the server forwarded the Bearer token — the stub 401s without it).
-  // Use role-scoped locators: "Dashboard"/"Tenants" appear in both the nav and the page body.
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Tenants' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Applications' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
 });
 
 test('an unauthenticated visit is redirected to /login', async ({ page }) => {
-  await page.goto('/tenants');
+  await page.goto('/users');
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByText(/sign in to the admin console/i)).toBeVisible();
 });

@@ -1,151 +1,90 @@
 ---
-title: Tenant Configuration Guide
-summary: How to enable and configure OAuth 2.0 for a tenant in identity-service — the oauth block, defaults, and validation rules.
+title: Deployment Configuration Guide
+summary: How to configure a deployment of identity-service — the realm-wide env settings, OAuth clients (Applications), local users, Google SSO, registration/invites, roles, and the flat seed config.
 status: current
-last_updated: 2026-06-23
+last_updated: 2026-07-09
 owners: [architect]
 related:
   - docs/reference/api.md
   - docs/design/architecture.md
+  - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/product/RQ-0001-workspace-user-identity-google-sso.md
 ---
 
-# Tenant Configuration Guide
+# Deployment Configuration Guide
 
-identity-service relies on tenant-scoped metadata stored in MongoDB. Enabling OAuth 2.0 for a tenant requires adding an `oauth` section to the tenant document. This guide explains the structure, recommended defaults, and validation rules enforced by the service.
+Since [ADR-0018](../design/decisions/0018-collapse-tenant-into-deployment.md), **one deployment = one
+realm = one shared user pool**. There is no `Tenant` entity, no `tenantId`, and no `tenants` collection.
+A deployment (`ds1`, …) has its own MongoDB, active signing key, issuer origin, and Google app; **users
+are deployment-scoped** (unique by `email`, shared across every client → instance-wide SSO), and the
+**OAuth client (Application)** is the only structural per-consumer object.
 
-## Minimal Tenant Document
+Configuring a deployment therefore has two parts:
 
-```json
-{
-  "_id": "tenant-123",
-  "name": "Telemetry Platform",
-  "status": "active",
-  "allowedOrigins": ["https://app.example.com"],
-  "oauth": {
-    "enabled": true,
-    "allowedGrantTypes": ["client_credentials"],
-    "allowedScopes": ["telemetry:read", "telemetry:write"],
-    "limits": {
-      "tokensPerMinute": 200,
-      "refreshTokens": 10000,
-      "clientCap": 50
-    }
-  }
-}
-```
+1. **Realm-wide settings** — deployment **environment variables** (`CONFIG`), not a per-row document.
+2. **Provisioned objects** — OAuth clients and local users, via the flat **seed config** (`config/seed.yaml`)
+   or the [`/admin/v1` management plane](../reference/api.md#admin-v1-management-plane).
 
-### Fields
+## Realm-wide settings (deployment env)
 
-| Field | Description |
-| --- | --- |
-| `enabled` | Turns OAuth support on/off for the tenant. Tokens are refused when `false` or absent. |
-| `allowedGrantTypes` | List of grants the tenant permits. Must include `client_credentials` for current flows. |
-| `allowedScopes` | Optional allow-list of scopes. Requested scopes must belong to both the client and this list. Omit or set empty array to defer to client definitions. |
-| `limits.tokensPerMinute` | Overrides the default access-token rate limit (default 200/min from environment). |
-| `limits.refreshTokens` | Future use for refresh-token budgets (defaults from environment). |
-| `limits.clientCap` | Optional cap on registered clients for the tenant (enforced by admin tooling). |
+What used to live on a per-tenant `oauth` block is now deployment configuration. The mapping:
 
-## Provisioning Steps
+| Former per-tenant field | New home (deployment env) | Notes |
+| --- | --- | --- |
+| `allowedOrigins` | `CORS_ORIGINS` | Comma-separated allow-list of browser origins; a single, deployment-wide list. |
+| `oauth.registration` (`open`\|`invite`\|`closed`) | `AUTH_REGISTRATION_MODE` | Default `open`. Governs self-registration (see [Registration & invites](#registration-policy--invites)). |
+| `oauth.idp.provider` (`google`\|`local`) | `AUTH_LOCAL_IDP_ENABLED` + the Google app env | Local IdP is on by default; set `AUTH_LOCAL_IDP_ENABLED=false` to disable it. One Google app per deployment (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`). |
+| `oauth.allowedRoles` | `AUTH_ALLOWED_ROLES` | Comma-separated role vocabulary; validated at seed time when non-empty (see [User roles](#user-roles-rq-0005)). |
+| `oauth.limits.tokensPerMinute` | `OAUTH_MAX_TOKENS_PER_MINUTE` | Deployment-wide access-token rate limit (default 200/min). |
+| `oauth.limits.refreshTokens` | `OAUTH_MAX_REFRESH_TOKENS` | Deployment-wide refresh-token budget (default 10000). |
+| `oauth.limits.clientCap` | `OAUTH_MAX_CLIENTS` | Deployment-wide cap on registered clients (default 50). |
 
-1. **Insert/Update Tenant Document**
-
-   ```js
-   db.tenants.updateOne(
-     { _id: "tenant-123" },
-     {
-       $set: {
-         name: "Telemetry Platform",
-         status: "active",
-         allowedOrigins: ["https://app.example.com"],
-         oauth: {
-           enabled: true,
-           allowedGrantTypes: ["client_credentials"],
-           allowedScopes: ["telemetry:read", "telemetry:write"],
-           limits: { tokensPerMinute: 200, refreshTokens: 10000, clientCap: 50 }
-         }
-       }
-     },
-     { upsert: true }
-   );
-   ```
-
-2. **Register OAuth Clients** – Insert records into `oauth_clients` with:
-   - `_id` (omit to auto-generate a UUID client id, or provide your own)
-   - `tenantId` (matching the tenant)
-   - `secretHash` (use `hashSecret(plainSecret)` from `service/src/utils/hash.ts`)
-   - `grantTypes` (subset of tenant `allowedGrantTypes`)
-   - `scopes` (subset of tenant `allowedScopes`)
-
-   ```js
-   db.oauth_clients.insertOne({
-     tenantId: "tenant-123",
-     name: "Test Client",
-     secretHash: "<hash of plain secret>",
-     grantTypes: ["client_credentials"],
-     scopes: ["telemetry:read"],
-     isConfidential: true
-   });
-   ```
-
-3. **Distribute Credentials** – Share the generated `client_id` (look up `_id` after insertion if you omitted it) and the plain secret with the product team. Encourage storing secrets in the product’s own secrets manager.
-
-4. **Verify Token Issuance** – Run `POST /oauth2/token` with the registered credentials. Tokens are rejected unless all tenant validation checks pass.
-
-## Validation Rules Enforced by the Service
-
-- Tenant must exist with `status: "active"`.
-- `oauth.enabled` must be `true`.
-- `client_credentials` must be present in both the tenant’s `allowedGrantTypes` and the client’s `grantTypes`.
-- Requested scopes must be allowed by both the tenant and client. If no scopes are requested, the service uses the client’s scopes (filtered by the tenant’s allow list).
-- Rate limiting uses `limits.tokensPerMinute` when provided, otherwise the global default `OAUTH_TENANT_MAX_TOKENS_PER_MINUTE`.
-
-Tenants without the `oauth` section continue to support legacy session issuance, but OAuth token requests will fail with `unauthorized_client`.
-
-## User login via Google SSO (RQ-0001)
-
-To let a consumer (e.g. the maestro workspace) authenticate humans through Google and receive a user
-identity JWT, configure three things.
-
-### 1. Service-level Google app (env)
-
-A single Google OIDC app per deployment federates user login. Its credentials live in the service
-environment, **never** in tenant documents:
+The Google app credentials and the issuer are service-level, **never** per-consumer:
 
 ```
 GOOGLE_CLIENT_ID=...           # from Google Cloud Console
 GOOGLE_CLIENT_SECRET=...
 GOOGLE_REDIRECT_URI=https://auth-dev.example.com/oauth2/callback   # register this on the Google app
 AUTH_JWT_ISSUER=https://auth-dev.example.com                        # HTTPS issuer; becomes the token `iss`
+CORS_ORIGINS=https://app.example.com,https://app.maestro.example.com
+AUTH_REGISTRATION_MODE=open                                         # open | invite | closed
+AUTH_LOCAL_IDP_ENABLED=true
+AUTH_ALLOWED_ROLES=platform_admin,member                           # optional vocabulary
 ```
 
-### 2. Tenant opts into the grant
+## Registering OAuth clients (Applications)
 
-Add `authorization_code` to the tenant's `allowedGrantTypes` and mark the upstream IdP:
+An OAuth client is the registered per-consumer object: it carries the grants it may use, its redirect
+URIs, its scopes, and — for user login — the **`audience`** stamped as the token `aud`. Provision clients
+via the seed config (below) or the management plane. A raw insert looks like:
 
 ```js
-db.tenants.updateOne(
-  { _id: "tenant-maestro" },
-  { $set: {
-      status: "active",
-      "oauth.enabled": true,
-      "oauth.allowedGrantTypes": ["authorization_code"],
-      "oauth.idp": { provider: "google" }   // declarative marker; secrets stay in env
-  } },
-  { upsert: true }
-);
+db.oauth_clients.insertOne({
+  name: "Telemetry Client",
+  secretHash: "<hash of plain secret>",   // hashSecret(plainSecret) from service/src/utils/hash.ts
+  grantTypes: ["client_credentials"],     // subset of what the deployment allows
+  scopes: ["telemetry:read"],
+  isConfidential: true
+});
 ```
 
-### 3. Register the consumer client with an audience + redirect URI
+- `_id` (the `client_id`) auto-generates a UUID when omitted; provide your own only for a stable id.
+- A **machine** (`client_credentials`) client is confidential and carries a secret + scopes.
+- A **user-login** client (`password` or `authorization_code`) is **public** (PKCE), so `isConfidential`
+  may be `false` with no secret, and it **must** carry an `audience`.
 
-The client's **`audience`** is the load-bearing `aud` value stamped on every user token it mints —
-it binds the token to one workspace. A user-login client is **public** (PKCE), so `isConfidential`
-may be `false` and no secret is needed for the `authorization_code` exchange.
+Share the `client_id` and plain secret with the product team out-of-band; encourage storing secrets in
+the product's own secrets manager. Verify with `POST /oauth2/token`.
+
+## User login via Google SSO (RQ-0001)
+
+Google login is enabled deployment-wide by the Google app env above. To let a consumer authenticate humans
+through Google and receive a user identity JWT, register a **public** client that allows the
+`authorization_code` grant with an `audience` + redirect URI:
 
 ```js
 db.oauth_clients.insertOne({
   _id: "client-maestro",
-  tenantId: "tenant-maestro",
   name: "maestro web",
   grantTypes: ["authorization_code"],
   redirectUris: ["https://app.maestro.example.com/auth/callback"],  // exact-match validated
@@ -158,8 +97,8 @@ db.oauth_clients.insertOne({
 
 ### Values to give the consumer
 
-The consumer's JWT verifier must be configured to match what this service mints. maestro, for example,
-sets these (`IDENTITY_SERVICE_*`) — a consuming product picks its own variable names:
+The consumer's JWT verifier must match what this service mints. maestro, for example, sets these
+(`IDENTITY_SERVICE_*`) — a consuming product picks its own variable names:
 
 | consumer env var | Value | Source |
 | --- | --- | --- |
@@ -175,95 +114,73 @@ If `iss` / `aud` / the JWKS URL do not line up exactly, maestro rejects the toke
 The first time a person completes Google login, identity-service **just-in-time provisions** them as a
 manageable user record (visible in the console / `/admin/v1`, assignable a role, disable-able) and links
 the Google identity to it — no pre-registration needed. Subsequent logins reuse that record. If a user
-with the **same email already exists** in the tenant (e.g. a local-password account), the Google identity
-is linked onto it **only when Google reports the email verified**; an unverified-email collision is
-**denied**, never merged (account-takeover guard). Operators can link/unlink identities manually via
+with the **same email already exists** in the deployment (e.g. a local-password account), the Google
+identity is linked onto it **only when Google reports the email verified**; an unverified-email collision
+is **denied**, never merged (account-takeover guard). Operators can link/unlink identities manually via
 `POST /admin/v1/users/link-identity` / `unlink-identity`. The issued token is unchanged by any of this —
 `sub` stays the Google subject. See [ADR-0012](../design/decisions/0012-federated-identity-and-account-linking.md).
 
 ## Local username/password login (RQ-0002)
 
-For tenants that want identity-service's own email + password IdP instead of (or alongside) Google,
-enable the `password` grant and mark the `local` IdP:
-
-```js
-db.tenants.updateOne(
-  { _id: "tenant-local" },
-  { $set: {
-      status: "active",
-      "oauth.enabled": true,
-      "oauth.allowedGrantTypes": ["password"],
-      "oauth.idp": { provider: "local" }
-  } },
-  { upsert: true }
-);
-```
-
-Register a client allowing the `password` grant with an `audience` (binds the issued token's `aud`):
+When `AUTH_LOCAL_IDP_ENABLED` is on (the default), register a client that allows the `password` grant
+with an `audience` (binds the issued token's `aud`):
 
 ```js
 db.oauth_clients.insertOne({
-  _id: "client-local", tenantId: "tenant-local", name: "local web",
+  _id: "client-local", name: "local web",
   grantTypes: ["password"], audience: "maestro-workspace",
   redirectUris: [], scopes: [], isConfidential: false, secretHash: ""
 });
 ```
 
-Then users **self-register** (`POST /v1/tenants/:tenantId/register`) and **log in** via the
-`password` grant. The issued token is identical in shape to the Google-SSO token (`email` + stable
-`sub` + `iss` + `aud` + `exp`), so a consumer like maestro verifies it the same way.
+Then users **self-register** (`POST /v1/register`) and **log in** via the `password` grant. The issued
+token is identical in shape to the Google-SSO token (`email` + stable `sub` + `iss` + `aud` + `exp`), so a
+consumer like maestro verifies it the same way.
 
 Operators manage credentials with the CLI (no email channel yet):
 
 ```bash
 cd service
-npm run manage-users -- create       --tenant=tenant-local --email=u@x.test --password=...
-npm run manage-users -- set-password  --tenant=tenant-local --email=u@x.test --password=...
-npm run manage-users -- lock|unlock|disable|enable|delete --tenant=tenant-local --email=u@x.test
+npm run manage-users -- create        --email=u@x.test --password=...
+npm run manage-users -- set-password  --email=u@x.test --password=...
+npm run manage-users -- lock|unlock|disable|enable|delete --email=u@x.test
 ```
 
-### Registration policy & invites (RQ-0013)
+## Registration policy & invites
 
-Self-registration is governed per tenant by **`oauth.registration`**: `open` (default — anyone may
-register, exactly the pre-policy behaviour), `invite` (a valid operator-issued invite code is
-required), or `closed` (admin-plane creation only). Set it in the seed config
-(`oauth.registration: invite`) or via `POST /admin/v1/tenants`.
+Self-registration is governed **deployment-wide** by **`AUTH_REGISTRATION_MODE`**: `open` (default —
+anyone may register), `invite` (a valid operator-issued invite code is required), or `closed` (admin-plane
+creation only).
 
-On an **invite** tenant, operators mint codes on the management plane —
-`POST /admin/v1/tenants/{tenantId}/invites` (or the `create_invite` MCP tool / the console) — and
-send them out-of-band (email, chat); **no mail provider is needed**. A code can be email-bound,
-stamp roles (validated against `allowedRoles`), allow multiple uses (cohorts), and expires after 7
-days by default. The code is **shown once**; list and revoke via
-`GET /admin/v1/tenants/{tenantId}/invites` and `POST /admin/v1/invites/{id}/revoke`. Invitees pass
-the code as `inviteCode` on the register call; an email-bound redemption also marks the address
-verified (ADR-0013).
+On an `invite` deployment, operators mint codes on the management plane — `POST /admin/v1/invites` (or the
+`create_invite` MCP tool / the console) — and send them out-of-band (email, chat); **no mail provider is
+needed**. A code can be email-bound, stamp roles (validated against `AUTH_ALLOWED_ROLES`), allow multiple
+uses (cohorts), and expires after 7 days by default. The code is **shown once**; list and revoke via
+`GET /admin/v1/invites` and `POST /admin/v1/invites/{id}/revoke`. Invitees pass the code as `inviteCode`
+on the register call; an email-bound redemption also marks the address verified (ADR-0013).
 
-Two behaviours to plan for on non-`open` tenants:
+Two behaviours to plan for on non-`open` deployments:
 
-- **Google-first sign-in is denied for new people** — a federated login only succeeds for an
-  existing user; a new Google identity is redirected back with `error=access_denied`. The invitee
-  registers locally with their code first; their Google account then auto-links on the verified
-  matching email at next login (ADR-0012). Point your login UI's "sign up" path at the invite form.
-- Invites are **runtime operational data** — minted via the admin plane, audited
-  (`invite.create` / `invite.redeem` / `invite.revoke`), and never part of the seed file.
+- **Google-first sign-in is denied for new people** — a federated login only succeeds for an existing
+  user; a new Google identity is redirected back with `error=access_denied`. The invitee registers
+  locally with their code first; their Google account then auto-links on the verified matching email at
+  next login (ADR-0012). Point your login UI's "sign up" path at the invite form.
+- Invites are **runtime operational data** — minted via the admin plane, audited (`invite.create` /
+  `invite.redeem` / `invite.revoke`), and never part of the seed file.
 
 ## User roles (RQ-0005)
 
-A local user can carry a list of **coarse, tenant-scoped roles** that are stamped into the user
+A local user can carry a list of **coarse, deployment-scoped roles** that are stamped into the user
 token's **`roles`** claim (a JSON array of strings). identity-service **asserts** roles but does **not**
 enforce them — each consuming product maps roles to its own permissions
 ([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is omitted when a user has no
 roles, and is re-read on every token issuance (including refresh), so a change applies on next refresh.
 
-Optionally declare a per-tenant **`allowedRoles`** vocabulary (mirrors `allowedScopes`). When non-empty
-it is validated at seed time — a user role outside the list is rejected; when empty/absent, any role
-string is accepted.
+Optionally declare a deployment **`AUTH_ALLOWED_ROLES`** vocabulary. When non-empty it is validated at seed
+time — a user role outside the list is rejected; when empty/absent, any role string is accepted.
 
-```js
-db.tenants.updateOne(
-  { _id: "tenant-local" },
-  { $set: { "oauth.allowedRoles": ["tenant_admin", "member"] } }   // optional vocabulary
-);
+```
+AUTH_ALLOWED_ROLES=platform_admin,member
 ```
 
 Roles are provisioned by the operator (no HTTP API, [ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)):
@@ -274,8 +191,8 @@ Roles are provisioned by the operator (no HTTP API, [ADR-0003](../design/decisio
 
   ```bash
   cd service
-  npm run manage-users -- set-roles --tenant=tenant-local --email=u@x.test --roles=tenant_admin,member
-  npm run manage-users -- set-roles --tenant=tenant-local --email=u@x.test --roles=   # clears all roles
+  npm run manage-users -- set-roles --email=u@x.test --roles=platform_admin,member
+  npm run manage-users -- set-roles --email=u@x.test --roles=   # clears all roles
   ```
 
 A consumer reads `roles` from the verified token and authorizes accordingly; it never calls back to
@@ -283,28 +200,45 @@ identity-service to check a permission.
 
 ## Bulk provisioning via seed config (RQ-0004)
 
-For more than a one-off tenant, use the **seed config** instead of hand-running DB inserts. Copy the
-committed template to a gitignored real file, fill it in, and run the idempotent loader:
+For more than a one-off client, use the **seed config** instead of hand-running DB inserts. It is a **flat**
+list of OAuth clients and local users — **no `tenants:` layer** (ADR-0018). Copy the committed template to a
+gitignored real file, fill it in, and run the idempotent loader:
 
 ```bash
 cp config/seed.example.yaml config/seed.yaml     # gitignored; never committed
 # set referenced secrets in the environment / .env, e.g. SEED_DEMO_PASSWORD, SEED_ADMIN_PASSWORD
 cd service
-npm run seed                                      # validates, then upserts tenants/clients + adds users
+npm run seed                                      # validates, then upserts clients + adds users
 ```
 
-The file lists tenants, their OAuth clients (with `audience`), and local users; passwords/secrets are
-`${ENV_VAR}` references resolved at run time and stored scrypt-hashed. Re-running upserts tenants and
-clients and **leaves existing users untouched** (use `npm run manage-users set-password` to change a
-password). The loader is operator-run against the database — there is **no HTTP seeding endpoint**
-([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). The loader reads `MONGO_URI`, so run it
-where it can reach the target Mongo (locally against the published port, or inside the docker network).
+The file's shape:
+
+```yaml
+clients:
+  - id: demo-web
+    name: Demo Web
+    grantTypes: [password]              # local email/password login (RQ-0002)
+    audience: demo-workspace            # REQUIRED for password/authorization_code — becomes the token `aud`
+    redirectUris: []
+    isConfidential: false
+
+users:
+  - email: demo@fps4.nl
+    password: ${SEED_DEMO_PASSWORD}     # ${ENV_VAR} references resolved at run time, stored scrypt-hashed
+    status: active
+    roles: [member]                     # RQ-0005: coarse roles → token `roles` claim
+```
+
+Re-running upserts clients and **leaves existing users untouched** (use `npm run manage-users set-password`
+to change a password). The loader is operator-run against the database — there is **no HTTP seeding endpoint**
+([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It reads `MONGO_URI`, so run it where it
+can reach the target Mongo (locally against the published port, or inside the docker network).
 
 ## Operational Tips
 
-- Keep tenant configuration changes in version control (e.g., infrastructure repo) or via migration scripts to track history.
-- Rotate client secrets periodically by recomputing `secretHash` and redistributing new credentials.
-- Monitor structured logs for `issued client credentials token` events to validate adoption and spot unexpected tenants/grants.
+- Keep client configuration and the deployment env in version control (e.g. the infra repo) to track history.
+- Rotate client secrets periodically — `POST /admin/v1/clients/{id}/rotate-secret` (or the seed) — and redistribute.
+- Monitor structured logs for `issued client credentials token` events to validate adoption and spot unexpected grants.
 
 For full architecture context, review [architecture.md](../design/architecture.md). For endpoint contracts, see [api.md](../reference/api.md).
-> **Tip:** The `_id` is automatically generated as a UUID when omitted. Provide one explicitly only if you need a stable identifier determined outside the service.
+> **Tip:** A client's `_id` is auto-generated as a UUID when omitted. Provide one explicitly only if you need a stable identifier determined outside the service.
