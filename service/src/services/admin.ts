@@ -1,11 +1,11 @@
 import { randomUUID, randomBytes } from 'crypto';
 import type { Connection } from 'mongoose';
-import { CONFIG } from '../config.js';
 import { hashSecret } from '../utils/hash.js';
 import { rotateSigningKey, listPublicKeys } from '../utils/key-store.js';
 import { generateInviteCode, inviteCodeDigest, deriveInviteStatus } from './invites.js';
 import type { ModelsBucket } from '../oauth/types.js';
 import type { Logger } from '../utils/logger.js';
+import type { AppRole } from '../models/index.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -34,6 +34,8 @@ export interface CreateClientInput {
   audience?: string;
   subject?: string;
   isConfidential?: boolean;
+  /** The application's role catalogue (ADR-0019) — the roles assignments may grant for this client. */
+  roles?: AppRole[];
   /**
    * Additive token claims (US-0086) merged into this client's `client_credentials` token — e.g. a
    * product_runtime credential's `{ role: 'product_runtime', email: 'runtime@…' }`. Registered claims
@@ -46,22 +48,50 @@ export interface CreateClientInput {
 export interface CreateUserInput {
   email: string;
   password: string;
-  roles?: string[];
 }
 
 export interface CreateInviteInput {
+  clientId: string;        // the application this invite entitles the redeemer to (ADR-0019, required)
   email?: string;          // optional binding — redemption then requires this address and vouches it
-  roles?: string[];        // stamped on the redeemed user; validated against CONFIG.auth.allowedRoles
+  roles?: string[];        // app-scoped roles granted on redemption; validated against the client's catalogue
   maxUses?: number;        // default 1; >1 for cohort codes
   expiresInHours?: number; // default 7 days
   note?: string;
   createdBy?: string;      // acting principal, threaded from the route/MCP layer for the audit trail
 }
 
+export interface AssignUserInput {
+  email: string;           // the user to entitle
+  clientId: string;        // the application
+  roles?: string[];        // app-scoped roles (subset of the client's catalogue)
+  createdBy?: string;
+}
+
 const INVITE_DEFAULT_TTL_HOURS = 24 * 7;
 
 function newSecret(): string {
   return randomBytes(32).toString('base64url');
+}
+
+/** Validate + normalize an application role catalogue (ADR-0019): each entry needs a non-empty `key`. */
+function normalizeRoleCatalogue(roles?: AppRole[]): AppRole[] {
+  if (roles === undefined) return [];
+  if (!Array.isArray(roles)) throw new AdminServiceError('roles must be an array of { key, name?, description? }', 400, 'invalid_input');
+  const seen = new Set<string>();
+  return roles.map((r) => {
+    if (!r || typeof r.key !== 'string' || !r.key.trim()) throw new AdminServiceError('each role needs a non-empty key', 400, 'invalid_input');
+    const key = r.key.trim();
+    if (seen.has(key)) throw new AdminServiceError(`duplicate role key "${key}"`, 400, 'invalid_input');
+    seen.add(key);
+    return { key, name: typeof r.name === 'string' ? r.name : undefined, description: typeof r.description === 'string' ? r.description : undefined };
+  });
+}
+
+/** Assert every requested role exists in the client's catalogue (ADR-0019). */
+function assertRolesInCatalogue(roles: string[], catalogue: AppRole[], clientId: string): void {
+  const keys = new Set(catalogue.map((r) => r.key));
+  const stray = roles.find((r) => !keys.has(r));
+  if (stray) throw new AdminServiceError(`Role "${stray}" is not in application ${clientId}'s role catalogue`, 400, 'invalid_role');
 }
 
 export function createAdminService(deps: AdminServiceDependencies) {
@@ -85,6 +115,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
     if (input.claims !== undefined && (typeof input.claims !== 'object' || input.claims === null || Array.isArray(input.claims))) {
       throw new AdminServiceError('claims must be an object', 400, 'invalid_input');
     }
+    const roles = normalizeRoleCatalogue(input.roles);
     const m = await models();
 
     const clientId = input.id?.trim() || randomUUID();
@@ -97,6 +128,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
         grantTypes: input.grantTypes,
         scopes: input.scopes ?? [],
         redirectUris: input.redirectUris ?? [],
+        roles,
         audience: input.audience,
         subject: input.subject,
         isConfidential: input.isConfidential ?? true,
@@ -160,9 +192,10 @@ export function createAdminService(deps: AdminServiceDependencies) {
       passwordHash: hashSecret(input.password),
       status: 'active',
       emailVerified: false,
-      roles: input.roles ?? [],
       passwordUpdatedAt: nowFn()
     });
+    // Roles are per-application (ADR-0019): a new user has no access until assigned to an app. Grant it
+    // with `assignUser` (or an invite that carries the app + roles).
     deps.logger?.info?.({ userId: id }, 'admin created user');
     return { id, email };
   }
@@ -274,18 +307,19 @@ export function createAdminService(deps: AdminServiceDependencies) {
    * fails loud at creation rather than quietly at the invitee's redemption (ADR-0013).
    */
   async function createInvite(input: CreateInviteInput): Promise<{ inviteId: string; code: string; expiresAt: Date }> {
+    if (!input.clientId?.trim()) throw new AdminServiceError('clientId is required', 400, 'invalid_input');
     const m = await models();
+
+    // The invite entitles the redeemer to a specific application (ADR-0019); its roles must be in that
+    // client's catalogue, so a bad vocabulary fails loud here rather than at the invitee's redemption.
+    const client = await m.OAuthClient.findById(input.clientId).lean().exec();
+    if (!client) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+    const roles = input.roles ?? [];
+    assertRolesInCatalogue(roles, client.roles ?? [], input.clientId);
 
     const email = input.email?.trim().toLowerCase();
     if (email !== undefined && !EMAIL_RE.test(email)) {
       throw new AdminServiceError('email must be a valid address', 400, 'invalid_email');
-    }
-    const roles = input.roles ?? [];
-    const allowedRoles = CONFIG.auth.allowedRoles;
-    if (allowedRoles.length) {
-      const vocabulary = new Set(allowedRoles);
-      const stray = roles.find((r) => !vocabulary.has(r));
-      if (stray) throw new AdminServiceError(`Role "${stray}" is not in AUTH_ALLOWED_ROLES`, 400, 'invalid_input');
     }
     const maxUses = input.maxUses ?? 1;
     if (!Number.isInteger(maxUses) || maxUses < 1) {
@@ -300,6 +334,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const expiresAt = new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
     await m.Invite.create({
       _id: inviteId,
+      clientId: input.clientId,
       codeDigest: inviteCodeDigest(code),
       email,
       roles,
@@ -311,7 +346,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
       createdAt: now,
       updatedAt: now
     });
-    deps.logger?.info?.({ inviteId, maxUses }, 'admin created invite');
+    deps.logger?.info?.({ inviteId, clientId: input.clientId, maxUses }, 'admin created invite');
     return { inviteId, code, expiresAt };
   }
 
@@ -343,6 +378,135 @@ export function createAdminService(deps: AdminServiceDependencies) {
     return { inviteId, revoked: true };
   }
 
+  // --- Application role catalogue (ADR-0019) ---
+
+  async function getClientRoles(clientId: string): Promise<AppRole[]> {
+    const m = await models();
+    const client = await m.OAuthClient.findById(clientId).select('roles').lean().exec();
+    if (!client) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+    return client.roles ?? [];
+  }
+
+  /** Replace an application's role catalogue. Roles already granted to users that are no longer in the
+   *  catalogue are NOT retroactively pruned — surface that in the console and re-assign as needed. */
+  async function setClientRoles(clientId: string, roles: AppRole[]): Promise<AppRole[]> {
+    const catalogue = normalizeRoleCatalogue(roles);
+    const m = await models();
+    const updated = await m.OAuthClient.findByIdAndUpdate(
+      clientId,
+      { $set: { roles: catalogue, updatedAt: nowFn() } },
+      { new: true }
+    ).select('roles').lean().exec();
+    if (!updated) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+    deps.logger?.info?.({ clientId, roles: catalogue.length }, 'admin set client role catalogue');
+    return updated.roles ?? [];
+  }
+
+  // --- Assignments (ADR-0019): a user's entitlement + app-scoped roles for an application ---
+
+  async function resolveUserByEmail(m: ModelsBucket, email: string): Promise<{ _id: string }> {
+    const user = await m.User.findOne({ email: email.trim().toLowerCase() }).select('_id').lean().exec() as { _id: string } | null;
+    if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
+    return user;
+  }
+
+  /** Assign (or re-assign) a user to an application with app-scoped roles. Idempotent upsert. */
+  async function assignUser(input: AssignUserInput): Promise<{ email: string; clientId: string; roles: string[]; status: string }> {
+    const email = (input.email ?? '').trim().toLowerCase();
+    if (!input.clientId?.trim()) throw new AdminServiceError('clientId is required', 400, 'invalid_input');
+    const m = await models();
+    const user = await resolveUserByEmail(m, email);
+    const client = await m.OAuthClient.findById(input.clientId).lean().exec();
+    if (!client) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+    const roles = input.roles ?? [];
+    assertRolesInCatalogue(roles, client.roles ?? [], input.clientId);
+
+    const now = nowFn();
+    const assignment = await m.Assignment.findOneAndUpdate(
+      { userId: user._id, clientId: input.clientId },
+      {
+        $set: { roles, status: 'active', updatedAt: now },
+        $setOnInsert: { _id: randomUUID(), userId: user._id, clientId: input.clientId, createdBy: input.createdBy, createdAt: now }
+      },
+      { upsert: true, new: true }
+    ).lean().exec();
+    deps.logger?.info?.({ email, clientId: input.clientId, roles }, 'admin assigned user to application');
+    return { email, clientId: input.clientId, roles: assignment?.roles ?? roles, status: assignment?.status ?? 'active' };
+  }
+
+  /** Change an existing assignment's roles and/or status (suspend/reactivate). */
+  async function updateAssignment(
+    email: string,
+    clientId: string,
+    changes: { roles?: string[]; status?: 'active' | 'suspended' }
+  ): Promise<{ email: string; clientId: string; roles: string[]; status: string }> {
+    const m = await models();
+    const user = await resolveUserByEmail(m, email);
+    const set: Record<string, unknown> = { updatedAt: nowFn() };
+    if (changes.roles !== undefined) {
+      const client = await m.OAuthClient.findById(clientId).lean().exec();
+      if (!client) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+      assertRolesInCatalogue(changes.roles, client.roles ?? [], clientId);
+      set.roles = changes.roles;
+    }
+    if (changes.status !== undefined) {
+      if (changes.status !== 'active' && changes.status !== 'suspended') {
+        throw new AdminServiceError("status must be 'active' or 'suspended'", 400, 'invalid_input');
+      }
+      set.status = changes.status;
+    }
+    const updated = await m.Assignment.findOneAndUpdate(
+      { userId: user._id, clientId },
+      { $set: set },
+      { new: true }
+    ).lean().exec();
+    if (!updated) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
+    deps.logger?.info?.({ email, clientId }, 'admin updated assignment');
+    return { email, clientId, roles: updated.roles ?? [], status: updated.status };
+  }
+
+  /** Revoke a user's entitlement to an application (deletes the assignment). */
+  async function revokeAssignment(email: string, clientId: string): Promise<{ email: string; clientId: string; revoked: true }> {
+    const m = await models();
+    const user = await resolveUserByEmail(m, email);
+    const result = await m.Assignment.deleteOne({ userId: user._id, clientId }).exec();
+    if (result.deletedCount === 0) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
+    deps.logger?.info?.({ email, clientId }, 'admin revoked assignment');
+    return { email, clientId, revoked: true };
+  }
+
+  /** List the users assigned to an application (its "members"), with their app-scoped roles. */
+  async function listClientMembers(clientId: string) {
+    const m = await models();
+    const client = await m.OAuthClient.findById(clientId).select('_id').lean().exec();
+    if (!client) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+    const assignments = await m.Assignment.find({ clientId }).lean().exec();
+    const users = await m.User.find({ _id: { $in: assignments.map((a) => a.userId) } }).select('_id email status').lean().exec();
+    const byId = new Map(users.map((u) => [u._id, u as { email: string; status: string }]));
+    return assignments.map((a) => ({
+      userId: a.userId,
+      email: byId.get(a.userId)?.email,
+      userStatus: byId.get(a.userId)?.status,
+      status: a.status,
+      roles: a.roles ?? []
+    }));
+  }
+
+  /** List the applications a user is assigned to, with their app-scoped roles. */
+  async function listUserAssignments(email: string) {
+    const m = await models();
+    const user = await resolveUserByEmail(m, email);
+    const assignments = await m.Assignment.find({ userId: user._id }).lean().exec();
+    const clients = await m.OAuthClient.find({ _id: { $in: assignments.map((a) => a.clientId) } }).select('_id name').lean().exec();
+    const byId = new Map(clients.map((c) => [c._id, c as { name: string }]));
+    return assignments.map((a) => ({
+      clientId: a.clientId,
+      clientName: byId.get(a.clientId)?.name,
+      status: a.status,
+      roles: a.roles ?? []
+    }));
+  }
+
   // --- Signing keys ---
 
   async function rotateKey() {
@@ -364,13 +528,14 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
     const [
-      clients, users, lockedUsers, disabledUsers,
+      clients, users, lockedUsers, disabledUsers, assignments,
       tokensLastHour, tokensLastDay, activeRefresh, activeKeys
     ] = await Promise.all([
       m.OAuthClient.countDocuments({}).exec(),
       m.User.countDocuments({}).exec(),
       m.User.countDocuments({ lockedUntil: { $gt: now } }).exec(),
       m.User.countDocuments({ status: 'disabled' }).exec(),
+      m.Assignment.countDocuments({ status: 'active' }).exec(),
       m.OAuthToken.countDocuments({ type: 'access', issuedAt: { $gte: hourAgo } }).exec(),
       m.OAuthToken.countDocuments({ type: 'access', issuedAt: { $gte: dayAgo } }).exec(),
       m.OAuthToken.countDocuments({ type: 'refresh', status: 'active' }).exec(),
@@ -380,6 +545,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
     return {
       clients: { total: clients },
       users: { total: users, locked: lockedUsers, disabled: disabledUsers },
+      assignments: { active: assignments },
       tokens: { accessLastHour: tokensLastHour, accessLastDay: tokensLastDay, activeRefresh },
       keys: { active: activeKeys },
       at: now.toISOString()
@@ -388,8 +554,10 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   return {
     listClients, createClient, rotateClientSecret, deleteClient,
+    getClientRoles, setClientRoles,
     listUsers, createUser, resetUserPassword, setUserStatus, unlockUser, deleteUser,
     linkUserIdentity, unlinkUserIdentity,
+    assignUser, updateAssignment, revokeAssignment, listClientMembers, listUserAssignments,
     createInvite, listInvites, revokeInvite,
     rotateKey, keyStatus, getStats
   };

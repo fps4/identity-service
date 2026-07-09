@@ -24,3 +24,6 @@ clients:
       - http://localhost:3000/auth/callback   # local dev
       - https://coach.fps4.nl/auth/callback   # NL production surface
     isConfidential: false              # public client — the browser sends client_id with no secret
+    roles:                             # the coach role catalogue (ADR-0019) → token `roles` claim (RQ-0005)
+      - { key: learner, name: Learner }
+      - { key: compliance-officer, name: Compliance Officer }

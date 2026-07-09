@@ -12,6 +12,7 @@
  * re-run never resets a password — use `manage-users set-password` to change one.
  */
 import process from 'process';
+import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import { getMasterConnection, disconnect } from '../src/utils/db.js';
@@ -41,14 +42,15 @@ async function main() {
   for (const u of config.users) assertPasswordPolicy(u.password);
 
   const connection = await getMasterConnection();
-  const { OAuthClient, User } = makeModels(connection);
+  const { OAuthClient, User, Assignment } = makeModels(connection);
   const now = new Date();
-  let clientsUpserted = 0, usersCreated = 0, usersSkipped = 0;
+  let clientsUpserted = 0, usersCreated = 0, usersSkipped = 0, assignmentsUpserted = 0;
 
   for (const c of config.clients) {
     const set: Record<string, unknown> = {
       name: c.name, grantTypes: c.grantTypes,
       redirectUris: c.redirectUris, scopes: c.scopes, audience: c.audience,
+      roles: c.roles ?? [],        // the application's role catalogue (ADR-0019)
       isConfidential: c.isConfidential, updatedAt: now
     };
     // A client-credentials machine principal (US-0086): the runtime subject + additive claims.
@@ -60,16 +62,39 @@ async function main() {
   }
 
   for (const u of config.users) {
+    // Never clobber an existing account's credentials on re-run, but always reconcile its assignments
+    // below (idempotent) — this is what keeps the bootstrap operator's console access guaranteed.
+    let userId: string;
     const existing = await User.findOne({ email: u.email }).lean().exec();
-    if (existing) { usersSkipped++; continue; } // never clobber an existing account on re-run
-    await User.create({
-      email: u.email, passwordHash: hashSecret(u.password),
-      status: u.status, roles: u.roles ?? [], passwordUpdatedAt: now
-    });
-    usersCreated++;
+    if (existing) {
+      userId = existing._id;
+      usersSkipped++;
+    } else {
+      const created = await User.create({
+        email: u.email, passwordHash: hashSecret(u.password),
+        status: u.status, passwordUpdatedAt: now
+      });
+      userId = created._id;
+      usersCreated++;
+    }
+
+    // Application assignments (ADR-0019): entitlement + app-scoped roles. Upserted every run so the
+    // seed is the safety net for the operator — admin@identity-service.fps4.nl always keeps its
+    // identity-console/platform_admin assignment and thus console access.
+    for (const a of u.assignments ?? []) {
+      await Assignment.updateOne(
+        { userId, clientId: a.client },
+        {
+          $set: { roles: a.roles ?? [], status: 'active', updatedAt: now },
+          $setOnInsert: { _id: randomUUID(), userId, clientId: a.client, createdBy: 'seed', createdAt: now }
+        },
+        { upsert: true }
+      ).exec();
+      assignmentsUpserted++;
+    }
   }
 
-  console.log(`seed: ${clientsUpserted} clients upserted; ${usersCreated} users created, ${usersSkipped} existing skipped`);
+  console.log(`seed: ${clientsUpserted} clients upserted; ${usersCreated} users created, ${usersSkipped} existing skipped; ${assignmentsUpserted} assignments upserted`);
 }
 
 main()

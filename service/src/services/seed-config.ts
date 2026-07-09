@@ -7,6 +7,12 @@
 
 const GRANTS_NEEDING_AUDIENCE = new Set(['password', 'authorization_code']);
 
+export interface SeedAppRole {
+  key: string;
+  name?: string;
+  description?: string;
+}
+
 export interface SeedClient {
   id: string;
   name?: string;
@@ -15,6 +21,8 @@ export interface SeedClient {
   redirectUris?: string[];
   scopes?: string[];
   isConfidential?: boolean;
+  // The application's role catalogue (ADR-0019): the roles assignments may grant for this client.
+  roles?: SeedAppRole[];
   secret?: string;
   // A client-credentials machine principal (US-0086): the `sub` its token carries and any extra
   // additive claims (e.g. `{ role: 'product_runtime', email: 'runtime@…' }`) the resource server
@@ -23,11 +31,17 @@ export interface SeedClient {
   claims?: Record<string, unknown>;
 }
 
+/** A seeded entitlement (ADR-0019): the app the user is assigned to, with app-scoped roles. */
+export interface SeedAssignment {
+  client: string;
+  roles?: string[];
+}
+
 export interface SeedUser {
   email: string;
   password: string;
   status?: 'active' | 'locked' | 'disabled';
-  roles?: string[];
+  assignments?: SeedAssignment[];
 }
 
 export interface SeedConfig {
@@ -86,6 +100,14 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
     if (c.claims !== undefined && !isObject(c.claims)) {
       throw new SeedConfigError(`${cw} (${c.id}) claims must be an object of additive token claims`);
     }
+    let roles: SeedAppRole[] = [];
+    if (c.roles !== undefined) {
+      if (!Array.isArray(c.roles)) throw new SeedConfigError(`${cw} (${c.id}) roles must be an array of { key, name?, description? }`);
+      roles = c.roles.map((r, ri) => {
+        if (!isObject(r) || typeof r.key !== 'string' || !r.key.trim()) throw new SeedConfigError(`${cw} (${c.id}) roles[${ri}] needs a non-empty key`);
+        return { key: r.key.trim(), name: typeof r.name === 'string' ? r.name : undefined, description: typeof r.description === 'string' ? r.description : undefined };
+      });
+    }
     return {
       id: c.id,
       name: typeof c.name === 'string' ? c.name : c.id,
@@ -94,11 +116,15 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
       redirectUris: Array.isArray(c.redirectUris) ? (c.redirectUris as string[]) : [],
       scopes: Array.isArray(c.scopes) ? (c.scopes as string[]) : [],
       isConfidential: typeof c.isConfidential === 'boolean' ? c.isConfidential : false,
+      roles,
       secret: typeof c.secret === 'string' ? interpolate(c.secret, env) : undefined,
       subject: typeof c.subject === 'string' ? c.subject : undefined,
       claims: isObject(c.claims) ? (c.claims as Record<string, unknown>) : undefined
     };
   }) : [];
+
+  // Role catalogues must be defined before an assignment can reference them.
+  const catalogueByClient = new Map(clients.map((c) => [c.id, new Set((c.roles ?? []).map((r) => r.key))]));
 
   const users: SeedUser[] = Array.isArray(raw.users) ? raw.users.map((u, ui) => {
     const uw = `users[${ui}]`;
@@ -106,8 +132,20 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
     if (typeof u.password !== 'string' || !u.password) throw new SeedConfigError(`${uw} (${u.email}) needs a password`);
     const password = interpolate(u.password, env);
     if (!password) throw new SeedConfigError(`${uw} (${u.email}) resolved to an empty password`);
-    const roles = Array.isArray(u.roles) ? (u.roles as unknown[]).map(String) : [];
-    return { email: u.email.trim().toLowerCase(), password, status: (u.status as SeedUser['status']) ?? 'active', roles };
+    let assignments: SeedAssignment[] = [];
+    if (u.assignments !== undefined) {
+      if (!Array.isArray(u.assignments)) throw new SeedConfigError(`${uw} (${u.email}) assignments must be an array of { client, roles? }`);
+      assignments = u.assignments.map((a, ai) => {
+        if (!isObject(a) || typeof a.client !== 'string' || !a.client) throw new SeedConfigError(`${uw} (${u.email}) assignments[${ai}] needs a client`);
+        const catalogue = catalogueByClient.get(a.client);
+        if (!catalogue) throw new SeedConfigError(`${uw} (${u.email}) assignments[${ai}] references unknown client "${a.client}"`);
+        const roles = Array.isArray(a.roles) ? (a.roles as unknown[]).map(String) : [];
+        const stray = roles.find((r) => !catalogue.has(r));
+        if (stray) throw new SeedConfigError(`${uw} (${u.email}) assignments[${ai}] role "${stray}" is not in client ${a.client}'s roles catalogue`);
+        return { client: a.client, roles };
+      });
+    }
+    return { email: u.email.trim().toLowerCase(), password, status: (u.status as SeedUser['status']) ?? 'active', assignments };
   }) : [];
 
   return { clients, users };

@@ -6,6 +6,7 @@ import type {
   OAuthAuthorizationDocument,
   UserDocument,
   InviteDocument,
+  AssignmentDocument,
   KeyStoreDocument,
   SessionDocument,
   AuditLogDocument
@@ -18,6 +19,7 @@ export interface ModelsBucket {
   OAuthAuthorization: Model<OAuthAuthorizationDocument>;
   User: Model<UserDocument>;
   Invite: Model<InviteDocument>;
+  Assignment: Model<AssignmentDocument>;
   KeyStore: Model<KeyStoreDocument>;
   Session: Model<SessionDocument>;
   AuditLog: Model<AuditLogDocument>;

@@ -3,14 +3,18 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { ClientsDirectory } from '@/components/clients-directory';
 
+// The client drawer's access section (ADR-0019) hydrates via fetchClientRoles + fetchClientMembers on
+// mount, so both must resolve to arrays.
 vi.mock('@/app/actions', () => ({
   createClient: vi.fn(), rotateClientSecret: vi.fn(), deleteClient: vi.fn(),
+  fetchClientRoles: vi.fn().mockResolvedValue([]), fetchClientMembers: vi.fn().mockResolvedValue([]),
+  setClientRoles: vi.fn(), assignUser: vi.fn(), updateAssignment: vi.fn(), revokeAssignment: vi.fn(),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const clients = [
-  { _id: 'cli_core', name: 'core-api', grantTypes: ['client_credentials'], scopes: ['admin'], isConfidential: true },
-  { _id: 'cli_web', name: 'acme-web', grantTypes: ['authorization_code'], scopes: ['openid'], isConfidential: false, audience: 'acme-web' },
+  { _id: 'cli_core', name: 'core-api', grantTypes: ['client_credentials'], scopes: ['admin'], isConfidential: true, roles: [{ key: 'admin', name: 'Admin' }] },
+  { _id: 'cli_web', name: 'acme-web', grantTypes: ['authorization_code'], scopes: ['openid'], isConfidential: false, audience: 'acme-web', roles: [] },
 ];
 
 const renderDirectory = () =>

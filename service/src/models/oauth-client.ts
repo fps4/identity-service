@@ -1,6 +1,17 @@
 import { randomUUID } from 'crypto';
 import mongoose, { Connection, Document, Model } from 'mongoose';
 
+/**
+ * A role that exists *within* an application (ADR-0019). `key` is the stable value stamped into the
+ * token `roles` claim for a user assigned this role; `name`/`description` are console labels. The
+ * catalogue is the closed vocabulary an assignment's roles must be drawn from.
+ */
+export interface AppRole {
+  key: string;
+  name?: string;
+  description?: string;
+}
+
 export interface OAuthClientDocument extends Document<string> {
   _id: string; // client_id
   name: string;
@@ -9,6 +20,9 @@ export interface OAuthClientDocument extends Document<string> {
   redirectUris: string[];
   scopes: string[];
   isConfidential: boolean;
+  // The application's role catalogue (ADR-0019): the roles that exist for this app. An assignment may
+  // grant a user only roles whose `key` is in this list. Seed-bootstrapped + runtime-editable.
+  roles?: AppRole[];
   // The `aud` value stamped on tokens minted for this consumer (RQ-0001). Binds a token to one
   // workspace — maestro's IDENTITY_SERVICE_AUDIENCE must equal this. Now honoured by the
   // client-credentials grant too (US-0086), so a machine principal can be audience-bound to a workspace
@@ -34,6 +48,14 @@ const oauthClientSchema = new mongoose.Schema<OAuthClientDocument>({
   redirectUris: { type: [String], default: [] },
   scopes: { type: [String], default: [] },
   isConfidential: { type: Boolean, default: true },
+  roles: {
+    type: [new mongoose.Schema<AppRole>({
+      key: { type: String, required: true },
+      name: { type: String },
+      description: { type: String }
+    }, { _id: false })],
+    default: []
+  },
   audience: { type: String },
   subject: { type: String },
   claims: { type: mongoose.Schema.Types.Mixed },

@@ -26,8 +26,12 @@ token** to `/admin/v1`, so the management plane attributes each action to the **
 `principalSubject`), not a shared machine client.
 
 For the plane to accept an operator's user token, the operator must carry an **operator role** (default
-`platform_admin`, configured via `ADMIN_OPERATOR_ROLES` on the service — ADR-0010). Grant it through the
-controlled provisioning paths (seed-as-code / `manage-users`), never self-registration.
+`platform_admin`, configured via `ADMIN_OPERATOR_ROLES` on the service — ADR-0010). Under ADR-0019 that
+role is **app-scoped**: `platform_admin` lives in the **`identity-console`** application's role catalogue,
+and the operator holds an `identity-console` **assignment** granting it. Grant it through the controlled
+provisioning paths (the seed's per-user `assignments:` / `POST /admin/v1/assignments`), never
+self-registration. The bootstrap operator (`admin@identity-service.fps4.nl`) is always seeded with this
+assignment so the console is never lockable.
 
 **Break-glass:** if no operator is signed in, `lib/api.ts` falls back to a static `ADMIN_API_TOKEN`
 (client-credentials, **not** per-actor) for bootstrap / non-interactive use. Leave it blank to require

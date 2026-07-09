@@ -21,7 +21,7 @@ identity-service/
  │    └── src/
  ├── console/          # Optional operator admin console (Next.js, @fps4/identity-service-console)
  │    └── app/
- ├── config/           # seed.example.yaml → seed.yaml (gitignored): clients + users
+ ├── config/           # seed.example.yaml → seed.yaml (gitignored): clients (+role catalogues) + users + assignments
  ├── docs/             # Two-plane docs: design/ · reference/ · guides/ · product/ (index: docs/README.md)
  └── README.md
 ```
@@ -58,7 +58,7 @@ The service listens on `PORT` (default `7305`). Health check at `GET /health`.
 - `GET /.well-known/jwks.json` – JWKS for verifying issued tokens.
 - `POST /v1/sessions` – persist session, issue legacy session JWT (in migration).
 - `PATCH /v1/sessions/:sessionId` – attach contact identifiers or cookie context.
-- `/admin/v1/*` – the authenticated **management plane** (ADR-0007): clients, users, signing keys, stats, and audit. Network-restricted, scoped per actor, append-only audited. The same operations are exposed to agents over an **MCP server** (`npm run mcp`).
+- `/admin/v1/*` – the authenticated **management plane** (ADR-0007): clients (and their role catalogues), users, **assignments** (user↔app entitlements — ADR-0019), invites, signing keys, stats, and audit. Network-restricted, scoped per actor, append-only audited. The same operations are exposed to agents over an **MCP server** (`npm run mcp`).
 - See `docs/reference/api.md` for full payloads and responses.
 
 ## SDK Usage
@@ -131,8 +131,8 @@ See [`react/README.md`](react/README.md) for styling (Tailwind/shadcn) and the f
 ### Operator admin console
 
 For day-2 operations, `@fps4/identity-service-console` (in `console/`) is an **optional** Next.js app — a
-thin server-side client over the `/admin/v1` management plane (ADR-0007): dashboards plus client,
-user, and signing-key management. The admin bearer token stays in server env and never reaches the
+thin server-side client over the `/admin/v1` management plane (ADR-0007): dashboards plus client
+(and role-catalogue), user, assignment, and signing-key management. The admin bearer token stays in server env and never reaches the
 browser; no direct database access. Distinct from the consumer-facing `<Login/>` widget. See
 [`console/README.md`](console/README.md).
 

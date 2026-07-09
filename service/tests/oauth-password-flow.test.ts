@@ -4,7 +4,7 @@ import { jwtVerify, importSPKI } from 'jose';
 import { createOAuthServer } from '../src/oauth/server.js';
 import { createUserService, UserServiceError } from '../src/services/users.js';
 import { hashSecret } from '../src/utils/hash.js';
-import { InvalidGrantError, UnauthorizedClientError } from '../src/oauth/errors.js';
+import { InvalidGrantError, UnauthorizedClientError, AccessDeniedError } from '../src/oauth/errors.js';
 import { CONFIG } from '../src/config.js';
 
 const { privateKey: signingPrivatePem, publicKey: signingPublicPem } = generateKeyPairSync('rsa', {
@@ -30,8 +30,13 @@ const matches = (item: any, query: any): boolean =>
   Object.entries(query).every(([k, v]) => (v && typeof v === 'object' && '$gte' in (v as any)) ? item[k] >= (v as any).$gte : item[k] === v);
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
-interface Store { clients: any[]; users: any[]; tokens: any[]; sessions: any[]; }
-const makeStore = (): Store => ({ clients: [], users: [], tokens: [], sessions: [] });
+interface Store { clients: any[]; users: any[]; tokens: any[]; sessions: any[]; assignments: any[]; }
+const makeStore = (): Store => ({ clients: [], users: [], tokens: [], sessions: [], assignments: [] });
+
+// An assignment matches on clientId + status; `userId` is honoured when the seeded record pins one, and
+// treated as a wildcard (any user of this client) when omitted — the ADR-0019 entitlement gate.
+const assignmentMatches = (a: any, q: any): boolean =>
+  a.clientId === q.clientId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
 
 function makeDeps(store: Store, now: () => Date) {
   return {
@@ -52,6 +57,10 @@ function makeDeps(store: Store, now: () => Date) {
         findOne: (q: any) => ({ exec: async () => { const t = store.tokens.find((x) => matches(x, q)); return t ? attachSave(t) : null; } })
       },
       Session: { create: async (doc: any) => { store.sessions.push(doc); return doc; }, findById: (id: string) => ({ exec: async () => { const s = store.sessions.find((x) => x._id === id); return s ? attachSave(s) : null; } }) },
+      Assignment: {
+        findOne: (q: any) => ({ lean: () => ({ exec: async () => store.assignments.find((a) => assignmentMatches(a, q)) ?? null }) }),
+        create: async (doc: any) => { store.assignments.push(doc); return doc; }
+      },
       KeyStore: {} as any
     }) as any,
     logger: { info: () => {}, error: () => {} } as any
@@ -123,9 +132,11 @@ describe('Local password IdP — login (RQ-0002)', () => {
     seedLocalClient(store);
     store.users.push({
       _id: 'user-sub-1', email: 'reviewer@fps4.test',
-      passwordHash: hashSecret(password), status: 'active', failedAttempts: 0, lockedUntil: null,
-      roles: ['tenant_admin', 'member']
+      passwordHash: hashSecret(password), status: 'active', failedAttempts: 0, lockedUntil: null
     });
+    // ADR-0019: the token's roles are the app-scoped roles from the user's active assignment to the client,
+    // not a field on the user. Seed the entitlement that gates issuance.
+    store.assignments.push({ _id: 'a1', userId: 'user-sub-1', clientId: 'client-local', roles: ['tenant_admin', 'member'], status: 'active' });
     server = createOAuthServer(makeDeps(store, () => fixedNow));
   });
 
@@ -138,12 +149,12 @@ describe('Local password IdP — login (RQ-0002)', () => {
     expect(payload.email).toBe('reviewer@fps4.test');
     expect(payload.sub).toBe('user-sub-1');
     expect(payload.aud).toBe('maestro-workspace');
-    expect(payload.roles).toEqual(['tenant_admin', 'member']); // RQ-0005 coarse roles claim
+    expect(payload.roles).toEqual(['tenant_admin', 'member']); // app-scoped roles from the assignment
     expect(token.refreshToken).toBeTruthy();
   });
 
-  it('omits the roles claim when the user has no roles', async () => {
-    store.users[0].roles = [];
+  it('omits the roles claim when the assignment grants no roles', async () => {
+    store.assignments[0].roles = [];
     const token = await server.issuePasswordToken({ username: 'reviewer@fps4.test', password, clientId: 'client-local' });
     const publicKey = await importSPKI(signingPublicPem, 'RS256');
     const { payload } = await jwtVerify(token.accessToken, publicKey, {
@@ -184,5 +195,21 @@ describe('Local password IdP — login (RQ-0002)', () => {
     store.clients[0].grantTypes = ['authorization_code'];
     await expect(server.issuePasswordToken({ username: 'reviewer@fps4.test', password, clientId: 'client-local' }))
       .rejects.toBeInstanceOf(UnauthorizedClientError);
+  });
+
+  // --- ADR-0019 entitlement gate: valid credentials are not enough without an active assignment ---
+
+  it('denies a correctly-authenticated user who is not assigned to the application', async () => {
+    store.assignments.length = 0; // authenticated, but no entitlement to this app
+    await expect(server.issuePasswordToken({ username: 'reviewer@fps4.test', password, clientId: 'client-local' }))
+      .rejects.toBeInstanceOf(AccessDeniedError);
+    expect(store.tokens).toHaveLength(0);
+  });
+
+  it('denies a user whose assignment to the application is suspended', async () => {
+    store.assignments[0].status = 'suspended';
+    await expect(server.issuePasswordToken({ username: 'reviewer@fps4.test', password, clientId: 'client-local' }))
+      .rejects.toBeInstanceOf(AccessDeniedError);
+    expect(store.tokens).toHaveLength(0);
   });
 });

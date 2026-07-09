@@ -113,6 +113,7 @@ function CreateClientModal({ onClose }: { onClose: () => void }) {
           <Field name="name" label="Name" placeholder="my-service" required />
           <Field name="grantTypes" label="Grant types (comma)" placeholder="client_credentials" required />
           <Field name="scopes" label="Scopes (comma)" placeholder="optional" />
+          <Field name="roles" label="Role catalogue keys (comma)" placeholder="e.g. admin, member" />
           <Field name="audience" label="Audience" placeholder="optional" />
           <Field name="redirectUris" label="Redirect URIs (comma)" placeholder="optional" />
           <SelectField name="isConfidential" label="Type" options={[

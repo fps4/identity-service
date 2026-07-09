@@ -60,6 +60,7 @@ export default async function DashboardPage() {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat title="Clients" value={stats.clients.total} />
         <Stat title="Users" value={stats.users.total} hint={`${stats.users.locked} locked · ${stats.users.disabled} disabled`} />
+        <Stat title="Assignments" value={stats.assignments.active} hint="active app entitlements" />
         <Stat title="Active signing keys" value={stats.keys.active} />
         <Stat title="Tokens (1h)" value={stats.tokens.accessLastHour} />
         <Stat title="Tokens (24h)" value={stats.tokens.accessLastDay} />

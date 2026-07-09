@@ -136,7 +136,6 @@ export function createUserService(deps: UserServiceDependencies) {
         // An email-bound invite vouches its address (ADR-0013): the operator sent the code there,
         // the same trust signal ADR-0012 accepts from Google's `email_verified`.
         emailVerified: Boolean(invite?.email),
-        roles: invite?.roles ?? [],
         passwordUpdatedAt: now
       });
     } catch (err) {
@@ -144,7 +143,28 @@ export function createUserService(deps: UserServiceDependencies) {
       throw err;
     }
 
+    // An invite entitles the redeemer to its application (ADR-0019): create the assignment that grants
+    // access + the app-scoped roles. Without it a fresh account can obtain no token (global gate). If
+    // this fails, unwind the account + invite use so the redeemer can retry cleanly.
     if (invite) {
+      try {
+        await models.Assignment.create({
+          _id: randomUUID(),
+          userId: id,
+          clientId: invite.clientId,
+          roles: invite.roles ?? [],
+          status: 'active',
+          createdBy: `invite:${invite._id}`,
+          createdAt: now,
+          updatedAt: now
+        });
+      } catch (err) {
+        await models.User.deleteOne({ _id: id }).exec().catch(() => {});
+        await refundInviteUse(models, invite._id, now);
+        deps.logger?.error?.({ err, inviteId: invite._id }, 'failed to create assignment on invite redemption');
+        throw new UserServiceError('Could not complete registration, retry shortly', 500, 'assignment_failed');
+      }
+
       // Redemptions join the append-only trail (RQ-0013 AC); never let a logging failure undo a signup.
       try {
         await models.AuditLog.create({
@@ -155,7 +175,7 @@ export function createUserService(deps: UserServiceDependencies) {
           targetType: 'invite',
           targetId: invite._id,
           status: 201,
-          meta: { userId: id, email }
+          meta: { userId: id, email, clientId: invite.clientId, roles: invite.roles ?? [] }
         });
       } catch (err) {
         deps.logger?.error?.({ err, inviteId: invite._id }, 'failed to audit invite redemption');

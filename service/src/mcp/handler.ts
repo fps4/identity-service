@@ -45,6 +45,7 @@ const obj = (props: Record<string, unknown>, required: string[] = []) =>
   ({ type: 'object', properties: props, required, additionalProperties: true });
 const str = { type: 'string' };
 const strArr = { type: 'array', items: { type: 'string' } };
+const roleCatalogue = { type: 'array', items: { type: 'object', properties: { key: str, name: str, description: str }, required: ['key'] } };
 
 export const TOOLS: ToolDef[] = [
   // Structural provisioning (create_client / delete_client) is intentionally NOT exposed here — OAuth
@@ -59,9 +60,9 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'create_user',
-    description: 'Create a local-credential user.',
+    description: 'Create a local-credential user. Grant app access separately with assign_user (roles are per-application — ADR-0019).',
     areaScope: ADMIN_SCOPES.users,
-    inputSchema: obj({ email: str, password: str, roles: strArr }, ['email', 'password']),
+    inputSchema: obj({ email: str, password: str }, ['email', 'password']),
     handler: (a) => adminService.createUser(a)
   },
   {
@@ -85,19 +86,64 @@ export const TOOLS: ToolDef[] = [
     inputSchema: obj({ email: str }, ['email']),
     handler: async (a) => { await adminService.unlockUser(a.email); return { ok: true }; }
   },
+  // Assignments (ADR-0019): a user's entitlement + app-scoped roles for an application. Operational
+  // user-access state, so it belongs on the MCP surface alongside the other user tools.
+  {
+    name: 'assign_user',
+    description: "Assign a user to an application with app-scoped roles (ADR-0019). Roles must be in the application's role catalogue. Idempotent — re-assigning updates the roles.",
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ email: str, clientId: str, roles: strArr }, ['email', 'clientId']),
+    handler: (a) => adminService.assignUser(a)
+  },
+  {
+    name: 'update_assignment',
+    description: "Change a user's app-scoped roles and/or suspend/reactivate their assignment to an application.",
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ email: str, clientId: str, roles: strArr, status: { type: 'string', enum: ['active', 'suspended'] } }, ['email', 'clientId']),
+    handler: (a) => adminService.updateAssignment(a.email, a.clientId, { roles: a.roles, status: a.status })
+  },
+  {
+    name: 'revoke_assignment',
+    description: "Revoke a user's entitlement to an application (they can no longer obtain a token for it).",
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ email: str, clientId: str }, ['email', 'clientId']),
+    handler: (a) => adminService.revokeAssignment(a.email, a.clientId)
+  },
+  {
+    name: 'list_app_members',
+    description: 'List the users assigned to an application, with their app-scoped roles.',
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ clientId: str }, ['clientId']),
+    handler: (a) => adminService.listClientMembers(a.clientId)
+  },
+  {
+    name: 'list_user_assignments',
+    description: 'List the applications a user is assigned to, with their app-scoped roles.',
+    areaScope: ADMIN_SCOPES.users,
+    inputSchema: obj({ email: str }, ['email']),
+    handler: (a) => adminService.listUserAssignments(a.email)
+  },
+  {
+    name: 'set_client_roles',
+    description: "Replace an application's role catalogue (ADR-0019) — the roles assignments may grant for it.",
+    areaScope: ADMIN_SCOPES.clients,
+    inputSchema: obj({ clientId: str, roles: roleCatalogue }, ['clientId', 'roles']),
+    handler: (a) => adminService.setClientRoles(a.clientId, a.roles)
+  },
   // Invites (RQ-0013) are runtime user-onboarding state — operational, not structural — so they
   // belong on the MCP surface alongside the other user tools (ADR-0011).
   {
     name: 'create_invite',
-    description: 'Mint a registration invite (RQ-0013). Returns the code ONCE — only its digest is stored. Optional: bind to an email, stamp roles, allow multiple uses, set expiry in hours.',
+    description: 'Mint a registration invite (RQ-0013, ADR-0019). Entitles the redeemer to an application (clientId, required) with app-scoped roles. Returns the code ONCE. Optional: bind to an email, allow multiple uses, set expiry in hours.',
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({
+      clientId: str,
       email: str,
       roles: strArr,
       maxUses: { type: 'number' },
       expiresInHours: { type: 'number' },
       note: str
-    }, []),
+    }, ['clientId']),
     handler: (a) => adminService.createInvite(a)
   },
   {
@@ -123,7 +169,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'get_stats',
-    description: 'Aggregate counts for clients, users, tokens, and keys.',
+    description: 'Aggregate counts for clients, users, assignments, tokens, and keys.',
     areaScope: ADMIN_SCOPES.stats,
     inputSchema: obj({}),
     handler: () => adminService.getStats()

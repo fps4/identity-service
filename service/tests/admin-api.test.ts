@@ -24,7 +24,8 @@ import { verifySecret } from '../src/utils/hash.js';
 
 const match = (doc: any, filter: Record<string, any>): boolean =>
   Object.entries(filter ?? {}).every(([k, v]) => {
-    if (v && typeof v === 'object' && '$gt' in v) return doc[k] != null && doc[k] > v.$gt;
+    if (v && typeof v === 'object' && !Array.isArray(v) && '$gt' in v) return doc[k] != null && doc[k] > v.$gt;
+    if (v && typeof v === 'object' && !Array.isArray(v) && '$in' in v) return Array.isArray(v.$in) && v.$in.includes(doc[k]);
     // Dotted path into the identities[] array (e.g. 'identities.subject').
     if (k.startsWith('identities.')) {
       const field = k.slice('identities.'.length);
@@ -63,6 +64,25 @@ function fakeCollection(items: any[]) {
       } else { Object.assign(doc, set); }
       return exec(doc);
     },
+    // The assignment upsert path (ADR-0019): match by filter, apply $set, create from $setOnInsert on miss.
+    findOneAndUpdate: (filter: any, update: any, opts: any = {}) => {
+      let doc = items.find((d) => match(d, filter));
+      const set = update.$set ?? {};
+      const onInsert = update.$setOnInsert ?? {};
+      if (!doc) {
+        if (!opts.upsert) return exec(null);
+        doc = { ...onInsert, ...set }; items.push(doc);
+      } else { Object.assign(doc, set); }
+      return exec(doc);
+    },
+    deleteOne: (filter: any) => ({
+      exec: async () => {
+        const i = items.findIndex((d) => match(d, filter));
+        if (i < 0) return { deletedCount: 0 };
+        items.splice(i, 1);
+        return { deletedCount: 1 };
+      }
+    }),
     updateOne: (filter: any, update: any) => ({
       exec: async () => {
         const doc = items.find((d) => match(d, filter));
@@ -84,6 +104,7 @@ function makeState() {
   return {
     OAuthClient: fakeCollection([]),
     User: fakeCollection([]),
+    Assignment: fakeCollection([]),
     OAuthToken: fakeCollection([]),
     KeyStore: fakeCollection([{ _id: 'k1', status: 'active' }])
   };
@@ -211,6 +232,76 @@ describe('admin service', () => {
     expect(stats.clients.total).toBe(0);
     expect(stats.keys.active).toBe(1);
     expect(stats).toHaveProperty('tokens.accessLastHour');
+    // ADR-0019: the dashboard surfaces the count of active entitlements.
+    expect(stats.assignments).toEqual({ active: 0 });
+  });
+
+  it('does not stamp roles onto a created user (roles are per-application now, ADR-0019)', async () => {
+    const admin = makeAdmin(state);
+    const u = await admin.createUser({ email: 'u@x.test', password: 'secret-pass' });
+    expect(u).toEqual({ id: expect.any(String), email: 'u@x.test' });
+    expect(state.User._items[0]).not.toHaveProperty('roles');
+  });
+
+  it('reads and replaces an application role catalogue, validating each entry has a key (ADR-0019)', async () => {
+    const admin = makeAdmin(state);
+    const { clientId } = await admin.createClient({
+      name: 'App', grantTypes: ['password'], audience: 'app-ws', roles: [{ key: 'member' }]
+    });
+    expect(await admin.getClientRoles(clientId)).toEqual([{ key: 'member', name: undefined, description: undefined }]);
+
+    const updated = await admin.setClientRoles(clientId, [{ key: 'admin', name: 'Admin' }, { key: 'member' }]);
+    expect(updated.map((r) => r.key)).toEqual(['admin', 'member']);
+
+    await expect(admin.setClientRoles(clientId, [{ name: 'no key' } as any]))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
+    await expect(admin.getClientRoles('ghost')).rejects.toMatchObject({ status: 404, code: 'client_not_found' });
+  });
+
+  it('assigns a user to an app with catalogue-checked roles, lists both directions, updates and revokes', async () => {
+    const admin = makeAdmin(state);
+    const { clientId } = await admin.createClient({
+      id: 'app-1', name: 'App One', grantTypes: ['password'], audience: 'app-ws', roles: [{ key: 'member' }, { key: 'lead' }]
+    });
+    await admin.createUser({ email: 'u@x.test', password: 'secret-pass' });
+
+    // A role outside the app's catalogue is rejected (ADR-0019).
+    await expect(admin.assignUser({ email: 'u@x.test', clientId, roles: ['ghost'] }))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_role' });
+
+    const assigned = await admin.assignUser({ email: 'u@x.test', clientId, roles: ['member'] });
+    expect(assigned).toMatchObject({ email: 'u@x.test', clientId, roles: ['member'], status: 'active' });
+    expect(state.Assignment._items).toHaveLength(1);
+
+    // Idempotent upsert: re-assigning updates the roles in place, never a second row.
+    const reassigned = await admin.assignUser({ email: 'u@x.test', clientId, roles: ['member', 'lead'] });
+    expect(reassigned.roles).toEqual(['member', 'lead']);
+    expect(state.Assignment._items).toHaveLength(1);
+
+    // Both directions of the entitlement graph.
+    const members = await admin.listClientMembers(clientId);
+    expect(members).toEqual([{ userId: expect.any(String), email: 'u@x.test', userStatus: 'active', status: 'active', roles: ['member', 'lead'] }]);
+    const apps = await admin.listUserAssignments('u@x.test');
+    expect(apps).toEqual([{ clientId, clientName: 'App One', status: 'active', roles: ['member', 'lead'] }]);
+
+    // Suspend, then revoke — and updating a revoked assignment 404s.
+    const suspended = await admin.updateAssignment('u@x.test', clientId, { status: 'suspended' });
+    expect(suspended.status).toBe('suspended');
+    expect(await admin.revokeAssignment('u@x.test', clientId)).toMatchObject({ email: 'u@x.test', clientId, revoked: true });
+    expect(state.Assignment._items).toHaveLength(0);
+    await expect(admin.updateAssignment('u@x.test', clientId, { status: 'active' }))
+      .rejects.toMatchObject({ status: 404, code: 'assignment_not_found' });
+    await expect(admin.revokeAssignment('u@x.test', clientId))
+      .rejects.toMatchObject({ status: 404, code: 'assignment_not_found' });
+  });
+
+  it('refuses to assign a user or invite against an unknown application', async () => {
+    const admin = makeAdmin(state);
+    await admin.createUser({ email: 'u@x.test', password: 'secret-pass' });
+    await expect(admin.assignUser({ email: 'u@x.test', clientId: 'ghost', roles: [] }))
+      .rejects.toMatchObject({ status: 404, code: 'client_not_found' });
+    await expect(admin.assignUser({ email: 'nobody@x.test', clientId: 'ghost', roles: [] }))
+      .rejects.toMatchObject({ status: 404, code: 'user_not_found' });
   });
 });
 

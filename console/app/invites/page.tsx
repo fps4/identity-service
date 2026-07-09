@@ -7,8 +7,11 @@ export const dynamic = 'force-dynamic';
 // and hand them to the client directory. Degrades gracefully on a failed read.
 export default async function InvitesPage() {
   let invites: Awaited<ReturnType<typeof api.listInvites>> = [];
+  let clients: Awaited<ReturnType<typeof api.listClients>> = [];
   let loadError: string | undefined;
   try { invites = await api.listInvites(); } catch (e) { loadError = (e as Error).message; }
+  // Applications feed the target-app picker + role catalogue in the create-invite form (ADR-0019).
+  try { clients = await api.listClients(); } catch { /* non-fatal */ }
 
   return (
     <div className="space-y-6">
@@ -20,7 +23,7 @@ export default async function InvitesPage() {
         </p>
       </div>
 
-      <InvitesDirectory invites={invites} loadError={loadError} />
+      <InvitesDirectory invites={invites} clients={clients} loadError={loadError} />
     </div>
   );
 }

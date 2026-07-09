@@ -15,8 +15,9 @@ import type { Invite } from '@/lib/api';
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function InviteDetailDrawer({ invite, onClose }: {
+export function InviteDetailDrawer({ invite, clientName, onClose }: {
   invite: Invite;
+  clientName?: string;
   onClose: () => void;
 }) {
   return (
@@ -41,6 +42,11 @@ export function InviteDetailDrawer({ invite, onClose }: {
       <div>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Invite</h3>
         <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5">
+          <dt className="text-muted-foreground">Application</dt>
+          <dd>
+            {clientName ? <span>{clientName} </span> : null}
+            <span className="font-mono text-xs text-muted-foreground">{invite.clientId}</span>
+          </dd>
           <dt className="text-muted-foreground">Bound to</dt>
           <dd>{invite.email || <span className="text-muted-foreground">any email</span>}</dd>
           <dt className="text-muted-foreground">Roles</dt>

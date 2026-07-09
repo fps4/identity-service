@@ -1,15 +1,16 @@
-# Seed config TEMPLATE (RQ-0004, ADR-0018). Copy to config/seed.yaml (gitignored on other deployments)
-# and fill in real values, then run from service/:  npm run seed
+# Seed config TEMPLATE (RQ-0004, ADR-0018, ADR-0019). Copy to config/seed.yaml (gitignored on other
+# deployments) and fill in real values, then run from service/:  npm run seed
 #
 # ONE DEPLOYMENT = ONE REALM (ADR-0018): a flat list of OAuth clients + local users, no tenant layer.
-# Realm-wide settings (allowed origins, registration mode, role vocabulary, IdP toggles) are deployment
-# ENV (AUTH_REGISTRATION_MODE, AUTH_LOCAL_IDP_ENABLED, AUTH_ALLOWED_ROLES, CORS_ORIGINS), not seed data.
+# Realm-wide settings (allowed origins, registration mode, IdP toggles) are deployment ENV
+# (AUTH_REGISTRATION_MODE, AUTH_LOCAL_IDP_ENABLED, CORS_ORIGINS), not seed data.
 #
-# Idempotent: clients are upserted on every run; existing users are left untouched (insert-if-absent),
-# so a re-run never resets a password. Use `npm run manage-users set-password` to change a password.
+# PER-APPLICATION ROLES + ENTITLEMENTS (ADR-0019): each client declares its role CATALOGUE (`roles:`), and
+# a user only gets access + roles for an app via an ASSIGNMENT (`assignments:` on the user, or an invite /
+# the admin plane at runtime). A user with no assignment for an app cannot obtain a token for it.
 #
-# Passwords / secrets: prefer ${ENV_VAR} references (resolved from the environment / .env at run time)
-# over inline plaintext, so this file — even the gitignored real one — need not hold raw credentials.
+# Idempotent: clients (+ catalogues) are upserted every run; a new user is inserted (existing passwords are
+# left untouched — use `npm run manage-users set-password`); assignments are upserted every run.
 
 clients:
   - id: demo-web
@@ -18,8 +19,12 @@ clients:
     audience: demo-workspace            # REQUIRED for password/authorization_code — becomes the token `aud`
     redirectUris: []
     isConfidential: false
+    roles:                              # the app's role catalogue → assignable per user, → token `roles`
+      - { key: member, name: Member }
+      - { key: admin, name: Admin }
 
-  # A machine-token (client-credentials) consumer, e.g. a telemetry ingest:
+  # A machine-token (client-credentials) consumer, e.g. a telemetry ingest. Machine clients have no users
+  # and no assignments — they authenticate with a secret and carry `scopes`, not app-roles.
   # - id: telemetry-ingest
   #   grantTypes: [client_credentials]
   #   scopes: [telemetry:write]
@@ -30,10 +35,12 @@ users:
   - email: demo@fps4.nl
     password: ${SEED_DEMO_PASSWORD}     # set SEED_DEMO_PASSWORD in the environment / .env
     status: active
-    roles: [member]                     # RQ-0005: coarse roles → token `roles` claim; consumers map to permissions
+    assignments:                        # entitles this user to demo-web with the `member` role (ADR-0019)
+      - { client: demo-web, roles: [member] }
   - email: admin@fps4.nl
-    password: ${SEED_ADMIN_PASSWORD}    # identity-service carries roles but does not enforce them
+    password: ${SEED_ADMIN_PASSWORD}
     status: active
-    roles: [platform_admin]
-    # NOTE: re-running the seed leaves EXISTING users untouched (insert-if-absent). To change roles on an
-    # existing user, use:  npm run manage-users -- set-roles --email=<e> --roles=platform_admin
+    assignments:
+      - { client: demo-web, roles: [admin] }
+    # NOTE: re-running the seed leaves an existing user's PASSWORD untouched but re-upserts assignments. To
+    # change roles on an app, edit the assignment here (re-seed) or use the admin plane / `assign_user`.

@@ -51,10 +51,22 @@ interface Store {
   tokens: any[];
   sessions: any[];
   users: any[];
+  assignments: any[];
 }
 
 function makeStore(): Store {
-  return { clients: [], authorizations: [], tokens: [], sessions: [], users: [] };
+  return { clients: [], authorizations: [], tokens: [], sessions: [], users: [], assignments: [] };
+}
+
+// The ADR-0019 entitlement gate: an assignment matches on clientId + status, honouring `userId` when the
+// seeded record pins one and treating it as a wildcard (any user of the client) when omitted. A federated
+// login JIT-provisions a user with a random `_id`, so wildcard seeding lets these flows issue a token.
+const assignmentMatches = (a: any, q: any): boolean =>
+  a.clientId === q.clientId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
+
+// Seed a single active entitlement to the maestro client with the given app-scoped roles.
+function seedAssignment(store: Store, roles: string[] = [], overrides: Record<string, any> = {}) {
+  store.assignments = [{ _id: 'assign-1', clientId: 'client-maestro', roles, status: 'active', ...overrides }];
 }
 
 function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthServerDependencies {
@@ -85,6 +97,10 @@ function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthSer
           lean: () => ({ exec: async () => store.users.find((x) => userMatches(x, query)) ?? null })
         }),
         create: async (doc: any) => { const d = { ...doc, identities: doc.identities ?? [] }; store.users.push(d); return attachSave(d); }
+      },
+      Assignment: {
+        findOne: (query: any) => ({ lean: () => ({ exec: async () => store.assignments.find((a) => assignmentMatches(a, query)) ?? null }) }),
+        create: async (doc: any) => { store.assignments.push(doc); return doc; }
       },
       KeyStore: {} as any
     }) as any,
@@ -147,6 +163,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   beforeEach(() => {
     store = makeStore();
     seedClient(store);
+    seedAssignment(store); // an active entitlement so the happy path can issue a token (ADR-0019)
     server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
   });
 
@@ -289,6 +306,21 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
     await expect(server.refreshUserToken({ refreshToken: token.refreshToken, clientId: 'client-maestro' }))
       .rejects.toBeInstanceOf(InvalidGrantError);
   });
+
+  // --- ADR-0019 entitlement gate on the authorization-code + refresh grants ---
+
+  it('denies the token exchange for a user with no active assignment to the application', async () => {
+    store.assignments.length = 0; // authenticated by Google, but not entitled to this app
+    await expect(runHappyPath(server, store, verifier)).rejects.toBeInstanceOf(AccessDeniedError);
+    expect(store.tokens).toHaveLength(0);
+  });
+
+  it('kills refresh once the application assignment is revoked mid-session (ADR-0019)', async () => {
+    const { token } = await runHappyPath(server, store, verifier);
+    store.assignments.length = 0; // an operator revoked the entitlement after login
+    await expect(server.refreshUserToken({ refreshToken: token.refreshToken, clientId: 'client-maestro' }))
+      .rejects.toBeInstanceOf(InvalidGrantError);
+  });
 });
 
 // --- Federated user identity: provisioning, roles/status, linking (RQ-0011) -------------------
@@ -329,6 +361,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   beforeEach(() => {
     store = makeStore();
     seedClient(store);
+    seedAssignment(store); // an active entitlement so issuance is not gated off by default (ADR-0019)
     build(makeStubIdp()); // verified email by default
   });
 
@@ -349,12 +382,13 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
     expect(store.users).toHaveLength(1);
   });
 
-  it('stamps the provisioned user\'s roles into the token (RQ-0005 now works for Google users)', async () => {
-    // Pre-seed the same federated identity with a role an operator assigned.
+  it('stamps the app-scoped assignment roles into the token (RQ-0005 now works for Google users)', async () => {
+    // Pre-seed the same federated identity, entitled to the app with an app-scoped role.
     store.users.push({
       _id: 'u-existing', email: 'reviewer@fps4.test', status: 'active',
-      roles: ['workspace_admin'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     });
+    seedAssignment(store, ['workspace_admin'], { userId: 'u-existing' });
     const token = await exchange(await runToCode());
     expect(await rolesInToken(token.accessToken)).toEqual(['workspace_admin']);
     expect(store.users).toHaveLength(1); // matched the existing identity, no new row
@@ -363,7 +397,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   it('denies a disabled user on the Google path (closing the status bypass)', async () => {
     store.users.push({
       _id: 'u-disabled', email: 'reviewer@fps4.test', status: 'disabled',
-      roles: [], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     });
     const code = await runToCode();
     await expect(exchange(code)).rejects.toBeInstanceOf(InvalidGrantError);
@@ -371,18 +405,19 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   });
 
   it('links the identity onto an existing account when the email is verified and matches', async () => {
-    // A local password user already exists with this email.
+    // A local password user already exists with this email, entitled to the app.
     store.users.push({
       _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
-      status: 'active', roles: ['member'], identities: []
+      status: 'active', identities: []
     });
+    seedAssignment(store, ['member'], { userId: 'local-1' });
     const token = await exchange(await runToCode());
     expect(store.users).toHaveLength(1);                 // linked, not duplicated
     const user = store.users[0];
     expect(user._id).toBe('local-1');
     expect(user.identities).toHaveLength(1);
     expect(user.identities[0]).toMatchObject({ provider: 'google', subject: 'google-sub-123' });
-    // Token sub is still the Google subject (contract unchanged), roles come from the linked account.
+    // Token sub is still the Google subject (contract unchanged), roles come from the assignment.
     const publicKey = await importSPKI(signingPublicPem, 'RS256');
     const { payload } = await jwtVerify(token.accessToken, publicKey, { currentDate: fixedNow });
     expect(payload.sub).toBe('google-sub-123');
@@ -393,7 +428,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
     build(makeStubIdp({ verifyIdToken: async () => ({ email: 'reviewer@fps4.test', sub: 'google-sub-123', emailVerified: false }) }));
     store.users.push({
       _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
-      status: 'active', roles: ['member'], identities: []
+      status: 'active', identities: []
     });
     const code = await runToCode();
     await expect(exchange(code)).rejects.toBeInstanceOf(AccessDeniedError);
@@ -405,8 +440,9 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
     // Simulate: another concurrent login already inserted the user; our create loses the race with 11000.
     const raced = {
       _id: 'u-raced', email: 'reviewer@fps4.test', status: 'active',
-      roles: ['fast'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     };
+    seedAssignment(store, ['fast']); // the winner's entitlement carries the app-scoped role
     const deps = makeDeps(store, makeStubIdp(), () => fixedNow);
     const baseModels = deps.makeModels;
     deps.makeModels = (conn: any) => {
@@ -426,7 +462,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
   it('a federated-only user (no password) cannot use the password grant', async () => {
     store.clients[0].grantTypes = ['authorization_code', 'password'];
     store.users.push({
-      _id: 'u-fed', email: 'fed@fps4.test', status: 'active', roles: [],
+      _id: 'u-fed', email: 'fed@fps4.test', status: 'active',
       identities: [{ provider: 'google', subject: 'google-sub-999', emailVerified: true }]
     });
     await expect(server.issuePasswordToken({ username: 'fed@fps4.test', password: 'anything', clientId: 'client-maestro' }))
@@ -465,6 +501,7 @@ describe('OAuth server – invite-only deployments gate federated sign-up (RQ-00
     (CONFIG.auth as any).registrationMode = 'invite';
     store = makeStore();
     seedClient(store);
+    seedAssignment(store); // the invitee/existing user is entitled to the app (ADR-0019)
     server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
   });
   afterEach(() => { (CONFIG.auth as any).registrationMode = savedMode; });
@@ -480,7 +517,7 @@ describe('OAuth server – invite-only deployments gate federated sign-up (RQ-00
   it('lets an EXISTING linked user log in unchanged on an invite-only deployment', async () => {
     store.users.push({
       _id: 'u-existing', email: 'reviewer@fps4.test', status: 'active',
-      roles: ['member'], identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
     });
     const { authRecord } = await startAndCallback();
     const token = await exchange(authRecord.code as string);
@@ -492,7 +529,7 @@ describe('OAuth server – invite-only deployments gate federated sign-up (RQ-00
     // The invitee registered locally with their code; first Google login must link, not be denied.
     store.users.push({
       _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
-      status: 'active', roles: ['member'], identities: []
+      status: 'active', identities: []
     });
     const { authRecord } = await startAndCallback();
     await exchange(authRecord.code as string);

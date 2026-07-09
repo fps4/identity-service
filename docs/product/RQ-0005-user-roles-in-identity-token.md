@@ -27,6 +27,12 @@ maestro:
 - **Owner:** @farid (architect)
 - **Decision:** [ADR-0005](../design/decisions/0005-decentralized-authorization.md)
 
+> **Superseded in part by [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md):**
+> the `roles` claim is now **app-scoped** — sourced from a per-application **assignment** drawn from the
+> application's role catalogue, not the deployment-wide `user.roles` (which is removed). The mechanism (a
+> `roles` claim products map to permissions) is unchanged; its source and scope moved. See ADR-0019 and the
+> [deployment-configuration guide](../guides/tenant-config.md#application-role-catalogues--assignments-adr-0019).
+
 ## Why
 
 identity-service authenticates users and mints an identity token (`sub`, `email`, `iss`, `aud`, `exp`)

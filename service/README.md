@@ -48,17 +48,20 @@ Optional:
 
 ## Mongo Collections
 
-- `users` – local-credential + federated user accounts (globally-unique email).
+- `users` – local-credential + federated user accounts (globally-unique email; no `roles` field — ADR-0019).
+- `assignments` – user↔application entitlements: app-scoped roles + status, gating token issuance (ADR-0019).
 - `sessions` – session records, keyed by UUID.
-- `oauth_clients` – registered OAuth clients (confidential & public).
+- `oauth_clients` – registered OAuth clients (confidential & public), each with its role catalogue (ADR-0019).
 - `oauth_tokens` – access/refresh token metadata.
 - `key_store` – RSA signing key material.
 
 See `../docs/guides/tenant-config.md` for deployment configuration and registering OAuth clients.
 
-Register OAuth clients and users with the idempotent seed loader (`npm run seed`) from `config/seed.yaml`
-— a flat `clients:` / `users:` list, no tenant layer (ADR-0018). Realm-wide settings (`CORS_ORIGINS`,
-`AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `AUTH_ALLOWED_ROLES`) are deployment env, not DB rows.
+Register OAuth clients (with their role catalogues), users, and per-user **assignments** with the
+idempotent seed loader (`npm run seed`) from `config/seed.yaml` — a flat `clients:` / `users:` list, no
+tenant layer (ADR-0018); roles are app-scoped via assignments, not a deployment-wide `user.roles` (ADR-0019).
+Realm-wide settings (`CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`) are deployment
+env, not DB rows.
 
 ## Docker
 
