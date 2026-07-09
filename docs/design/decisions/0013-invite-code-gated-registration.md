@@ -11,7 +11,15 @@ related:
   - ./0012-federated-identity-and-account-linking.md
   - ../../product/RQ-0013-invite-only-registration.md
   - ../../product/RQ-0002-local-password-idp.md
+  - ./0019-application-assignments-and-app-roles.md
 ---
+
+> **Reworked by [ADR-0019](0019-application-assignments-and-app-roles.md) (2026-07-09):** an invite now
+> pins a target application (`clientId`) + app-scoped `roles`, and redeeming it creates the user AND an
+> *assignment* entitling them to that app — because with the ADR-0019 global gate, an account without an
+> assignment can obtain no token. The registration-policy / hashed-code / atomic-redemption decisions
+> below are unchanged (the policy is now the deployment-wide `AUTH_REGISTRATION_MODE`, per ADR-0018).
+
 
 ## Context
 

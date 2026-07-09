@@ -9,8 +9,16 @@ related:
   - ./0005-decentralized-authorization.md
   - ../../product/RQ-0007-console-operator-login.md
   - ../../product/RQ-0005-user-roles-in-identity-token.md
+  - ./0019-application-assignments-and-app-roles.md
   - ../architecture.md
 ---
+
+> **Reworked by [ADR-0019](0019-application-assignments-and-app-roles.md) (2026-07-09):** the operator
+> role is no longer a deployment-wide `user.roles` value — `platform_admin` is now a role in the
+> **identity-console** application's catalogue, and the operator holds an *assignment* granting it. The
+> mechanism here is unchanged: the management plane still accepts a user token whose `roles` claim carries
+> a configured operator role; only the source of that claim moves from `user.roles` to the assignment.
+
 
 ## Context
 

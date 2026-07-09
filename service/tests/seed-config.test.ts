@@ -64,17 +64,56 @@ describe('parseSeedConfig (RQ-0004)', () => {
       .toThrowError(/needs a password/);
   });
 
-  // RQ-0005 — user roles pass through unchanged (role vocabulary is deployment env now, not seed data).
-  it('parses user roles and defaults them to an empty array when omitted', () => {
-    const withRoles = parseSeedConfig({
-      users: [{ email: 'a@x.test', password: 'correct-horse-battery', roles: ['platform_admin', 'member'] }]
+  // ADR-0019 — a user carries per-application `assignments` ({ client, roles? }) instead of flat roles,
+  // and a client carries a role `catalogue` that assignments are validated against.
+  it('parses per-application assignments + client role catalogues, defaulting roles/assignments to []', () => {
+    const cfg = parseSeedConfig({
+      clients: [{
+        id: 'demo-web', grantTypes: ['password'], audience: 'demo-workspace',
+        roles: [{ key: 'platform_admin' }, { key: 'member', name: 'Member', description: 'a member' }]
+      }],
+      users: [{
+        email: 'a@x.test', password: 'correct-horse-battery',
+        assignments: [{ client: 'demo-web', roles: ['platform_admin', 'member'] }]
+      }]
     }, {});
-    expect(withRoles.users[0].roles).toEqual(['platform_admin', 'member']);
+    expect(cfg.clients[0].roles).toEqual([
+      { key: 'platform_admin', name: undefined, description: undefined },
+      { key: 'member', name: 'Member', description: 'a member' }
+    ]);
+    expect(cfg.users[0].assignments).toEqual([{ client: 'demo-web', roles: ['platform_admin', 'member'] }]);
 
-    const noRoles = parseSeedConfig({
+    // A user with no assignments block defaults to an empty array (no app access until assigned).
+    const noAssign = parseSeedConfig({
       users: [{ email: 'b@x.test', password: 'correct-horse-battery' }]
     }, {});
-    expect(noRoles.users[0].roles).toEqual([]);
+    expect(noAssign.users[0].assignments).toEqual([]);
+
+    // An assignment with no roles defaults its roles to an empty array.
+    const noRoles = parseSeedConfig({
+      clients: [{ id: 'demo-web', grantTypes: ['password'], audience: 'demo-workspace', roles: [{ key: 'member' }] }],
+      users: [{ email: 'c@x.test', password: 'correct-horse-battery', assignments: [{ client: 'demo-web' }] }]
+    }, {});
+    expect(noRoles.users[0].assignments).toEqual([{ client: 'demo-web', roles: [] }]);
+  });
+
+  it('rejects an assignment to an unknown client, a stray role, and a catalogue entry missing its key', () => {
+    // An assignment must reference a declared client.
+    expect(() => parseSeedConfig({
+      clients: [{ id: 'demo-web', grantTypes: ['password'], audience: 'demo-workspace', roles: [{ key: 'member' }] }],
+      users: [{ email: 'a@x.test', password: 'correct-horse-battery', assignments: [{ client: 'ghost' }] }]
+    }, {})).toThrowError(/unknown client "ghost"/);
+
+    // An assigned role must be in that client's catalogue.
+    expect(() => parseSeedConfig({
+      clients: [{ id: 'demo-web', grantTypes: ['password'], audience: 'demo-workspace', roles: [{ key: 'member' }] }],
+      users: [{ email: 'a@x.test', password: 'correct-horse-battery', assignments: [{ client: 'demo-web', roles: ['superuser'] }] }]
+    }, {})).toThrowError(/"superuser" is not in client demo-web's roles catalogue/);
+
+    // A catalogue entry needs a non-empty key.
+    expect(() => parseSeedConfig({
+      clients: [{ id: 'demo-web', grantTypes: ['password'], audience: 'demo-workspace', roles: [{ name: 'no key' }] }]
+    }, {})).toThrowError(/needs a non-empty key/);
   });
 
   it('accepts an empty/flat config with no clients or users', () => {

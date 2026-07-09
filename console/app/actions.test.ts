@@ -12,6 +12,10 @@ const { apiMock } = vi.hoisted(() => ({
     unlinkIdentity: vi.fn(),
     createInvite: vi.fn(),
     revokeInvite: vi.fn(),
+    setClientRoles: vi.fn(),
+    assignUser: vi.fn(),
+    updateAssignment: vi.fn(),
+    revokeAssignment: vi.fn(),
   },
 }));
 
@@ -83,17 +87,17 @@ describe('console server actions', () => {
     expect(res.message).toBe('Identity is already linked to another user');
   });
 
-  it('createInvite returns the one-time code as show-once material (RQ-0013)', async () => {
+  it('createInvite targets an application and returns the one-time code (RQ-0013, ADR-0019)', async () => {
     apiMock.createInvite.mockResolvedValue({ inviteId: 'i-1', code: 'V7QK-3MHP-XA2D', expiresAt: '2026-07-10T12:00:00.000Z' });
     const { createInvite } = await import('@/app/actions');
 
-    const res = await createInvite({ ok: false }, form({ email: 'new@acme.com', roles: 'member', maxUses: '2', expiresInHours: '168', note: 'cohort' }));
+    const res = await createInvite({ ok: false }, form({ clientId: 'app-1', email: 'new@acme.com', roles: 'member', maxUses: '2', expiresInHours: '168', note: 'cohort' }));
 
     expect(res.ok).toBe(true);
     expect(res.secret).toBe('V7QK-3MHP-XA2D');
     expect(res.secretHint).toContain('Shown once');
     expect(apiMock.createInvite).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'new@acme.com', roles: ['member'], maxUses: 2, expiresInHours: 168, note: 'cohort' }),
+      expect.objectContaining({ clientId: 'app-1', email: 'new@acme.com', roles: ['member'], maxUses: 2, expiresInHours: 168, note: 'cohort' }),
     );
   });
 
@@ -115,5 +119,72 @@ describe('console server actions', () => {
 
     expect(res.ok).toBe(false);
     expect(res.message).toBe('email already exists');
+  });
+
+  // --- Per-application entitlements + app-scoped roles (ADR-0019) ---
+
+  it('createUser no longer forwards roles (ADR-0019)', async () => {
+    apiMock.createUser.mockResolvedValue({ id: 'u-1', email: 'a@b.com' });
+    const { createUser } = await import('@/app/actions');
+
+    await createUser({ ok: false }, form({ email: 'a@b.com', password: 'pw', roles: 'admin' }));
+
+    expect(apiMock.createUser).toHaveBeenCalledWith({ email: 'a@b.com', password: 'pw' });
+    expect(apiMock.createUser).not.toHaveBeenCalledWith(expect.objectContaining({ roles: expect.anything() }));
+  });
+
+  it('assignUser grants an entitlement with app-scoped roles', async () => {
+    apiMock.assignUser.mockResolvedValue({ email: 'a@b.com', clientId: 'app-1', roles: ['admin', 'member'], status: 'active' });
+    const { assignUser } = await import('@/app/actions');
+    const fd = new FormData();
+    fd.set('email', 'a@b.com');
+    fd.set('clientId', 'app-1');
+    fd.append('roles', 'admin');
+    fd.append('roles', 'member');
+
+    const res = await assignUser({ ok: false }, fd);
+
+    expect(res.ok).toBe(true);
+    expect(apiMock.assignUser).toHaveBeenCalledWith({ email: 'a@b.com', clientId: 'app-1', roles: ['admin', 'member'] });
+  });
+
+  it('updateAssignment status-only toggle does NOT send roles (guards against wiping them)', async () => {
+    apiMock.updateAssignment.mockResolvedValue({ email: 'a@b.com', clientId: 'app-1', roles: ['member'], status: 'suspended' });
+    const { updateAssignment } = await import('@/app/actions');
+
+    await updateAssignment({ ok: false }, form({ email: 'a@b.com', clientId: 'app-1', status: 'suspended' }));
+
+    expect(apiMock.updateAssignment).toHaveBeenCalledWith({ email: 'a@b.com', clientId: 'app-1', status: 'suspended' });
+    expect(apiMock.updateAssignment).not.toHaveBeenCalledWith(expect.objectContaining({ roles: expect.anything() }));
+  });
+
+  it('updateAssignment with the _setRoles marker sends the (possibly empty) role set', async () => {
+    apiMock.updateAssignment.mockResolvedValue({ email: 'a@b.com', clientId: 'app-1', roles: [], status: 'active' });
+    const { updateAssignment } = await import('@/app/actions');
+
+    await updateAssignment({ ok: false }, form({ email: 'a@b.com', clientId: 'app-1', _setRoles: '1' }));
+
+    expect(apiMock.updateAssignment).toHaveBeenCalledWith({ email: 'a@b.com', clientId: 'app-1', roles: [] });
+  });
+
+  it('setClientRoles parses the JSON-encoded catalogue and forwards it', async () => {
+    apiMock.setClientRoles.mockResolvedValue(['admin']);
+    const { setClientRoles } = await import('@/app/actions');
+    const roles = JSON.stringify([{ key: 'admin', name: 'Admin' }, { key: 'member' }]);
+
+    const res = await setClientRoles({ ok: false }, form({ clientId: 'app-1', roles }));
+
+    expect(res.ok).toBe(true);
+    expect(apiMock.setClientRoles).toHaveBeenCalledWith('app-1', [{ key: 'admin', name: 'Admin' }, { key: 'member' }]);
+  });
+
+  it('revokeAssignment forwards email + clientId and reports success', async () => {
+    apiMock.revokeAssignment.mockResolvedValue({ email: 'a@b.com', clientId: 'app-1', revoked: true });
+    const { revokeAssignment } = await import('@/app/actions');
+
+    const res = await revokeAssignment({ ok: false }, form({ email: 'a@b.com', clientId: 'app-1' }));
+
+    expect(res.ok).toBe(true);
+    expect(apiMock.revokeAssignment).toHaveBeenCalledWith({ email: 'a@b.com', clientId: 'app-1' });
   });
 });

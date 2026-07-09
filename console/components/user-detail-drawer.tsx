@@ -9,16 +9,18 @@
 import { ActionForm } from '@/components/action-form';
 import { Field, Hidden } from '@/components/field';
 import { Badge } from '@/components/ui/badge';
+import { UserAssignmentsSection } from '@/components/user-assignments-section';
 import { isLocked, statusLabel, statusTone } from '@/lib/users';
 import {
   resetPassword, setUserStatus, unlockUser, deleteUser, linkIdentity, unlinkIdentity,
 } from '@/app/actions';
-import type { User } from '@/lib/api';
+import type { User, Client } from '@/lib/api';
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function UserDetailDrawer({ user, onClose }: {
+export function UserDetailDrawer({ user, clients = [], onClose }: {
   user: User;
+  clients?: Client[];
   onClose: () => void;
 }) {
   const status = statusLabel(user);
@@ -54,18 +56,15 @@ export function UserDetailDrawer({ user, onClose }: {
           <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5">
             <dt className="text-muted-foreground">Subject</dt>
             <dd className="font-mono text-xs">{user._id}</dd>
-            <dt className="text-muted-foreground">Roles</dt>
-            <dd>
-              {user.roles?.length
-                ? user.roles.map((r) => <span key={r} className="mr-1 rounded bg-secondary px-1.5 py-0.5 text-xs">{r}</span>)
-                : '—'}
-            </dd>
             <dt className="text-muted-foreground">Failed attempts</dt>
             <dd>
               {user.failedAttempts ?? 0}
               {locked && user.lockedUntil ? ` · locked until ${new Date(user.lockedUntil).toLocaleString()}` : ''}
             </dd>
           </dl>
+
+          {/* Per-application access (ADR-0019) */}
+          <UserAssignmentsSection email={user.email} clients={clients} />
 
           {/* Linked identities (RQ-0011) */}
           <section>

@@ -1,12 +1,14 @@
-# Focused seed for JUST the console operator (RQ-0007, ADR-0010, ADR-0018).
+# Focused seed for JUST the console operator (RQ-0007, ADR-0010, ADR-0018, ADR-0019).
 #
 # The full config/seed.yaml references every ${ENV} secret and the seeder throws on any unset one — so a
 # full re-seed needs all of them. This subset provisions (or rotates) only the admin-console client + the
-# bootstrap operator user, which needs a single secret you already hold: SEED_CONSOLE_ADMIN_PASSWORD.
+# bootstrap operator user + their assignment, which needs a single secret you already hold:
+# SEED_CONSOLE_ADMIN_PASSWORD. It is the break-glass path to restore console access if it is ever lost.
 #
 # One deployment = one realm (ADR-0018): a flat clients + users list, no tenant. Idempotent: upserts the
-# `identity-console` client and inserts the user if absent (an existing user is left untouched — use
-# `npm run manage-users set-password` to change the password). Other clients/users are NOT touched.
+# `identity-console` client (with its role catalogue), inserts the user if absent (an existing user's
+# password is left untouched — use `npm run manage-users set-password`), and ALWAYS upserts the
+# platform_admin assignment (ADR-0019) so the operator can log in. Other clients/users are NOT touched.
 #
 # Run on the ds1 host, from service/ (the mongo container publishes :27019 on the host):
 #   SEED_FILE=../config/seed.operators.yaml \
@@ -21,9 +23,14 @@ clients:
     audience: identity-console         # token `aud` (label only — the admin plane checks iss+JWKS, not aud)
     redirectUris: []
     isConfidential: false
+    roles:
+      - { key: platform_admin, name: Platform Admin, description: Full management-plane authority (ADMIN_OPERATOR_ROLES) }
 
 users:
   - email: admin@identity-service.fps4.nl
     password: ${SEED_CONSOLE_ADMIN_PASSWORD}
     status: active
-    roles: [platform_admin]            # mapped to admin by ADMIN_OPERATOR_ROLES (ADR-0010)
+    # platform_admin on identity-console → mapped to admin authority by ADMIN_OPERATOR_ROLES (ADR-0010).
+    # Upserted every run: the operator can never be locked out of the console by the assignment gate.
+    assignments:
+      - { client: identity-console, roles: [platform_admin] }

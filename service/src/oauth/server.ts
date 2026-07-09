@@ -32,6 +32,7 @@ import { verifyPkceS256 } from './pkce.js';
 import { createGoogleIdp, type GoogleIdp } from './google.js';
 import type { OAuthClientDocument } from '../models/oauth-client.js';
 import type { UserDocument } from '../models/user.js';
+import type { AssignmentDocument } from '../models/assignment.js';
 
 const GRANT_CLIENT_CREDENTIALS = 'client_credentials';
 const GRANT_AUTHORIZATION_CODE = 'authorization_code';
@@ -344,6 +345,13 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       registration: CONFIG.auth.registrationMode
     });
 
+    // Entitlement gate (ADR-0019): even a freshly JIT-provisioned federated user needs an active
+    // assignment for this application (created by an invite or an operator) before a token is issued.
+    const assignment = await findActiveAssignment(models, user._id, client._id);
+    if (!assignment) {
+      throw new AccessDeniedError('User is not assigned to this application');
+    }
+
     return issueUserTokens(models, {
       client,
       // Token claims are unchanged from RQ-0001: the email + stable Google `sub` Google asserted. The
@@ -351,7 +359,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email: record.email,
       sub: record.sub,
       scope: record.scope ?? [],
-      roles: Array.isArray(user.roles) ? user.roles : []
+      roles: assignment.roles ?? []
     });
   }
 
@@ -397,12 +405,19 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       await user.save();
     }
 
+    // Entitlement gate (ADR-0019): the user must hold an active assignment for this application; the
+    // token's roles are the app-scoped roles from that assignment.
+    const assignment = await findActiveAssignment(models, user._id, client._id);
+    if (!assignment) {
+      throw new AccessDeniedError('User is not assigned to this application');
+    }
+
     return issueUserTokens(models, {
       client,
       email: user.email,
       sub: user._id, // the stable subject id
       scope: [],
-      roles: Array.isArray(user.roles) ? user.roles : []
+      roles: assignment.roles ?? []
     });
   }
 
@@ -443,11 +458,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidGrantError('Refresh token has no subject');
     }
 
-    // A refresh must honour a user disabled/locked since login, and re-read current roles (RQ-0011
-    // US-3). Resolve by identity subject or local _id; a token with no backing user (should not happen
-    // post-provisioning) simply refreshes with no roles rather than failing closed.
+    // A refresh must honour a user disabled/locked since login (RQ-0011 US-3) and re-check the
+    // application assignment (ADR-0019) — a suspended/revoked assignment kills further tokens, and the
+    // current app-scoped roles are re-read from it.
     const user = await resolveUserBySubject(models, sub);
-    if (user) assertUserActive(user);
+    if (!user) {
+      throw new InvalidGrantError('User no longer exists');
+    }
+    assertUserActive(user);
+    const assignment = await findActiveAssignment(models, user._id, tokenDoc.clientId);
+    if (!assignment) {
+      throw new InvalidGrantError('Access to this application was revoked');
+    }
 
     // Rotate: the presented refresh token is single-use.
     tokenDoc.status = 'revoked';
@@ -458,7 +480,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email,
       sub,
       scope: tokenDoc.scope ?? [],
-      roles: Array.isArray(user?.roles) ? user!.roles : [],
+      roles: assignment.roles ?? [],
       session
     });
   }
@@ -562,7 +584,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
         email: emailNorm,
         emailVerified: args.emailVerified,
         status: 'active',
-        roles: [],
         identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
         lastLoginAt: now
       });
@@ -712,6 +733,16 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     refreshUserToken,
     revokeUserToken
   };
+}
+
+/** The user's active entitlement to an application (ADR-0019), or null if none/suspended. Keyed on the
+ *  user record `_id` (not the token `sub`, which for a federated login is the provider subject). */
+async function findActiveAssignment(
+  models: ModelsBucket,
+  userId: string,
+  clientId: string
+): Promise<AssignmentDocument | null> {
+  return models.Assignment.findOne({ userId, clientId, status: 'active' }).lean().exec() as Promise<AssignmentDocument | null>;
 }
 
 async function enforceRateLimit(models: ReturnType<OAuthServerDependencies['makeModels']>, issuedAt: Date, maxPerMinute: number) {

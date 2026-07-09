@@ -1,6 +1,6 @@
 ---
 title: Deployment Configuration Guide
-summary: How to configure a deployment of identity-service — the realm-wide env settings, OAuth clients (Applications), local users, Google SSO, registration/invites, roles, and the flat seed config.
+summary: How to configure a deployment of identity-service — the realm-wide env settings, OAuth clients (Applications) and their role catalogues, local users, per-user application assignments, Google SSO, registration/invites, and the flat seed config.
 status: current
 last_updated: 2026-07-09
 owners: [architect]
@@ -8,6 +8,7 @@ related:
   - docs/reference/api.md
   - docs/design/architecture.md
   - docs/design/decisions/0018-collapse-tenant-into-deployment.md
+  - docs/design/decisions/0019-application-assignments-and-app-roles.md
   - docs/product/RQ-0001-workspace-user-identity-google-sso.md
 ---
 
@@ -22,8 +23,14 @@ are deployment-scoped** (unique by `email`, shared across every client → insta
 Configuring a deployment therefore has two parts:
 
 1. **Realm-wide settings** — deployment **environment variables** (`CONFIG`), not a per-row document.
-2. **Provisioned objects** — OAuth clients and local users, via the flat **seed config** (`config/seed.yaml`)
-   or the [`/admin/v1` management plane](../reference/api.md#admin-v1-management-plane).
+2. **Provisioned objects** — OAuth clients (with their **role catalogues**), local users, and per-user
+   **assignments** (ADR-0019), via the flat **seed config** (`config/seed.yaml`) or the
+   [`/admin/v1` management plane](../reference/api.md#admin-v1-management-plane).
+
+> **Entitlement (ADR-0019).** A user is not automatically able to reach every client. To be issued a token
+> for an application a user must hold an **active assignment** to it; each application owns a **role
+> catalogue**, and the assignment grants a subset of it as the token's app-scoped `roles`. See
+> [Application role catalogues & assignments](#application-role-catalogues--assignments-adr-0019).
 
 ## Realm-wide settings (deployment env)
 
@@ -34,7 +41,7 @@ What used to live on a per-tenant `oauth` block is now deployment configuration.
 | `allowedOrigins` | `CORS_ORIGINS` | Comma-separated allow-list of browser origins; a single, deployment-wide list. |
 | `oauth.registration` (`open`\|`invite`\|`closed`) | `AUTH_REGISTRATION_MODE` | Default `open`. Governs self-registration (see [Registration & invites](#registration-policy--invites)). |
 | `oauth.idp.provider` (`google`\|`local`) | `AUTH_LOCAL_IDP_ENABLED` + the Google app env | Local IdP is on by default; set `AUTH_LOCAL_IDP_ENABLED=false` to disable it. One Google app per deployment (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`). |
-| `oauth.allowedRoles` | `AUTH_ALLOWED_ROLES` | Comma-separated role vocabulary; validated at seed time when non-empty (see [User roles](#user-roles-rq-0005)). |
+| `oauth.allowedRoles` | `AUTH_ALLOWED_ROLES` | Legacy deployment-wide role vocabulary. Superseded by per-application **role catalogues** under [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) — the app's catalogue is now the vocabulary an assignment draws from (see [Application role catalogues & assignments](#application-role-catalogues--assignments-adr-0019)). |
 | `oauth.limits.tokensPerMinute` | `OAUTH_MAX_TOKENS_PER_MINUTE` | Deployment-wide access-token rate limit (default 200/min). |
 | `oauth.limits.refreshTokens` | `OAUTH_MAX_REFRESH_TOKENS` | Deployment-wide refresh-token budget (default 10000). |
 | `oauth.limits.clientCap` | `OAUTH_MAX_CLIENTS` | Deployment-wide cap on registered clients (default 50). |
@@ -72,6 +79,9 @@ db.oauth_clients.insertOne({
 - A **machine** (`client_credentials`) client is confidential and carries a secret + scopes.
 - A **user-login** client (`password` or `authorization_code`) is **public** (PKCE), so `isConfidential`
   may be `false` with no secret, and it **must** carry an `audience`.
+- A user-login client also declares a **role catalogue** — `roles: [{ key, name?, description? }]` — the
+  app-scoped roles a user may be assigned in it (ADR-0019). It can be omitted (no app-roles), seeded, or
+  edited at runtime (`GET/PUT /admin/v1/clients/{id}/roles`).
 
 Share the `client_id` and plain secret with the product team out-of-band; encourage storing secrets in
 the product's own secrets manager. Verify with `POST /oauth2/token`.
@@ -154,8 +164,10 @@ creation only).
 
 On an `invite` deployment, operators mint codes on the management plane — `POST /admin/v1/invites` (or the
 `create_invite` MCP tool / the console) — and send them out-of-band (email, chat); **no mail provider is
-needed**. A code can be email-bound, stamp roles (validated against `AUTH_ALLOWED_ROLES`), allow multiple
-uses (cohorts), and expires after 7 days by default. The code is **shown once**; list and revoke via
+needed**. An invite now **requires a target `clientId`** and may carry `roles` from that client's catalogue
+(ADR-0019): redeeming it provisions the user **and** creates the `active` assignment, landing the invitee
+directly into one application with the intended roles. A code can also be email-bound, allow multiple uses
+(cohorts), and expires after 7 days by default. The code is **shown once**; list and revoke via
 `GET /admin/v1/invites` and `POST /admin/v1/invites/{id}/revoke`. Invitees pass the code as `inviteCode`
 on the register call; an email-bound redemption also marks the address verified (ADR-0013).
 
@@ -168,35 +180,46 @@ Two behaviours to plan for on non-`open` deployments:
 - Invites are **runtime operational data** — minted via the admin plane, audited (`invite.create` /
   `invite.redeem` / `invite.revoke`), and never part of the seed file.
 
-## User roles (RQ-0005)
+## Application role catalogues & assignments (ADR-0019)
 
-A local user can carry a list of **coarse, deployment-scoped roles** that are stamped into the user
-token's **`roles`** claim (a JSON array of strings). identity-service **asserts** roles but does **not**
-enforce them — each consuming product maps roles to its own permissions
-([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is omitted when a user has no
-roles, and is re-read on every token issuance (including refresh), so a change applies on next refresh.
+Since [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) roles are **app-scoped**,
+not deployment-wide: the flat `user.roles` is **removed**. Two objects replace it:
 
-Optionally declare a deployment **`AUTH_ALLOWED_ROLES`** vocabulary. When non-empty it is validated at seed
-time — a user role outside the list is rejected; when empty/absent, any role string is accepted.
+- **Role catalogue** — the set of roles that exist *for one application*, declared on its client as
+  `roles: [{ key, name?, description? }]`. `key` is the stable token value; `name`/`description` are for the
+  console. Seed-bootstrapped **and** runtime-editable (`GET/PUT /admin/v1/clients/{id}/roles`).
+- **Assignment** — a user↔application entitlement (`assignments`), one per `{user, client}`, carrying the
+  app-scoped `roles` (a subset of that client's catalogue) and a `status` (`active` | `suspended`). A user
+  **needs an active assignment** to be issued a token for the app — a hard, global gate; without one,
+  `/oauth2/token` returns `access_denied`. The assignment's roles are stamped into the token's **`roles`**
+  claim, re-read on every issuance (including refresh), so a change — or a revoked/suspended assignment,
+  which then denies refresh — applies on next refresh.
 
+identity-service **asserts** roles but does **not** enforce them — each consuming product maps its
+app-scoped roles to its own permissions
+([ADR-0005](../design/decisions/0005-decentralized-authorization.md)).
+
+Assign, update, and revoke on the management plane (or via the `assign_user` / `update_assignment` /
+`revoke_assignment` MCP tools):
+
+```bash
+# assign alice to the maestro app with a role from that app's catalogue
+curl -XPOST https://auth.example.com/admin/v1/assignments -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","clientId":"client-maestro","roles":["operator"]}'
+
+# suspend / re-activate, change roles
+curl -XPOST https://auth.example.com/admin/v1/assignments/update -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","clientId":"client-maestro","status":"suspended"}'
+
+# revoke (denies further tokens for that app)
+curl -XPOST https://auth.example.com/admin/v1/assignments/revoke -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"email":"alice@x.test","clientId":"client-maestro"}'
 ```
-AUTH_ALLOWED_ROLES=platform_admin,member
-```
 
-Roles are provisioned by the operator (no HTTP API, [ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)):
-
-- **Seed config:** add `roles: [..]` under a user in `config/seed.yaml` (applies to **newly created**
-  users; re-running the seed leaves existing users untouched).
-- **CLI (existing users):**
-
-  ```bash
-  cd service
-  npm run manage-users -- set-roles --email=u@x.test --roles=platform_admin,member
-  npm run manage-users -- set-roles --email=u@x.test --roles=   # clears all roles
-  ```
-
-A consumer reads `roles` from the verified token and authorizes accordingly; it never calls back to
-identity-service to check a permission.
+Onboarding is either **operator-assigned** (the admin plane, above) or **invite-based** (an invite pins a
+`clientId` + `roles` and creates the assignment on redemption — see
+[Registration policy & invites](#registration-policy--invites)). A consumer reads `roles` from the verified
+token and authorizes accordingly; it never calls back to identity-service to check a permission.
 
 ## Bulk provisioning via seed config (RQ-0004)
 
@@ -221,18 +244,32 @@ clients:
     audience: demo-workspace            # REQUIRED for password/authorization_code — becomes the token `aud`
     redirectUris: []
     isConfidential: false
+    roles:                              # ADR-0019: the app's role catalogue
+      - { key: member }
+      - { key: reviewer, name: Reviewer, description: May approve filings }
 
 users:
   - email: demo@fps4.nl
     password: ${SEED_DEMO_PASSWORD}     # ${ENV_VAR} references resolved at run time, stored scrypt-hashed
     status: active
-    roles: [member]                     # RQ-0005: coarse roles → token `roles` claim
+    assignments:                        # ADR-0019: entitlement + app-scoped roles (replaces user.roles)
+      - { client: demo-web, roles: [member] }
 ```
 
-Re-running upserts clients and **leaves existing users untouched** (use `npm run manage-users set-password`
-to change a password). The loader is operator-run against the database — there is **no HTTP seeding endpoint**
-([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It reads `MONGO_URI`, so run it where it
-can reach the target Mongo (locally against the published port, or inside the docker network).
+A user with **no** `assignments` can authenticate but is refused a token for any app until one is granted
+(global entitlement gate, ADR-0019). Each assignment's `roles` must be a subset of the target client's
+catalogue.
+
+**Operator safeguard:** the bootstrap operator (`admin@identity-service.fps4.nl`) is always seeded with an
+`identity-console` / `platform_admin` assignment, so the console can never be accidentally locked out under
+global enforcement.
+
+Re-running upserts clients (and their catalogues) and **leaves existing users untouched** (use
+`npm run manage-users set-password` to change a password). The loader is operator-run against the database —
+there is **no HTTP seeding endpoint** ([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It
+reads `MONGO_URI`, so run it where it can reach the target Mongo (locally against the published port, or
+inside the docker network). To migrate an existing deployment onto the assignment model, see the
+[app-entitlement migration](./deployment.md#app-entitlement-migration-backfill-assignments-adr-0019).
 
 ## Operational Tips
 

@@ -75,6 +75,29 @@ router.delete('/clients/:id', requireAdmin(ADMIN_SCOPES.clients), async (req, re
   } catch (e) { handleError(res, e); }
 });
 
+// --- Application role catalogue (ADR-0019) ---
+
+router.get('/clients/:id/roles', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
+  try {
+    res.json({ roles: await adminService.getClientRoles(req.params.id) });
+  } catch (e) { handleError(res, e); }
+});
+
+router.put('/clients/:id/roles', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
+  try {
+    const roles = await adminService.setClientRoles(req.params.id, req.body?.roles ?? []);
+    audit(req, res, 'client.setRoles', { type: 'client', id: req.params.id }, { roles: roles.map((r) => r.key) });
+    res.json({ roles });
+  } catch (e) { handleError(res, e); }
+});
+
+// The users assigned to an application, with their app-scoped roles.
+router.get('/clients/:id/members', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    res.json({ members: await adminService.listClientMembers(req.params.id) });
+  } catch (e) { handleError(res, e); }
+});
+
 // --- Users ---
 
 router.get('/users', requireAdmin(ADMIN_SCOPES.users), async (_req, res) => {
@@ -172,6 +195,44 @@ router.post('/invites/:id/revoke', requireAdmin(ADMIN_SCOPES.users), async (req,
   try {
     const result = await adminService.revokeInvite(req.params.id);
     audit(req, res, 'invite.revoke', { type: 'invite', id: req.params.id });
+    res.json(result);
+  } catch (e) { handleError(res, e); }
+});
+
+// --- Assignments (ADR-0019): a user's entitlement + app-scoped roles for an application ---
+
+// A user's applications: GET /assignments?email=<email>
+router.get('/assignments', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const email = typeof req.query.email === 'string' ? req.query.email : '';
+    if (!email) return res.status(400).json({ error: 'invalid_input', error_description: 'email query param is required' });
+    res.json({ assignments: await adminService.listUserAssignments(email) });
+  } catch (e) { handleError(res, e); }
+});
+
+router.post('/assignments', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const { email, clientId, roles } = req.body ?? {};
+    const result = await adminService.assignUser({ email, clientId, roles, createdBy: req.admin?.subject ?? req.admin?.clientId });
+    audit(req, res, 'assignment.create', { type: 'assignment', id: `${email}@${clientId}` }, { email, clientId, roles });
+    res.status(201).json(result);
+  } catch (e) { handleError(res, e); }
+});
+
+router.post('/assignments/update', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const { email, clientId, roles, status } = req.body ?? {};
+    const result = await adminService.updateAssignment(email, clientId, { roles, status });
+    audit(req, res, 'assignment.update', { type: 'assignment', id: `${email}@${clientId}` }, { roles, status });
+    res.json(result);
+  } catch (e) { handleError(res, e); }
+});
+
+router.post('/assignments/revoke', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const { email, clientId } = req.body ?? {};
+    const result = await adminService.revokeAssignment(email, clientId);
+    audit(req, res, 'assignment.revoke', { type: 'assignment', id: `${email}@${clientId}` }, { email, clientId });
     res.json(result);
   } catch (e) { handleError(res, e); }
 });

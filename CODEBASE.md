@@ -15,9 +15,11 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 - **Machine tokens** — `client_credentials` grant; claims `cid` / `sid` / `scope`.
 - **User identity tokens** — Google SSO via OIDC Authorization Code + PKCE (RQ-0001) **or** a local
   email/password IdP (RQ-0002); claims `email` + a stable `sub` + `iss` + a consumer-bound `aud` +
-  `exp`/`iat`, plus an optional coarse **`roles`** array (RQ-0005) that consumers map to permissions
-  (identity-service asserts roles but does not enforce them — ADR-0005). Both IdPs issue the same token;
-  the local IdP is toggled deployment-wide (`AUTH_LOCAL_IDP_ENABLED`).
+  `exp`/`iat`, plus an optional **`roles`** array — the user's **app-scoped** roles for that `aud`, from
+  their assignment (ADR-0019), which consumers map to permissions (identity-service asserts roles but does
+  not enforce them — ADR-0005). Issuance is **entitlement-gated**: a user needs an active assignment to
+  the client or the grant is refused (`access_denied`, ADR-0019). Both IdPs issue the same token; the
+  local IdP is toggled deployment-wide (`AUTH_LOCAL_IDP_ENABLED`).
 
 ## Directory map
 
@@ -28,10 +30,10 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 | `service/src/routes/` | HTTP surface: `oauth-routes.ts` (`/oauth2/*`), `session-routes.ts` (legacy `/v1/*`), `admin-routes.ts` (`/admin/v1/*` management plane — ADR-0007). |
 | `service/src/mcp/` | `server.ts` — MCP management server (stdio JSON-RPC, `npm run mcp`) exposing the admin operations as agent tools, over the same service layer + admin-auth + audit (ADR-0007). |
 | `service/src/core/` | JWT signing helpers, the session authorizer, and `admin-auth.ts` (verifies admin client-credentials tokens + scopes — ADR-0007). |
-| `service/src/models/` | Mongoose models: oauth-client, oauth-token, oauth-authorization, user, session, key-store, audit-log (ADR-0007). |
-| `service/src/services/` | `users.ts` — local-credential registration (RQ-0002); `admin.ts` — management operations for clients/users/keys + stats (ADR-0007). |
+| `service/src/models/` | Mongoose models: oauth-client (carries the role catalogue), oauth-token, oauth-authorization, user (no `roles` field), assignment (user↔app entitlement — ADR-0019), session, key-store, audit-log (ADR-0007). |
+| `service/src/services/` | `users.ts` — local-credential registration (RQ-0002); `admin.ts` — management operations for clients (+role catalogues), users, assignments (ADR-0019), keys + stats (ADR-0007). |
 | `service/scripts/` | Operator CLIs: `manage-users.ts` (create/reset/lock/unlock/disable users) and `seed.ts` (idempotent `npm run seed` loader — RQ-0004). |
-| `config/` | `seed.example.yaml` (committed template) → `config/seed.yaml` (gitignored): clients + users for seed provisioning. |
+| `config/` | `seed.example.yaml` (committed template) → `config/seed.yaml` (gitignored): clients (+ role catalogues), users, and per-user assignments for seed provisioning (ADR-0019). |
 | `service/src/utils/` | Key store (RSA generate/rotate + JWKS), db, hashing, CORS, logging. |
 | `service/tests/` | Vitest suites (dependency-injected, no network/DB). |
 | `sdk/` | Headless TypeScript client: `requestClientCredentialsToken` + the Google login helpers (`beginGoogleLogin` / `completeGoogleLogin` / `refreshUserToken` / `revokeUserToken`) + `registerWithPassword` / `loginWithPassword`. No UI; safe server-side. |
@@ -57,6 +59,8 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 
 ## Out of scope
 
-- **Authorization / roles** — owned by the consuming product, never mirrored here.
+- **Authorization enforcement** — owned by the consuming product. identity-service stores app role
+  catalogues + assignments and stamps app-scoped roles (ADR-0019), but the role→capability mapping and
+  enforcement live in the product, never mirrored here.
 - **Non-Google IdPs / magic-link** — deferred (RQ-0001 out of scope).
 - **The consumer's login UI** — the SDK helper is shipped here; the UI lands in the consumer.

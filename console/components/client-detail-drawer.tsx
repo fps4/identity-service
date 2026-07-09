@@ -9,6 +9,7 @@ import { Drawer } from '@/components/ui/drawer';
 import { Badge } from '@/components/ui/badge';
 import { ActionForm } from '@/components/action-form';
 import { Hidden } from '@/components/field';
+import { ClientAccessSection } from '@/components/client-access-section';
 import { rotateClientSecret, deleteClient } from '@/app/actions';
 import type { Client } from '@/lib/api';
 
@@ -62,6 +63,8 @@ export function ClientDetailDrawer({ client, onClose }: {
           )}
         </dl>
       </div>
+
+      <ClientAccessSection clientId={client._id} />
 
       <div className="section">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Secret</h3>

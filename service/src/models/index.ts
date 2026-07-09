@@ -5,6 +5,7 @@ import { getOAuthTokenModel, OAuthToken, type OAuthTokenDocument } from './oauth
 import { getOAuthAuthorizationModel, OAuthAuthorization, type OAuthAuthorizationDocument } from './oauth-authorization.js';
 import { getUserModel, User, type UserDocument } from './user.js';
 import { getInviteModel, Invite, type InviteDocument } from './invite.js';
+import { getAssignmentModel, Assignment, type AssignmentDocument } from './assignment.js';
 import { getKeyStoreModel, KeyStore, type KeyStoreDocument } from './key-store.js';
 import { getAuditLogModel, AuditLog, type AuditLogDocument } from './audit-log.js';
 
@@ -15,15 +16,17 @@ export const makeModels = (connection: Connection) => ({
   OAuthAuthorization: getOAuthAuthorizationModel(connection) as Model<OAuthAuthorizationDocument>,
   User: getUserModel(connection) as Model<UserDocument>,
   Invite: getInviteModel(connection) as Model<InviteDocument>,
+  Assignment: getAssignmentModel(connection) as Model<AssignmentDocument>,
   KeyStore: getKeyStoreModel(connection) as Model<KeyStoreDocument>,
   AuditLog: getAuditLogModel(connection) as Model<AuditLogDocument>
 });
 
 export { Session, type SessionDocument } from './session.js';
-export { OAuthClient, type OAuthClientDocument } from './oauth-client.js';
+export { OAuthClient, type OAuthClientDocument, type AppRole } from './oauth-client.js';
 export { OAuthToken, type OAuthTokenDocument } from './oauth-token.js';
 export { OAuthAuthorization, type OAuthAuthorizationDocument } from './oauth-authorization.js';
 export { User, type UserDocument, type FederatedIdentity } from './user.js';
 export { Invite, type InviteDocument } from './invite.js';
+export { Assignment, type AssignmentDocument } from './assignment.js';
 export { KeyStore, type KeyStoreDocument } from './key-store.js';
 export { AuditLog, type AuditLogDocument } from './audit-log.js';

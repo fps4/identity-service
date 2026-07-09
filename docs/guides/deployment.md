@@ -8,6 +8,7 @@ related:
   - docs/design/architecture.md
   - docs/guides/tenant-config.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
+  - docs/design/decisions/0019-application-assignments-and-app-roles.md
 ---
 
 # Deployment
@@ -96,6 +97,13 @@ git, and no `age` master key.
   must stay equal to its consumer-repo mirror (`MAESTRO_RUNTIME_CLIENT_SECRET` in the
   gateway/copilot/skills-coach repos, US-0086).
 
+  The seed also carries the ADR-0019 shape: each client may declare its **role catalogue** (`roles:`) and
+  each user their **assignments** (`assignments: [{ client, roles? }]`) — see the
+  [deployment-configuration guide](./tenant-config.md#application-role-catalogues--assignments-adr-0019).
+  **Operator safeguard:** the bootstrap operator (`admin@identity-service.fps4.nl`) is always seeded with an
+  `identity-console` / `platform_admin` assignment, so with global entitlement enforcement the console is
+  never accidentally lockable.
+
 ### Nightly backups & point-in-time recovery — ADR-0008
 
 The **primary recovery path is a restore from a nightly backup** (it recovers the full runtime state —
@@ -143,6 +151,31 @@ default `identity-service` is only the dev/test fallback. **Consumer-side breaki
 need coordination: the published SDK package name (`@fps4/component-auth` → `@fps4/identity-service-sdk`)
 and the documented consumer env-var convention (`COMPONENT_AUTH_*` → `IDENTITY_SERVICE_*`, which is each
 consumer's own choice of name).
+
+## App-entitlement migration: backfill assignments (ADR-0019)
+
+[ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) makes entitlement a **global**
+gate — a user with no assignment can obtain no token — and removes the flat `user.roles`. Because
+enforcement is global, existing users would be locked out on cutover unless their current access is
+preserved, so a migration **backfills assignments from token history**. It runs against ds1 **after** the
+enforcing image deploys and is idempotent (`--dry-run` first):
+
+`scripts/migrate-app-assignments.ts` (driven by the `migrate-assignments-ds1` GitHub workflow):
+
+1. **Build role catalogues** — for each client, seed its `roles` catalogue from the union of the old flat
+   `user.roles` across users who hold tokens for it, plus any seed-declared roles.
+2. **Backfill assignments** — for each distinct `(user, clientId)` pair observed in `oauth_tokens` (user
+   grants only), create an `active` assignment whose roles are that user's old flat roles intersected with
+   the client's catalogue, so every currently-working login keeps working.
+3. **Seed the operator assignment** — ensure the bootstrap operator holds `platform_admin` on
+   `identity-console` (folding ADR-0010).
+4. **Drop `user.roles`** from every user document once assignments are populated.
+
+```bash
+# dry-run first (reports the backfill it would write), then apply:
+npm run migrate-app-assignments -- --dry-run
+npm run migrate-app-assignments
+```
 
 ## Management-plane admin client & MCP server — ADR-0007
 

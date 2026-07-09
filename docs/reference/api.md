@@ -91,14 +91,23 @@ On first login the person is **just-in-time provisioned** as a manageable user r
 identity is linked to it; a subsequent login with a verified email that matches an existing account
 links onto that account rather than creating a duplicate (RQ-0011). This is issuer-internal — the token
 claims above are **unchanged**. Because provisioning yields a real user, a `disabled`/`locked` status
-and assigned `roles` now apply to Google logins exactly as to password logins.
+and the user's app assignment now apply to Google logins exactly as to password logins.
 
-When the authenticated user has roles, the token also carries a **`roles`** claim — a JSON array of
-coarse, deployment-scoped role strings (RQ-0005), **omitted** when the user has none. Roles are advisory
-identity assertions: identity-service does **not** enforce them — each consuming product maps roles to
-its own permissions ([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is additive
-(a verifier that ignores it is unaffected) and is re-read from the user store on every issuance
-(including `refresh_token`), so a role change applies on the next refresh.
+**Entitlement gate (ADR-0019).** Every user grant is gated: after the user authenticates, issuance
+requires an **active [assignment](#admin-v1-management-plane)** for the target client, else
+`access_denied` ("user is not assigned to this application"). JIT-provisioning a Google user creates the
+identity but **not** an assignment — a new person with no assignment authenticates but is refused a token
+until one is granted (by an operator or an invite). This is a hard, global gate; machine
+(`client_credentials`) tokens have no user and are unaffected.
+
+The token carries a **`roles`** claim — a JSON array of the user's **app-scoped** roles *in this
+application*, sourced from the assignment's `roles` (a subset of the client's role catalogue, ADR-0019),
+**omitted** when the assignment grants none. Roles are advisory identity assertions: identity-service does
+**not** enforce them — each consuming product maps roles to its own permissions
+([ADR-0005](../design/decisions/0005-decentralized-authorization.md)). The claim is additive (a verifier
+that ignores it is unaffected) and the assignment is re-read on every issuance (including `refresh_token`),
+so a role change — or a revoked/suspended assignment (which then denies refresh) — applies on the next
+refresh.
 
 ### `grant_type=password` (local login — RQ-0002)
 
@@ -113,7 +122,8 @@ Email + password login against identity-service's own credential store, when the
 ### `grant_type=refresh_token`
 
 Rotates a user token. The presented refresh token is single-use; a fresh access + refresh pair is
-returned. A refresh fails once its session is revoked or expired.
+returned. A refresh fails once its session is revoked or expired, or once the user's assignment for the
+client is **revoked or suspended** (`access_denied` — ADR-0019).
 
 - `Content-Type: application/x-www-form-urlencoded`
 - Body parameters: `grant_type=refresh_token`, `refresh_token`, `client_id`.
@@ -124,6 +134,8 @@ returned. A refresh fails once its session is revoked or expired.
 - `400 invalid_request` – missing/unsupported `grant_type` or required parameter.
 - `400 invalid_scope` – requested scope not permitted.
 - `400 invalid_grant` – bad/expired/used authorization code, failed PKCE, or invalid/revoked refresh token.
+- `403 access_denied` – the authenticated user has no **active assignment** to this application
+  ("user is not assigned to this application") — password, authorization-code, and refresh grants (ADR-0019).
 - `401 invalid_client` – bad client credentials (client-credentials grant).
 - `400 unauthorized_client` – grant not allowed for the client, or client has no `audience`.
 - `429 slow_down` – token rate limit exceeded.
@@ -188,9 +200,10 @@ users log in unchanged.
 ```
 
 `inviteCode` is required when the mode is `invite` and ignored otherwise. Entry is forgiving: case and
-dashes don't matter. Redeeming a code stamps the invite's `roles` onto the user; an **email-bound**
-invite additionally requires the matching address and sets `emailVerified: true` (the operator sent
-the code there — ADR-0013).
+dashes don't matter. Redeeming a code creates the user **and** an **assignment** to the invite's target
+`clientId` with the invite's `roles` (ADR-0019) — so the invitee lands directly into one application; an
+**email-bound** invite additionally requires the matching address and sets `emailVerified: true` (the
+operator sent the code there — ADR-0013).
 
 ### Response (`201`)
 
@@ -340,9 +353,11 @@ and the [admin console](../../console/README.md) all sit on the same service lay
   (verified against its own JWKS). The plane accepts **two principal kinds** (ADR-0010):
   - a **machine principal** — a **`client_credentials`** token (`cid`) for a client whose token carries an
     admin scope (agents/MCP + the console's break-glass token); or
-  - an **operator principal** — a **user identity token** (`sub`, no `cid`) whose `roles` claim
-    ([RQ-0005](../product/RQ-0005-user-roles-in-identity-token.md)) contains a configured operator role
-    (`ADMIN_OPERATOR_ROLES`, default `platform_admin`), mapped to the `admin` superscope. This is how the
+  - an **operator principal** — a **user identity token** (`sub`, no `cid`) whose `roles` claim contains a
+    configured operator role (`ADMIN_OPERATOR_ROLES`, default `platform_admin`), mapped to the `admin`
+    superscope. Under [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) that
+    claim is app-scoped: `platform_admin` is a role in the **`identity-console`** application's catalogue,
+    and the operator holds an `identity-console` assignment granting it (folding ADR-0010). This is how the
     admin console attributes each action to a **human** (the audit `principalSubject` is the operator's `sub`).
 - The superscope **`admin`** (configurable via `ADMIN_API_SCOPE`) satisfies any admin route. For
   least-privilege agents, granular per-area scopes also satisfy their own routes:
@@ -357,18 +372,25 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 
 | Method & path | Scope | Purpose |
 |---|---|---|
-| `GET /clients` | `admin:clients` | List OAuth clients. |
-| `POST /clients` | `admin:clients` | Register a client. **The client secret is returned once** — only its hash is persisted. |
+| `GET /clients` | `admin:clients` | List OAuth clients (including each client's role catalogue). |
+| `POST /clients` | `admin:clients` | Register a client; body accepts `roles: AppRole[]` — the app's **role catalogue** (`AppRole = { key, name?, description? }`, ADR-0019). **The client secret is returned once** — only its hash is persisted. |
 | `POST /clients/{id}/rotate-secret` | `admin:clients` | Rotate a client secret (returns the new secret once). |
-| `GET /users` | `admin:users` | List users (local + federated), including each user's linked `identities[]`; never returns `passwordHash`. |
-| `POST /users` | `admin:users` | Create a local user. |
+| `GET /clients/{id}/roles` | `admin:clients` | Read the client's role catalogue (`AppRole[]`, ADR-0019). |
+| `PUT /clients/{id}/roles` | `admin:clients` | Replace the client's role catalogue (`{ roles: AppRole[] }`, ADR-0019). |
+| `GET /clients/{id}/members` | `admin:clients` | List the users assigned to this application and their app-scoped roles (ADR-0019). |
+| `GET /users` | `admin:users` | List users (local + federated), including each user's linked `identities[]`; never returns `passwordHash`. Users no longer carry a `roles` field (ADR-0019). |
+| `POST /users` | `admin:users` | Create a local user — body `{ email, password }` (**no** `roles`; entitlement is granted separately via an assignment — ADR-0019). |
 | `POST /users/reset-password` | `admin:users` | Reset a local user's password (`{ email, password }`). |
 | `POST /users/status` | `admin:users` | Set user status (`active` \| `disabled`) — enforced on **all** login paths, Google included (RQ-0011). |
 | `POST /users/unlock` | `admin:users` | Clear brute-force lockout counters. |
 | `POST /users/link-identity` | `admin:users` | Link a federated identity onto a user (`{ email, provider:"google", subject, identityEmail?, emailVerified? }`); `409 identity_linked` if already owned (RQ-0011). |
 | `POST /users/unlink-identity` | `admin:users` | Remove a linked federated identity (`{ email, provider:"google", subject }`) (RQ-0011). |
-| `POST /invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ email?, roles?, maxUses?, expiresInHours?, note? }`. **The code is returned once** — only its digest is persisted. Roles are validated against `AUTH_ALLOWED_ROLES`. Defaults: single-use, 7-day expiry. |
-| `GET /invites` | `admin:users` | List invites with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
+| `POST /assignments` | `admin:users` | Assign a user to an application (ADR-0019): `{ email, clientId, roles? }` — creates the `active` assignment (unique per `{user, client}`); `roles` must be a subset of the client's catalogue. |
+| `POST /assignments/update` | `admin:users` | Update an existing assignment: `{ email, clientId, roles?, status? }` (`status`: `active` \| `suspended`). |
+| `POST /assignments/revoke` | `admin:users` | Revoke a user's assignment to an application: `{ email, clientId }` — denies further token issuance for that app. |
+| `GET /assignments?email=` | `admin:users` | List a user's assignments (the applications they may reach and their per-app roles). |
+| `POST /invites` | `admin:users` | Mint a registration invite (RQ-0013): `{ clientId, roles?, email?, maxUses?, expiresInHours?, note? }`. **`clientId` is required** — redeeming creates an assignment to it (ADR-0019); `roles` must be a subset of that client's catalogue. **The code is returned once** — only its digest is persisted. Defaults: single-use, 7-day expiry. |
+| `GET /invites` | `admin:users` | List invites (each includes its target `clientId`) with derived `status` (`pending` \| `redeemed` \| `expired` \| `revoked`) and `usedCount`; never the code. |
 | `POST /invites/{id}/revoke` | `admin:users` | Revoke an invite so no further redemptions succeed. |
 | `POST /keys/rotate` | `admin:keys` | Mint a new active signing key; demote the previous to `inactive`. |
 | `GET /keys` | `admin:keys` | Inspect `key_store` status. |
@@ -379,10 +401,11 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 
 ```json
 {
-  "clients": { "total": 9 },
-  "users":   { "total": 120, "locked": 1, "disabled": 2 },
-  "tokens":  { "accessLastHour": 87, "accessLastDay": 1432, "activeRefresh": 64 },
-  "keys":    { "active": 1 },
+  "clients":     { "total": 9 },
+  "users":       { "total": 120, "locked": 1, "disabled": 2 },
+  "assignments": { "active": 143 },
+  "tokens":      { "accessLastHour": 87, "accessLastDay": 1432, "activeRefresh": 64 },
+  "keys":        { "active": 1 },
   "at": "2026-06-23T02:30:00.000Z"
 }
 ```

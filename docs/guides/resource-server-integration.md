@@ -1,11 +1,12 @@
 ---
 title: Resource-Server Integration Guide
-summary: The build-once contract for a product consuming identity-service — verify the token, map coarse roles to capabilities, and enforce locally.
+summary: The build-once contract for a product consuming identity-service — verify the token, map its app-scoped roles to capabilities, and enforce locally.
 status: current
 last_updated: 2026-06-23
 owners: [architect]
 related:
   - docs/design/decisions/0005-decentralized-authorization.md
+  - docs/design/decisions/0019-application-assignments-and-app-roles.md
   - docs/product/RQ-0005-user-roles-in-identity-token.md
   - docs/reference/api.md
   - docs/guides/tenant-config.md
@@ -21,8 +22,11 @@ identity-service is the **authentication engine** (an OAuth2/OIDC Identity Provi
 is a **resource server**: it verifies the token identity-service issues and makes its own
 authorization decisions. The decision behind this split is [ADR-0005 — decentralized
 authorization](../design/decisions/0005-decentralized-authorization.md); the roles mechanism is
-[RQ-0005](../product/RQ-0005-user-roles-in-identity-token.md). This guide is the *how-to* for the
-consuming side.
+[RQ-0005](../product/RQ-0005-user-roles-in-identity-token.md), now **app-scoped** under
+[ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) — the `roles` claim carries
+the user's roles *in this application* (the token's `aud`), sourced from their assignment. This guide is
+the *how-to* for the consuming side; from a resource server's view the contract is unchanged — you read
+`roles` exactly as before, they simply already mean "this user's roles in **this** app."
 
 ## The split: who owns what
 
@@ -30,28 +34,30 @@ consuming side.
 |---|---|---|
 | Login, credentials, password reset, Google SSO | **identity-service** | the IdP |
 | Users, the user store, JWKS, token issuance | **identity-service** | the IdP |
-| **Coarse, deployment-scoped role assignment** ("alice is a `reviewer`") | **identity-service** | the `roles` claim on the signed token; provisioned by operators |
+| **App-scoped role assignment** ("alice is a `reviewer` *in this app*") | **identity-service** | the `roles` claim on the signed token; from the user's per-application assignment (ADR-0019) |
+| **Entitlement** ("alice may use this app at all") | **identity-service** | the assignment gate — no active assignment ⇒ no token issued (ADR-0019) |
 | **Token verification** (signature, `iss`/`aud`/`exp`) | **the product** | a verifier at the product's edge |
 | **Fine-grained role → capability mapping** ("`reviewer` may approve a filing") | **the product** | the product's own config/code |
 | **Enforcement** of capabilities on operations | **the product** | the product's request path |
 | **User / role administration UI** | **identity-service** | build-once; serves all products |
 
-The governing rule: **identity-service asserts identity and coarse roles; it never enforces what a
-role may do.** Each product maps the role strings it receives to its own permissions. (ADR-0005,
-RQ-0005 scope §5.)
+The governing rule: **identity-service asserts identity and app-scoped roles (and gates entitlement at
+issuance); it never enforces what a role may do.** Each product maps the role strings it receives to its
+own permissions. (ADR-0005, RQ-0005 scope §5; ADR-0019 for the app-scoping and the entitlement gate.)
 
 ## What identity-service gives you
 
 - **A verifiable RS256 identity token** with `sub` (stable), `email`, `iss`, per-consumer `aud`,
-  `exp`/`iat`, and an **optional `roles` claim** (array of coarse strings; omitted when the user
-  has none). See [`reference/api.md`](../reference/api.md) for the exact contract.
+  `exp`/`iat`, and an **optional `roles` claim** — the user's **app-scoped** roles for that `aud`
+  (omitted when the assignment grants none). Because issuance is entitlement-gated (ADR-0019), a token
+  only exists for a user assigned to your app. See [`reference/api.md`](../reference/api.md) for the exact contract.
 - **JWKS** at `/.well-known/jwks.json` for signature verification.
 - **OAuth2 endpoints** — `/oauth2/token` (local password grant) and authorization-code + PKCE
   (Google SSO).
 - **A login widget** — the `@fps4/identity-service-react` `<Login/>` component.
-- **Operator role provisioning** — `manage-users set-roles` and the seed config (`users[].roles`),
-  optionally constrained by the deployment's `AUTH_ALLOWED_ROLES` vocabulary (see
-  [deployment configuration](./tenant-config.md)).
+- **Operator entitlement & role provisioning** — per-application **assignments** (`POST /admin/v1/assignments`,
+  the console, or the seed's per-user `assignments:`), drawing roles from each application's **role
+  catalogue** (ADR-0019; see [deployment configuration](./tenant-config.md)).
 
 ## What your product owns
 
@@ -60,25 +66,27 @@ RQ-0005 scope §5.)
 2. **Stay stateless on identity** — do **not** keep a user table or a role-grant store, and do
    **not** call back to identity-service to make an authorization decision. Everything you need
    arrives on the verified token.
-3. **Map coarse roles → your capabilities in your own config** — a role string like `reviewer`
-   means whatever your product's capability map says it means. Keep that map in the product repo.
+3. **Map your app's roles → your capabilities in your own config** — a role string like `reviewer`
+   means whatever your product's capability map says it means. Keep that map in the product repo. The
+   role strings are your application's catalogue (ADR-0019), so they are already scoped to you.
 4. **Enforce** those capabilities on your protected operations, returning a uniform `403` when the
    caller's roles don't grant the required capability.
 5. **Default safely** — a role you don't recognise maps to **no capabilities** (deny by omission);
-   log it. An absent `roles` claim means a single-role / unprovisioned deployment — pick a documented
-   default (e.g. a baseline role) rather than failing closed silently.
+   log it. An absent `roles` claim means the user is assigned to your app with no roles — pick a
+   documented default (e.g. a baseline role) rather than failing closed silently.
 
-## Roles are deployment-scoped, not product-scoped
+## Roles are app-scoped (ADR-0019)
 
-identity-service stamps **one `roles` array per user** (deployment-wide), independent of `audience`. If two
-products share the deployment, they see the **same** role strings. Handle this by convention:
+Since [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) the `roles` claim is
+**per-application**: it carries the user's roles in the token's `aud` application, drawn from that
+application's own **role catalogue** via their assignment. Two products sharing the deployment no longer
+see the same flat role array — each receives only its own app's roles, so **role-string namespacing is no
+longer needed**. Your product's role vocabulary is simply its application's catalogue (managed in
+identity-service).
 
-- **Namespace role strings per product** — `copilot:reviewer`, `maestro:operator` — and have each
-  product map only its own prefix; or
-- **Agree a shared vocabulary** across the products in the deployment.
-
-Either way, an unknown role → no capabilities (logged). Keep the product's role vocabulary a subset
-of the deployment's `AUTH_ALLOWED_ROLES`.
+An unknown role still → no capabilities (logged); default safely. An absent `roles` claim means the user
+is assigned to your app but granted no roles — pick a documented default (e.g. a baseline role) rather
+than failing closed silently.
 
 ## Admin UI is identity-service's job — build once
 
@@ -103,14 +111,14 @@ Don't re-implement JWKS handling per product. The integration surface is:
 
 ## Operational notes
 
-- **Adding roles to a deployment is operator config, not code.** Declare the vocabulary in
-  `AUTH_ALLOWED_ROLES`, then `manage-users set-roles --email=<e> --roles=…`.
-  The `roles` claim, per-user storage, and the CLI already ship — no identity-service code change is
+- **Adding roles and access is operator config, not code.** Define your app's role **catalogue** on its
+  client, then **assign** users to the app with roles (`POST /admin/v1/assignments` or the console — ADR-0019).
+  The catalogue, assignments, and the admin surface already ship — no identity-service code change is
   needed to light up RBAC in a consuming product.
-- **Role changes have a refresh-window latency.** Roles are re-read at each token issuance
-  (including refresh), so a change takes effect no later than the next access-token refresh
-  (RQ-0005). For instant revocation you'd add token introspection or shorter TTLs — defer until a
-  deployment requires it.
+- **Role and entitlement changes have a refresh-window latency.** The assignment is re-read at each token
+  issuance (including refresh), so a role change — or a revoked/suspended assignment, which then denies
+  refresh — takes effect no later than the next access-token refresh. For instant revocation you'd add
+  token introspection or shorter TTLs — defer until a deployment requires it.
 
 ## Worked example: sovereign-copilot
 

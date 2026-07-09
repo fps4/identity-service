@@ -37,3 +37,33 @@ export function SelectField({ name, label, options, required, defaultValue }: {
 export function Hidden({ name, value }: { name: string; value: string }) {
   return <input type="hidden" name={name} value={value} />;
 }
+
+/**
+ * A checkbox group for choosing app-scoped roles from an application's catalogue (ADR-0019). Each box
+ * submits under the shared `name` (default `roles`), read server-side via FormData.getAll. Uncontrolled:
+ * pre-selected boxes use `defaultChecked` so the surrounding ActionForm can submit without local state.
+ */
+export function RoleCheckboxes({ catalogue, selected = [], name = 'roles', label = 'Roles' }: {
+  catalogue: { key: string; name?: string }[];
+  selected?: string[];
+  name?: string;
+  label?: string;
+}) {
+  if (!catalogue.length) {
+    return <p className="text-xs text-muted-foreground">No roles in this application’s catalogue.</p>;
+  }
+  const chosen = new Set(selected);
+  return (
+    <fieldset className="flex flex-col gap-1">
+      {label ? <legend className="mb-1 text-xs font-medium text-muted-foreground">{label}</legend> : null}
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {catalogue.map((r) => (
+          <label key={r.key} className="inline-flex items-center gap-1.5 text-sm">
+            <input type="checkbox" name={name} value={r.key} defaultChecked={chosen.has(r.key)} />
+            <span>{r.name || r.key}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}

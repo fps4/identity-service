@@ -1,0 +1,67 @@
+name: migrate-assignments-ds1
+
+# One-shot data migration for ADR-0019 (per-application entitlements + app-scoped roles). Runs
+# scripts/migrate-app-assignments.ts against the live ds1 MongoDB: backfills assignments from token
+# history so no current login breaks, UNCONDITIONALLY ensures admin@identity-service.fps4.nl keeps an
+# identity-console/platform_admin assignment (console never locked out), and drops the flat user.roles.
+# Idempotent — safe to re-dispatch.
+#
+# Manual only. Run AFTER the deploy that ships the ADR-0019 image (so the model definitions the
+# migration's syncIndexes() uses match the new schema). Take a backup first (docker/backup.sh nightly).
+#
+# Reuses the seeder image (docker/seed.Dockerfile carries scripts/ + tsx) on the mongo network, exactly
+# like seed-ds1 / migrate-ds1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what WOULD change without writing (recommended first).
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-assignments-ds1
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, ds1]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the migrator image (carries scripts/migrate-app-assignments.ts + tsx)
+        run: docker build -f docker/seed.Dockerfile -t ids-migrate-asg:${{ github.sha }} .
+
+      - name: Run the migration against the live stack
+        run: |
+          NET=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' identity-service-mongo 2>/dev/null | awk '{print $1}')
+          [ -n "$NET" ] || { echo "::error::identity-service-mongo not running — deploy the stack first"; exit 1; }
+          echo "mongo network: $NET"
+
+          FLAGS=""
+          [ "${{ inputs.dry_run }}" = "true" ] && FLAGS="--dry-run"
+          echo "::group::migrate-app-assignments $FLAGS"
+          docker run --rm --network "$NET" \
+            -e MONGO_URI=mongodb://mongo:27017 \
+            -e MONGO_DB_NAME=identity-service \
+            -e ADMIN_OPERATOR_ROLES=platform_admin \
+            ids-migrate-asg:${{ github.sha }} \
+            npx tsx scripts/migrate-app-assignments.ts $FLAGS
+          echo "::endgroup::"
+
+      - name: Verify (operator console access + shape)
+        run: |
+          docker exec identity-service-mongo mongosh identity-service --quiet --eval '
+            const u = db.users.findOne({ email: "admin@identity-service.fps4.nl" });
+            const a = u ? db.assignments.findOne({ userId: u._id, clientId: "identity-console", status: "active" }) : null;
+            print("operator user:", !!u,
+                  " console assignment:", a ? JSON.stringify(a.roles) : "MISSING",
+                  " users with flat roles:", db.users.countDocuments({ roles: { $exists: true } }),
+                  " total assignments:", db.assignments.countDocuments({}));
+            if (!a) { print("::error::operator has NO active identity-console assignment"); quit(1); }
+          '
