@@ -26,6 +26,9 @@ import { getMasterConnection, disconnect } from '../src/utils/db.js';
 import { makeModels } from '../src/models/index.js';
 
 const DRY_RUN = process.argv.includes('--dry-run');
+// Optional prune list (comma-separated client ids): junk/test credentials to delete (with their
+// assignments) before grouping, instead of folding them into an application.
+const DELETE_CLIENTS = new Set((process.env.DELETE_CLIENTS ?? '').split(',').map((s) => s.trim()).filter(Boolean));
 const OPERATOR_EMAIL = 'admin@identity-service.fps4.nl';
 const CONSOLE_APP = 'identity-console';
 const OPERATOR_ROLES = (process.env.ADMIN_OPERATOR_ROLES ?? 'platform_admin').split(',').map((r) => r.trim()).filter(Boolean);
@@ -62,7 +65,20 @@ async function main() {
   if (!db) throw new Error('no database handle on the master connection');
   const overrides = parseOverrides();
 
-  const clients = await db.collection('oauth_clients').find({}).toArray() as any[];
+  let clients = await db.collection('oauth_clients').find({}).toArray() as any[];
+
+  // 0) Prune junk/test credentials (DELETE_CLIENTS) + their assignments before grouping.
+  if (DELETE_CLIENTS.size) {
+    const toDelete = clients.filter((c) => DELETE_CLIENTS.has(c._id));
+    for (const c of toDelete) log(`delete credential ${c._id} (${c.name ?? '—'}) + its assignments`);
+    if (!DRY_RUN) {
+      const ids = toDelete.map((c) => c._id);
+      await db.collection('oauth_clients').deleteMany({ _id: { $in: ids } as any });
+      await db.collection('assignments').deleteMany({ clientId: { $in: ids } });
+      await db.collection('invites').deleteMany({ clientId: { $in: ids } });
+    }
+    clients = clients.filter((c) => !DELETE_CLIENTS.has(c._id));
+  }
 
   // 1) Group credentials onto application ids.
   const appOf = new Map<string, string>(); // clientId → appId

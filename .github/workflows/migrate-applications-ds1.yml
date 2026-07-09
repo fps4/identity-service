@@ -23,6 +23,10 @@ on:
         description: 'Optional grouping overrides: clientId=appId,clientId=appId'
         type: string
         default: ''
+      delete_clients:
+        description: 'Optional junk credential ids to DELETE (comma-separated) instead of grouping them'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -55,6 +59,7 @@ jobs:
             -e MONGO_DB_NAME=identity-service \
             -e ADMIN_OPERATOR_ROLES=platform_admin \
             -e APP_GROUPING="${{ inputs.grouping }}" \
+            -e DELETE_CLIENTS="${{ inputs.delete_clients }}" \
             ids-migrate-app:${{ github.sha }} \
             npx tsx scripts/migrate-application-aggregate.ts $FLAGS
           echo "::endgroup::"
