@@ -80,7 +80,10 @@ TOKEN="$(docker exec \
 [ -n "$TOKEN" ] || { echo "mcp-admin: failed to mint admin token" >&2; exit 1; }
 
 # 2. Run the MCP server inside the container with that token. -i keeps stdin open for JSON-RPC;
-#    the server's logs go to stderr, the JSON-RPC stream to stdout — exactly what an MCP client expects.
+#    LOG_DESTINATION=stderr keeps the app's pino logs off fd 1, so stdout carries the JSON-RPC stream
+#    alone — exactly what an MCP client expects. Without it the startup lines (Mongo connect, "server
+#    ready") are written into the protocol stream ahead of the initialize response.
 exec docker exec -i \
   -e IDENTITY_SERVICE_ADMIN_TOKEN="$TOKEN" \
+  -e LOG_DESTINATION=stderr \
   "$CONTAINER" node dist/mcp/server.js
