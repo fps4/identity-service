@@ -1,4 +1,4 @@
-import pino from 'pino';
+import pino, { type Logger as PinoLogger } from 'pino';
 
 const shouldPrettyPrint = (() => {
   const flag = process.env.LOG_PRETTY?.toLowerCase();
@@ -7,17 +7,27 @@ const shouldPrettyPrint = (() => {
   return process.env.NODE_ENV !== 'production';
 })();
 
-const transport = shouldPrettyPrint
-  ? {
-      target: 'pino-pretty',
-      options: { colorize: true, translateTime: 'SYS:standard' }
-    }
-  : undefined;
+/**
+ * Which fd the logs go to. Stdout by default, but the **stdio MCP transport**
+ * (`src/mcp/server.ts`) runs with LOG_DESTINATION=stderr: there fd 1 carries the JSON-RPC
+ * stream, so a log line interleaved into it is a protocol violation — a lenient client skips
+ * the non-conforming message, a strict one errors on it. Every module logs through this one
+ * shared instance (db, admin-auth, the MCP handler), so the switch has to be process-wide;
+ * swapping the logger inside the entrypoint alone would still leak the startup lines.
+ */
+const destination = process.env.LOG_DESTINATION?.toLowerCase() === 'stderr' ? 2 : 1;
 
-export const logger = pino({
-  level: process.env.LOG_LEVEL ?? 'info',
-  transport
-});
+const level = process.env.LOG_LEVEL ?? 'info';
+
+export const logger: PinoLogger = shouldPrettyPrint
+  ? pino({
+      level,
+      transport: {
+        target: 'pino-pretty',
+        options: { colorize: true, translateTime: 'SYS:standard', destination }
+      }
+    })
+  : pino({ level }, pino.destination({ dest: destination, sync: true }));
 
 export type Logger = typeof logger;
 
