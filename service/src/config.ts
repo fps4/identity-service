@@ -121,17 +121,12 @@ export const CONFIG = {
     staticOrigins: parseOrigins(process.env.CORS_ORIGINS),
     allowedMethods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS']
   },
-  // Outbound fleet-monitoring to maestro (managed-product platform: heartbeat US-0070 + telemetry
-  // US-0076). Reports under the "identity-service" product / ds1 deployment that maestro's register already
-  // declares (runtime@identity-service.fps4.nl). Stays fully INERT when apiUrl is empty (local dev / tests /
-  // CI build) — nothing is sent. The runtime JWT is self-minted via this service's own client_credentials.
-  maestro: {
-    apiUrl: process.env.MAESTRO_API_URL ?? '',
-    productId: process.env.MAESTRO_PRODUCT_ID ?? 'identity-service',
-    deploymentId: process.env.MAESTRO_DEPLOYMENT_ID ?? 'ds1',
-    runtimeClientId: process.env.MAESTRO_RUNTIME_CLIENT_ID ?? 'identity-service-ds1-runtime',
-    runtimeClientSecret: process.env.MAESTRO_RUNTIME_CLIENT_SECRET ?? '',
-    emitIntervalMs: toNumber(process.env.MAESTRO_EMIT_INTERVAL_MS, 60_000)
+  // Self-hosted runtime observability. The golden-signal recorder times requests into this rolling
+  // window and /admin/v1/stats reports the rollup. Nothing leaves the process: this replaced the
+  // outbound maestro heartbeat/telemetry channel, which made an upstream service depend on a
+  // downstream consumer.
+  observability: {
+    metricsWindowMs: toNumber(process.env.METRICS_WINDOW_MS, 60_000)
   }
 } as const;
 

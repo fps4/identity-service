@@ -1,6 +1,6 @@
 import express from 'express';
 import type { Request, Response } from 'express';
-import { adminService } from '../container.js';
+import { adminService, metricsRecorder } from '../container.js';
 import { requireAdmin, ADMIN_SCOPES } from '../core/admin-auth.js';
 import { AdminServiceError } from '../services/admin.js';
 import { getMasterConnection } from '../utils/db.js';
@@ -291,9 +291,11 @@ router.get('/keys', requireAdmin(ADMIN_SCOPES.keys), async (_req, res) => {
 
 // --- Statistics + audit log (console dashboards) ---
 
+// Counts from the database, plus the in-process golden signals for the current rolling window
+// (`runtime`) — liveness and request/error/latency rates this instance observed for itself.
 router.get('/stats', requireAdmin(ADMIN_SCOPES.stats), async (_req, res) => {
   try {
-    res.json(await adminService.getStats());
+    res.json({ ...(await adminService.getStats()), runtime: metricsRecorder.snapshot() });
   } catch (e) { handleError(res, e); }
 });
 

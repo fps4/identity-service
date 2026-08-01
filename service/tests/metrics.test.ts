@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MetricsRecorder } from '../src/maestro/metrics.js';
+import { MetricsRecorder } from '../src/observability/metrics.js';
 
 // A controllable clock so window pruning + rates are deterministic.
 function clock(start = 1_000_000) {
@@ -12,11 +12,11 @@ describe('MetricsRecorder', () => {
     const r = new MetricsRecorder({ windowMs: 60_000, now: () => 1, uptimeSeconds: () => 42 });
     const snap = r.snapshot();
     expect(snap.status).toBe('ok');
-    expect(snap.telemetry.request_rate).toBe(0);
-    expect(snap.telemetry.error_rate).toBe(0);
-    expect(snap.telemetry.errors).toBeUndefined();
-    expect(snap.telemetry.p95_latency_ms).toBeUndefined();
-    expect(snap.heartbeat.uptime_seconds).toBe(42);
+    expect(snap.signals.requestRate).toBe(0);
+    expect(snap.signals.errorRate).toBe(0);
+    expect(snap.signals.errors).toBeUndefined();
+    expect(snap.signals.p95LatencyMs).toBeUndefined();
+    expect(snap.signals.uptimeSeconds).toBe(42);
   });
 
   it('rolls up rate, latency percentiles, and an enum-keyed error map', () => {
@@ -28,13 +28,13 @@ describe('MetricsRecorder', () => {
     durations.forEach((d, i) => r.record(d, statuses[i]));
 
     const snap = r.snapshot();
-    expect(snap.telemetry.request_rate).toBe(0.1667); // count / windowSeconds, rounded to 4dp
-    expect(snap.telemetry.p50_latency_ms).toBe(50); // nearest-rank: ceil(.5*10)=5 -> idx4
-    expect(snap.telemetry.p95_latency_ms).toBe(100); // ceil(.95*10)=10 -> idx9
-    expect(snap.telemetry.p99_latency_ms).toBe(100);
-    expect(snap.telemetry.error_rate).toBe(0.2); // 2 of 10 are 5xx
-    expect(snap.telemetry.errors).toEqual({ '4xx': 1, '5xx': 2 });
-    expect(snap.telemetry.window_seconds).toBe(60);
+    expect(snap.signals.requestRate).toBe(0.1667); // count / windowSeconds, rounded to 4dp
+    expect(snap.signals.p50LatencyMs).toBe(50); // nearest-rank: ceil(.5*10)=5 -> idx4
+    expect(snap.signals.p95LatencyMs).toBe(100); // ceil(.95*10)=10 -> idx9
+    expect(snap.signals.p99LatencyMs).toBe(100);
+    expect(snap.signals.errorRate).toBe(0.2); // 2 of 10 are 5xx
+    expect(snap.signals.errors).toEqual({ '4xx': 1, '5xx': 2 });
+    expect(snap.signals.windowSeconds).toBe(60);
   });
 
   it('drops samples older than the window', () => {
@@ -45,7 +45,7 @@ describe('MetricsRecorder', () => {
     c.advance(11_000); // both now outside the 10s window
     r.record(5, 200); // one fresh sample
     const snap = r.snapshot();
-    expect(snap.telemetry.request_rate).toBe(1 / 10); // only the fresh sample counts
+    expect(snap.signals.requestRate).toBe(1 / 10); // only the fresh sample counts
   });
 
   it('self-reports down when the dependency is unhealthy', () => {
