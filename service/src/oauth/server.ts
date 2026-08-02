@@ -8,6 +8,8 @@ import type {
   ModelsBucket,
   StartAuthorizationInput,
   StartAuthorizationResult,
+  LocalLoginInput,
+  LocalLoginResult,
   HandleCallbackInput,
   HandleCallbackResult,
   AuthorizationCodeInput,
@@ -48,15 +50,45 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   const nowFn = deps.now ?? (() => new Date());
   // Built lazily so client-credentials-only deployments (no Google config) never construct it.
   let googleIdpInstance: GoogleIdp | undefined = deps.googleIdp;
+  const isGoogleConfigured = (): boolean =>
+    Boolean(googleIdpInstance) ||
+    Boolean(CONFIG.google.clientId && CONFIG.google.clientSecret && CONFIG.google.redirectUri);
   const getGoogleIdp = (): GoogleIdp => {
     if (!googleIdpInstance) {
-      if (!CONFIG.google.clientId || !CONFIG.google.clientSecret || !CONFIG.google.redirectUri) {
+      if (!isGoogleConfigured()) {
         throw new InvalidRequestError('Google login is not configured on this service');
       }
       googleIdpInstance = createGoogleIdp(CONFIG.google);
     }
     return googleIdpInstance;
   };
+
+  /**
+   * The `aud` of a user token. An RFC 8707 resource indicator wins when the caller names one
+   * (audience-binding, ADR-0009 Phase 2) — that is how an MCP client gets a token its resource server
+   * will accept, since the MCP resource is not the application's own audience. Otherwise the
+   * credential override / application default applies (ADR-0020). Read from CONFIG at call time so a
+   * deployment's resource URL is not frozen at module load.
+   */
+  function resolveUserAudience(
+    client: { audience?: string },
+    application: { audience?: string } | null,
+    resource?: string
+  ): string {
+    if (resource) {
+      const allowedResources = [CONFIG.mcp.resourceUrl];
+      if (!allowedResources.includes(resource)) {
+        throw new InvalidTargetError(`Unknown resource: ${resource}`);
+      }
+      return resource;
+    }
+    // A user token is only meaningful if it can be audience-bound to a consumer (RQ-0001 AC4).
+    const audience = effectiveAudience(client, application);
+    if (!audience) {
+      throw new UnauthorizedClientError('Application has no audience configured for user tokens');
+    }
+    return audience;
+  }
 
   async function issueClientCredentialsToken(input: ClientCredentialsInput): Promise<TokenResponse> {
     if (!input.clientId || !input.clientSecret) {
@@ -206,7 +238,15 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidRequestError('redirect_uri is required');
     }
 
-    const idp = getGoogleIdp();
+    // Which provider authenticates this person. Google when the deployment configures it, otherwise
+    // this service's own local-credential IdP (RQ-0002) — so an install with no external IdP is still
+    // able to log a human in, rather than failing the browser leg outright. A deployment with neither
+    // genuinely cannot serve an interactive login, and says so.
+    const idpKind: 'google' | 'local' = isGoogleConfigured() ? 'google' : 'local';
+    if (idpKind === 'local' && !CONFIG.auth.localIdpEnabled) {
+      throw new InvalidRequestError('No interactive login is configured on this service');
+    }
+
     const connection = await deps.getMasterConnection();
     const models = deps.makeModels(connection);
     const { client } = await loadFlowClient(models, input.clientId, GRANT_AUTHORIZATION_CODE);
@@ -215,12 +255,10 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!client.redirectUris?.includes(input.redirectUri)) {
       throw new InvalidRequestError('redirect_uri is not registered for this client');
     }
-    // A user token is only meaningful if it can be audience-bound to a consumer (RQ-0001 AC4). The
-    // audience is inherited from the application (ADR-0020).
+    // Resolve the audience now, so a request naming an unknown resource — or a client whose
+    // application has no audience — fails before a login prompt is ever shown.
     const application = await requireApplication(models, client);
-    if (!effectiveAudience(client, application)) {
-      throw new UnauthorizedClientError('Application has no audience configured for user tokens');
-    }
+    resolveUserAudience(client, application, input.resource);
 
     const requestedScope = input.scope ?? [];
     const allowedScopes = new Set(client.scopes ?? []);
@@ -229,6 +267,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const issuedAt = nowFn();
     const googleState = randomToken();
     const nonce = randomToken();
+    const loginToken = idpKind === 'local' ? randomToken() : undefined;
     const expiresAt = new Date(issuedAt.getTime() + CONFIG.oauth.authorizationTtlSec * 1000);
 
     await models.OAuthAuthorization.create({
@@ -239,15 +278,66 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       codeChallenge: input.codeChallenge,
       codeChallengeMethod: 'S256',
       scope,
+      idp: idpKind,
+      resource: input.resource,
+      loginToken,
       googleState,
       nonce,
       status: 'pending',
       expiresAt
     });
 
-    const redirectTo = idp.buildAuthorizationUrl({ state: googleState, nonce, scope: GOOGLE_SCOPE });
-    deps.logger?.info?.({ clientId: client._id }, 'started user authorization');
-    return { redirectTo };
+    deps.logger?.info?.({ clientId: client._id, idp: idpKind }, 'started user authorization');
+    if (idpKind === 'local') {
+      return { mode: 'login', loginToken: loginToken as string };
+    }
+    return {
+      mode: 'redirect',
+      redirectTo: getGoogleIdp().buildAuthorizationUrl({ state: googleState, nonce, scope: GOOGLE_SCOPE })
+    };
+  }
+
+  /**
+   * Complete an interactive login against the local-credential IdP (RQ-0002) — the first-party
+   * equivalent of the Google callback leg. `loginToken` is the unguessable, single-use handle minted
+   * with the form, so the POST is bound to the authorization request that produced it; no cookie or
+   * ambient session is involved, which is also why there is no separate CSRF token to carry (a forged
+   * cross-site POST would still have to supply the person's password).
+   */
+  async function completeLocalLogin(input: LocalLoginInput): Promise<LocalLoginResult> {
+    if (!input.loginToken) {
+      throw new InvalidRequestError('login_token is required');
+    }
+    const connection = await deps.getMasterConnection();
+    const models = deps.makeModels(connection);
+
+    const record = await models.OAuthAuthorization.findOne({ loginToken: input.loginToken, status: 'pending' }).exec();
+    if (!record || record.expiresAt.getTime() < nowFn().getTime()) {
+      throw new AccessDeniedError('Login session is invalid or expired');
+    }
+    if (record.idp !== 'local') {
+      throw new AccessDeniedError('This authorization does not use local login');
+    }
+    // Re-check at submit: an operator may have disabled the local IdP mid-flight.
+    if (!CONFIG.auth.localIdpEnabled) {
+      throw new AccessDeniedError('Local login is disabled on this service');
+    }
+
+    const user = await authenticateLocalUser(models, input.email, input.password);
+
+    record.status = 'authenticated';
+    record.code = randomToken();
+    record.loginToken = undefined; // single-use: the form handle dies with the login it authorized
+    record.email = user.email;
+    record.sub = user._id; // a local login's subject IS the user record id
+    record.emailVerified = user.emailVerified === true;
+    await record.save();
+
+    const sep = record.consumerRedirectUri.includes('?') ? '&' : '?';
+    const params = new URLSearchParams({ code: record.code });
+    if (record.consumerState) params.set('state', record.consumerState);
+    deps.logger?.info?.({ clientId: record.clientId, userId: user._id }, 'local authentication succeeded');
+    return { redirectTo: `${record.consumerRedirectUri}${sep}${params.toString()}` };
   }
 
   async function handleGoogleCallback(input: HandleCallbackInput): Promise<HandleCallbackResult> {
@@ -335,22 +425,32 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     const { client } = await loadFlowClient(models, record.clientId, GRANT_AUTHORIZATION_CODE);
 
+    // RFC 8707: a resource repeated at the exchange must be the one the authorization named. Silently
+    // honouring a different one would let the exchange re-target a token the person never approved.
+    if (input.resource && input.resource !== (record.resource ?? undefined)) {
+      throw new InvalidTargetError('resource does not match the authorization request');
+    }
+
     // Single-use: consume the code before issuing, so a replay cannot mint a second token.
     record.status = 'consumed';
     record.code = undefined;
     await record.save();
 
-    // JIT-provision (or link) the person behind this federated identity and apply the same status +
-    // roles rules the password grant enforces (RQ-0011 US-2/US-3/US-4). `provisionFederatedUser`
-    // throws if the account is disabled/locked, an unverified email would collide, or the deployment's
-    // registration policy forbids creating a new user (RQ-0013).
-    const user = await provisionFederatedUser(models, {
-      provider: 'google',
-      subject: record.sub,
-      email: record.email,
-      emailVerified: record.emailVerified === true,
-      registration: CONFIG.auth.registrationMode
-    });
+    // Resolve the person behind the login. A local login (RQ-0002) already authenticated a real user
+    // record, so there is nothing to provision — only to re-check, since status/lockout may have
+    // changed between the login and this exchange. A federated login JIT-provisions or links the
+    // Google identity and applies the same status + roles rules (RQ-0011 US-2/US-3/US-4):
+    // `provisionFederatedUser` throws if the account is disabled/locked, an unverified email would
+    // collide, or the deployment's registration policy forbids creating a new user (RQ-0013).
+    const user = record.idp === 'local'
+      ? await requireLocalUser(models, record.sub)
+      : await provisionFederatedUser(models, {
+        provider: 'google',
+        subject: record.sub,
+        email: record.email,
+        emailVerified: record.emailVerified === true,
+        registration: CONFIG.auth.registrationMode
+      });
 
     // Entitlement gate (ADR-0019/0020): even a freshly JIT-provisioned federated user needs an active
     // assignment for this credential's application (created by an invite or an operator) before a token.
@@ -362,9 +462,9 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     return issueUserTokens(models, {
       client,
-      audience: effectiveAudience(client, application),
-      // Token claims are unchanged from RQ-0001: the email + stable Google `sub` Google asserted. The
-      // user record is a resolution layer behind the token, never a change to it (ADR-0012).
+      audience: resolveUserAudience(client, application, record.resource),
+      // Token claims are unchanged from RQ-0001: the email + stable `sub` the IdP asserted. The user
+      // record is a resolution layer behind the token, never a change to it (ADR-0012).
       email: record.email,
       sub: record.sub,
       scope: record.scope ?? [],
@@ -372,31 +472,41 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     });
   }
 
-  async function issuePasswordToken(input: PasswordGrantInput): Promise<UserTokenResponse> {
-    if (!input.username || !input.password) {
-      throw new InvalidRequestError('username and password are required');
+  /** Re-read the person behind a completed local login. Unlike the federated leg there is nothing to
+   *  provision — but status/lockout is re-enforced, so an account disabled between login and exchange
+   *  still gets no token (RQ-0011 US-3). */
+  async function requireLocalUser(models: ModelsBucket, sub: string): Promise<UserDocument> {
+    const user = await models.User.findOne({ _id: sub }).exec();
+    if (!user) {
+      throw new InvalidGrantError('User no longer exists');
     }
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-    const { client } = await loadFlowClient(models, input.clientId, GRANT_PASSWORD);
+    assertUserActive(user);
+    return user;
+  }
 
-    const email = input.username.trim().toLowerCase();
+  /**
+   * Verify an email + password against the local-credential IdP (RQ-0002), enforcing the temporal
+   * brute-force lockout and clearing the counters on success. Shared by the non-interactive `password`
+   * grant and the interactive login leg, so both get identical lockout behaviour.
+   *
+   * Failure is uniform — an unknown email, a federated-only account (no `passwordHash`, RQ-0011), and a
+   * wrong password are indistinguishable to the caller, so neither path enumerates users.
+   */
+  async function authenticateLocalUser(models: ModelsBucket, username: string, password: string): Promise<UserDocument> {
+    const email = username.trim().toLowerCase();
     const user = await models.User.findOne({ email }).exec();
     const now = nowFn();
 
-    // Uniform failure for unknown email vs wrong password — no user enumeration. A federated-only user
-    // (no passwordHash, RQ-0011) cannot password-login and fails identically to a wrong password.
     const genericDenied = () => new InvalidGrantError('Invalid credentials');
 
     if (!user || user.status === 'disabled' || !user.passwordHash) {
       throw genericDenied();
     }
-    // Temporal brute-force lockout.
     if (user.lockedUntil && user.lockedUntil.getTime() > now.getTime()) {
       throw new InvalidGrantError('Account is temporarily locked');
     }
 
-    if (!verifySecret(input.password, user.passwordHash)) {
+    if (!verifySecret(password, user.passwordHash)) {
       user.failedAttempts = (user.failedAttempts ?? 0) + 1;
       if (user.failedAttempts >= CONFIG.auth.password.maxFailedAttempts) {
         user.lockedUntil = new Date(now.getTime() + CONFIG.auth.password.lockoutMinutes * 60 * 1000);
@@ -413,6 +523,19 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       user.lockedUntil = null;
       await user.save();
     }
+
+    return user;
+  }
+
+  async function issuePasswordToken(input: PasswordGrantInput): Promise<UserTokenResponse> {
+    if (!input.username || !input.password) {
+      throw new InvalidRequestError('username and password are required');
+    }
+    const connection = await deps.getMasterConnection();
+    const models = deps.makeModels(connection);
+    const { client } = await loadFlowClient(models, input.clientId, GRANT_PASSWORD);
+
+    const user = await authenticateLocalUser(models, input.username, input.password);
 
     // Entitlement gate (ADR-0019/0020): the user must hold an active assignment for this credential's
     // application; the token's roles are the app-scoped roles from that assignment.
@@ -741,6 +864,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   return {
     issueClientCredentialsToken,
     startAuthorization,
+    completeLocalLogin,
     handleGoogleCallback,
     issueAuthorizationCodeToken,
     issuePasswordToken,

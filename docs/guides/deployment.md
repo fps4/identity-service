@@ -25,14 +25,19 @@ default pattern is a **manual deploy over SSH to a Docker host**.
 - An **external Docker network** the service attaches to, if you front it with a shared reverse proxy
   (create it once: `docker network create <network-name>`; reference it from the compose overlay).
 - A **public HTTPS endpoint** (reverse proxy, ingress, or tunnel) terminating TLS in front of the
-  service. HTTPS is required both for Google's OAuth redirect URI and for any consumer's verifier
-  configuration (issuer + JWKS URL). The service itself listens on `PORT` (default `7305`).
+  service. HTTPS is required for any consumer's verifier configuration (issuer + JWKS URL), and for
+  Google's OAuth redirect URI when the deployment federates. The service itself listens on `PORT`
+  (default `7305`).
 
 ## Secrets
 
 Secrets live in a **gitignored `docker/.env`** and are **never committed**:
 
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — the Google OIDC app (service-level, one per deployment).
+  **Optional.** With no Google app configured, the browser login leg at `/oauth2/authorize` is served by
+  this service's own local-credential IdP (RQ-0002) instead of redirecting to Google; setting these
+  switches the same endpoint over to federation. A deployment needs one or the other — no Google app
+  *and* `AUTH_LOCAL_IDP_ENABLED=false` means no interactive login at all, and `/oauth2/authorize` says so.
 - `OAUTH_KEY_PASSPHRASE` — optional AES-256-GCM encryption of signing keys at rest.
 - `AUTH_JWT_ISSUER` — the public HTTPS issuer URL; becomes the token `iss`.
 - `MONGO_URI` and the rest of the knobs documented in `service/.env.example`.
@@ -289,11 +294,31 @@ isolated from the token-issuing `auth.fps4.nl`) — verified through the same ad
      --header "Authorization: Bearer $TOKEN"
    ```
 
-2. **Discovery** (for MCP clients that run the OAuth flow themselves): the endpoint answers an
-   unauthenticated request with `401 WWW-Authenticate: Bearer resource_metadata=…`, and the app serves
-   `/.well-known/oauth-protected-resource` (→ the authorization server) and
-   `/.well-known/oauth-authorization-server` (token endpoint, JWKS). identity-service is the authorization
-   server for its own MCP resource.
+   A machine token is 15 minutes long-lived, so a header pasted this way stops working within the hour.
+   It is the right shape for a script; for an interactive client, use the browser flow below.
+
+2. **Discovery + browser login** (for MCP clients that run the OAuth flow themselves): the endpoint
+   answers an unauthenticated request with `401 WWW-Authenticate: Bearer resource_metadata=…`, and the
+   app serves `/.well-known/oauth-protected-resource` (→ the authorization server) and
+   `/.well-known/oauth-authorization-server` (authorization + token endpoints, JWKS). identity-service
+   is the authorization server for its own MCP resource, and it logs the operator in **itself** — ds1
+   configures no Google app, so `/oauth2/authorize` serves the first-party login form (RQ-0002) and the
+   resulting user token is audience-bound to the MCP resource via the client's `resource` parameter.
+
+   The client must be **pre-registered** with the callback URI it listens on — MCP clients register
+   anonymously, which gated DCR deliberately refuses (ADR-0009 §7), and a self-registered client would
+   hold no `admin:*` scope anyway:
+
+   ```bash
+   # one-time, via the admin plane: a public authorization_code client for the MCP client
+   #   redirectUris: ["http://localhost:<callback-port>/callback"], grantTypes: ["authorization_code"]
+   claude mcp add --scope user --transport http identity-service-admin https://auth-mcp.fps4.nl/mcp \
+     --client-id <registered-client-id> --callback-port <callback-port>
+   ```
+
+   The operator signing in needs an **active assignment** to that client's application carrying a
+   `platform_admin` role (`ADMIN_OPERATOR_ROLES`) — that is what `admin-auth` maps to the `admin`
+   superscope. Without it the login succeeds and the MCP call is still refused, by design.
 
 Authentication is any admin-plane principal (a machine token with an admin scope, or a `platform_admin`
 operator token — ADR-0010) whose `aud` includes the MCP resource; per-tool authorization is enforced

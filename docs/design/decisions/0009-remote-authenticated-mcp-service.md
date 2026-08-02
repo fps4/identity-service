@@ -2,7 +2,7 @@
 title: "0009: A remotely-reachable, OAuth-authenticated MCP service — Streamable HTTP on a dedicated resource origin (auth-mcp.fps4.nl), sender-constrained tokens, with identity-service as its own authorization server"
 summary: "Expose the management MCP server over the network as an OAuth 2.1 protected resource at https://auth-mcp.fps4.nl (a dedicated origin, distinct from the authorization server auth.fps4.nl) using the MCP Streamable HTTP transport. identity-service is the authorization server for its own MCP resource. Tokens are audience-bound and sender-constrained (DPoP/mTLS), admin scopes are role-derived and step-up-gated, clients self-register via gated dynamic registration, and every call flows through the existing admin-auth + audit path — so any MCP client connects with the standard remote-MCP flow instead of SSH+stdio."
 status: accepted
-last_updated: 2026-08-01
+last_updated: 2026-08-02
 date: 2026-06-24
 related:
   - ./0001-local-credential-idp.md
@@ -387,7 +387,7 @@ management plane's `create_client` both need the client to carry `claims` (e.g.
 `role: product_runtime`); the admin `createClient` is extended to accept/persist `claims` alongside this
 work so product-runtime clients can be created wholly through the management plane.
 
-### Delivery status (updated 2026-07-05)
+### Delivery status (updated 2026-08-02)
 
 | Increment | Status | Ref |
 | --- | --- | --- |
@@ -395,8 +395,11 @@ work so product-runtime clients can be created wholly through the management pla
 | Phase 0 — transport-agnostic core + handler tests | **Done** | #66 |
 | Phase 1 — Streamable HTTP transport, OAuth-protected, discovery metadata | **Done** (live-verified) | #67 |
 | Phase 2 — dedicated `auth-mcp.fps4.nl` origin + config threading | **Done** (live-verified) | #68, #69 |
-| Phase 2 — audience-binding (RFC 8707) | **Done** (live-proven: bound→200, unbound→401) | #68 |
+| Phase 2 — audience-binding (RFC 8707) for **machine** tokens | **Done** (live-proven: bound→200, unbound→401) | #68 |
 | Phase 2 — Origin / DNS-rebinding allow-list on `/mcp` | **Done** | #70 |
+| **`authorization_endpoint` published in AS metadata** (§3) | **Done** | #86 |
+| **First-party interactive login** — browser leg without a Google app | **Done** | #86 |
+| **Audience-binding for *user* tokens** (`resource` on authorize + exchange) | **Done** | #86 |
 | Phase 2 — **DPoP / mTLS sender-constraint** | **Backlog** | — |
 | Phase 2 — **step-up assurance** (acr/amr on the riskiest tools) | **Backlog** | — |
 | Phase 2 — **gated dynamic client registration** (RFC 7591) | **Backlog** | — |
@@ -405,5 +408,29 @@ work so product-runtime clients can be created wholly through the management pla
 
 The remote, no-SSH transport is in production and hardened for the machine/agent case (audience-bound
 bearer + `Origin` allow-list + per-tool scope + audit, on an isolated origin). The backlog items above are
-refinements that chiefly benefit interactive/browser clients or add sender-constraint; they are deferred,
-not blocking, and `stdio`-over-SSH remains the break-glass path throughout.
+refinements that add sender-constraint or self-service onboarding; they are deferred, not blocking, and
+`stdio`-over-SSH remains the break-glass path throughout.
+
+**The interactive path closed in #86.** Three things stood between a standard MCP client and this
+resource, none of them visible from outside — the endpoint answers discovery correctly and a machine
+token gets a `200`, so the failure looked like a client problem:
+
+1. **AS metadata advertised `authorization_code` but published no `authorization_endpoint`**, so a
+   spec-following client had nowhere to send the user. §3 above always specified one; the implementation
+   had simply drifted from it.
+2. **`startAuthorization` required a Google app unconditionally.** ds1 sets no `GOOGLE_*`, so the browser
+   leg returned `invalid_request` ("Google login is not configured"). The service has had its own
+   credential IdP since RQ-0002, but only the non-interactive `password` grant could reach it. The
+   authorize endpoint now serves a first-party login form when no upstream IdP is configured; setting the
+   Google env switches the same endpoint back to federation, so neither choice is a dead end. This also
+   matches §10's direction — an IdP that cannot log its own operator in without a consumer relationship
+   has the layering backwards.
+3. **User tokens could not be audience-bound.** `resource` was honoured only on `client_credentials`;
+   the authorization-code path ignored it and inherited `aud` from the *application* (ADR-0020), which is
+   never the MCP resource — so `MCP_REQUIRE_AUDIENCE` rejected every operator token. The indicator is now
+   read at authorize (validated before any login prompt, and pinned to the record) and re-checked at the
+   exchange, where a mismatch is `invalid_target` rather than a quiet re-target.
+
+Gated DCR (§7) remains backlog and remains *not* the thing that connects a general-purpose MCP client:
+those register anonymously, which §7 refuses, and a self-registered client holds no `admin:*` scope. The
+intended path is pre-registration plus an explicit operator assignment carrying `platform_admin`.

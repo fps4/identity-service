@@ -41,6 +41,16 @@ export const CONFIG = {
       lockoutMinutes: toNumber(process.env.AUTH_PASSWORD_LOCKOUT_MINUTES, 15),
       // Deployment-wide self-service registration rate limit (abuse guard on the public endpoint).
       registrationsPerMinute: toNumber(process.env.AUTH_REGISTRATIONS_PER_MINUTE, 20)
+    },
+    // Abuse guards on the unauthenticated browser-login endpoints. `perIp` is the first line but is
+    // spoofable via `x-forwarded-for`; `global` is the ceiling that is not. Verifying a password costs a
+    // synchronous scrypt on the event loop, and starting an authorization writes a record — so both
+    // endpoints are throttled, not just the one that checks credentials.
+    loginRateLimit: {
+      authorizePerIpPerMinute: toNumber(process.env.AUTH_AUTHORIZE_REQUESTS_PER_MINUTE, 60),
+      authorizeGlobalPerMinute: toNumber(process.env.AUTH_AUTHORIZE_REQUESTS_GLOBAL_PER_MINUTE, 600),
+      loginPerIpPerMinute: toNumber(process.env.AUTH_LOGIN_ATTEMPTS_PER_MINUTE, 20),
+      loginGlobalPerMinute: toNumber(process.env.AUTH_LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE, 200)
     }
   },
   oauth: {
