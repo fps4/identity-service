@@ -68,6 +68,34 @@ services:
       MCP_HTTP_ENABLED: ${MCP_HTTP_ENABLED:-true}
       MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-}
       MCP_REQUIRE_AUDIENCE: ${MCP_REQUIRE_AUDIENCE:-true}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+      # Browser origins allowed to call the token/registration endpoints. NOT optional in practice: the
+      # app treats an EMPTY list as permissive bootstrap, so failing to pass this does not tighten the
+      # policy, it removes it — every origin gets reflected back, with credentials enabled.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Deployment realm config (ADR-0018). Both have permissive code defaults (`open` / enabled), so an
+      # unset value silently opts INTO self-registration rather than out of it.
+      AUTH_REGISTRATION_MODE: ${AUTH_REGISTRATION_MODE:-open}
+      AUTH_LOCAL_IDP_ENABLED: ${AUTH_LOCAL_IDP_ENABLED:-true}
+      AUTH_ALLOWED_ROLES: ${AUTH_ALLOWED_ROLES:-}
+      # Local-credential IdP (RQ-0002): password policy + brute-force lockout.
+      AUTH_PASSWORD_MIN_LENGTH: ${AUTH_PASSWORD_MIN_LENGTH:-10}
+      AUTH_PASSWORD_MAX_ATTEMPTS: ${AUTH_PASSWORD_MAX_ATTEMPTS:-5}
+      AUTH_PASSWORD_LOCKOUT_MINUTES: ${AUTH_PASSWORD_LOCKOUT_MINUTES:-15}
+      AUTH_REGISTRATIONS_PER_MINUTE: ${AUTH_REGISTRATIONS_PER_MINUTE:-20}
+      # Abuse guards on the unauthenticated browser-login endpoints.
+      AUTH_AUTHORIZE_REQUESTS_PER_MINUTE: ${AUTH_AUTHORIZE_REQUESTS_PER_MINUTE:-60}
+      AUTH_AUTHORIZE_REQUESTS_GLOBAL_PER_MINUTE: ${AUTH_AUTHORIZE_REQUESTS_GLOBAL_PER_MINUTE:-600}
+      AUTH_LOGIN_ATTEMPTS_PER_MINUTE: ${AUTH_LOGIN_ATTEMPTS_PER_MINUTE:-20}
+      AUTH_LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE: ${AUTH_LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE:-200}
+      # Upstream Google OIDC app (RQ-0001). The deploy workflow injects these as Actions secrets; without
+      # them here they never reach the app, and /oauth2/authorize serves the first-party login instead.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      OAUTH_AUTHORIZATION_TTL_SEC: ${OAUTH_AUTHORIZATION_TTL_SEC:-600}
+      OAUTH_CLIENT_CREDENTIALS_SCOPE: ${OAUTH_CLIENT_CREDENTIALS_SCOPE:-}
+      ADMIN_API_ENABLED: ${ADMIN_API_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_PRETTY: ${LOG_PRETTY:-false}
     ports:
