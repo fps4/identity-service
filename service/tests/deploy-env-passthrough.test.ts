@@ -16,11 +16,22 @@
  * without wiring it through — which is the only reason the class of bug is hard to spot by review.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 
 const repoRoot = resolve(__dirname, '../..');
 const read = (p: string) => readFileSync(resolve(repoRoot, p), 'utf-8');
+
+/**
+ * These read files that live OUTSIDE `service/`, and the production image is built with `service/` as
+ * its whole context (`docker/compose.yaml`) while running `npm test` in the Dockerfile. So inside that
+ * build the compose file and the deployment config genuinely do not exist, and the checks are not just
+ * unable to run — they are meaningless there, since nothing in an image can attest to how the compose
+ * that starts it is wired. Skipped in that environment, and enforced where it counts: the DoD job, which
+ * runs against a full repo checkout.
+ */
+const hasRepoTree = existsSync(resolve(repoRoot, 'docker/compose.yaml'))
+  && existsSync(resolve(repoRoot, 'config/ds1/.env.base'));
 
 /** The variable names compose interpolates, i.e. everything it can actually forward. */
 function interpolatedByCompose(): Set<string> {
@@ -44,7 +55,7 @@ function keysOf(envFile: string): string[] {
     .filter((k) => /^[A-Z0-9_]+$/.test(k));
 }
 
-describe('deployment config actually reaches the container', () => {
+describe.skipIf(!hasRepoTree)('deployment config actually reaches the container', () => {
   it('forwards every variable set in config/ds1/.env.base', () => {
     const passed = interpolatedByCompose();
     const dropped = keysOf('config/ds1/.env.base').filter((k) => !passed.has(k));
