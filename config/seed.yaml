@@ -76,23 +76,14 @@ applications:
           - https://coach.fps4.nl/auth/callback
         isConfidential: false
 
-  # --- identity-service's OWN application: its machine credentials. The runtime reports fleet telemetry to
-  # maestro (so its token `aud` OVERRIDES to maestro-workspace); the admin credential drives the management
-  # plane. Both are identity-service's own secrets, so they STAY seeded (other products' runtimes
-  # self-register via ADR-0017). No user logs into this application, so it needs no role catalogue. ---
+  # --- identity-service's OWN application: its machine credentials. The admin credential drives the
+  # management plane. It is identity-service's own secret, so it STAYS seeded (other products' runtimes
+  # self-register via ADR-0017). No user logs into this application, so it needs no role catalogue.
+  # The `identity-service-ds1-runtime` credential that used to sit here minted the token for the outbound
+  # maestro telemetry channel; both are gone — this service no longer reports to a downstream consumer. ---
   - id: identity-service
     name: identity-service
     credentials:
-      - id: identity-service-ds1-runtime
-        name: identity-service@ds1 runtime
-        grantTypes: [client_credentials]
-        isConfidential: true
-        secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}
-        audience: maestro-workspace      # OVERRIDE: this runtime's token is aimed at maestro (ADR-0020)
-        subject: runtime@identity-service.fps4.nl
-        claims:
-          role: product_runtime
-          email: runtime@identity-service.fps4.nl
       - id: identity-admin-mcp
         name: identity-service admin (MCP + break-glass)
         grantTypes: [client_credentials]

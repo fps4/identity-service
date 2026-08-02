@@ -8,9 +8,8 @@
 FROM node:current-alpine
 WORKDIR /app
 
-# Install deps first for layer caching. vendor/ holds the maestro SDK tarball (file: dependency).
+# Install deps first for layer caching.
 COPY service/package*.json ./
-COPY service/vendor/ ./vendor/
 RUN npm install
 
 # Source (scripts/, src/) + the seed definitions (copied to /config so SEED_FILE=/config/<file> resolves).

@@ -38,8 +38,8 @@ export async function getMasterConnection(): Promise<Connection> {
 
 /**
  * The master connection's mongoose readyState (0=disconnected, 1=connected, 2=connecting,
- * 3=disconnecting), or 0 if we have not connected yet. Used by the maestro telemetry snapshot to
- * derive a liveness status without reaching into the private connection handle.
+ * 3=disconnecting), or 0 if we have not connected yet. Used by the golden-signal snapshot to derive
+ * a liveness status without reaching into the private connection handle.
  */
 export function masterConnectionReadyState(): number {
   return masterConnection?.readyState ?? 0;

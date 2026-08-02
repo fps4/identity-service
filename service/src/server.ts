@@ -2,10 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from 'http';
 import { CONFIG } from './config.js';
-import { getMasterConnection, disconnect, masterConnectionReadyState } from './utils/db.js';
+import { getMasterConnection, disconnect } from './utils/db.js';
 import logger from './utils/logger.js';
-import { MetricsRecorder } from './maestro/metrics.js';
-import { startMaestroTelemetry } from './maestro/telemetry.js';
+import { metricsRecorder } from './container.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
@@ -34,13 +33,9 @@ async function bootstrap() {
 
   app.use(cors(buildCorsOptions({ allowedOrigins, isProd, methods: Array.from(CONFIG.cors.allowedMethods) })));
 
-  // Time every request into a rolling window for the maestro golden-signal rollup (inert by itself —
-  // it only records; the telemetry loop below reads it). Window = the emit cadence.
-  const metrics = new MetricsRecorder({
-    windowMs: CONFIG.maestro.emitIntervalMs,
-    dependencyHealthy: () => masterConnectionReadyState() === 1
-  });
-  app.use(metrics.middleware);
+  // Time every request into the shared rolling window. Recording only — /admin/v1/stats reads the
+  // rollup on demand; nothing is pushed anywhere.
+  app.use(metricsRecorder.middleware);
 
   await getMasterConnection();
 
@@ -85,12 +80,8 @@ async function bootstrap() {
     logger.info({ port: CONFIG.port }, 'identity-service is running');
   });
 
-  // Start reporting liveness + golden signals to maestro (no-op unless MAESTRO_API_URL is set).
-  const telemetry = startMaestroTelemetry(metrics);
-
   const shutdown = (signal: NodeJS.Signals) => {
     logger.info({ signal }, 'shutting down');
-    telemetry.stop();
     server.close(async (err) => {
       if (err) {
         logger.error({ err }, 'error while closing server');
