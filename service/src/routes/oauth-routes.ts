@@ -1,6 +1,8 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import { oauthServer } from '../container.js';
+import { CONFIG } from '../config.js';
+import { createRateLimiter } from '../utils/rate-limit.js';
 import {
   OAuthError,
   InvalidRequestError,
@@ -11,6 +13,18 @@ import {
 const router = express.Router();
 
 const SUPPORTED_GRANTS = new Set(['client_credentials', 'authorization_code', 'refresh_token', 'password']);
+
+// Abuse guards on the two unauthenticated browser-login endpoints (see utils/rate-limit.ts). `authorize`
+// writes an authorization record per request; `login` runs a synchronous scrypt, which blocks the event
+// loop, so it gets the tighter budget.
+const authorizeLimiter = createRateLimiter({
+  limit: CONFIG.auth.loginRateLimit.authorizePerIpPerMinute,
+  globalLimit: CONFIG.auth.loginRateLimit.authorizeGlobalPerMinute
+});
+const loginLimiter = createRateLimiter({
+  limit: CONFIG.auth.loginRateLimit.loginPerIpPerMinute,
+  globalLimit: CONFIG.auth.loginRateLimit.loginGlobalPerMinute
+});
 
 router.post('/token', async (req: Request, res: Response) => {
   const grantType = (req.body?.grant_type ?? req.query?.grant_type) as string | undefined;
@@ -42,7 +56,7 @@ router.post('/token', async (req: Request, res: Response) => {
 
 // Browser entry point. Depending on the deployment's IdP this either redirects to Google (RQ-0001) or
 // renders this service's own login form (RQ-0002).
-router.get('/authorize', async (req: Request, res: Response) => {
+router.get('/authorize', authorizeLimiter, async (req: Request, res: Response) => {
   try {
     const scopeParam = req.query?.scope;
     const result = await oauthServer.startAuthorization({
@@ -69,7 +83,7 @@ router.get('/authorize', async (req: Request, res: Response) => {
 
 // The local login form posts back here. `login_token` is the single-use handle minted with the form; it
 // identifies the pending authorization, so no cookie or ambient session is involved.
-router.post('/authorize/login', async (req: Request, res: Response) => {
+router.post('/authorize/login', loginLimiter, async (req: Request, res: Response) => {
   const loginToken = String(req.body?.login_token ?? '');
   try {
     const result = await oauthServer.completeLocalLogin({
