@@ -307,18 +307,23 @@ isolated from the token-issuing `auth.fps4.nl`) — verified through the same ad
 
    The client must be **pre-registered** with the callback URI it listens on — MCP clients register
    anonymously, which gated DCR deliberately refuses (ADR-0009 §7), and a self-registered client would
-   hold no `admin:*` scope anyway:
+   hold no `admin:*` scope anyway. `config/seed.mcp-operator.yaml` provisions exactly that credential
+   (`identity-admin-mcp-operator`, public, `authorization_code`, loopback redirect on port `9414`):
 
    ```bash
-   # one-time, via the admin plane: a public authorization_code client for the MCP client
-   #   redirectUris: ["http://localhost:<callback-port>/callback"], grantTypes: ["authorization_code"]
    claude mcp add --scope user --transport http identity-service-admin https://auth-mcp.fps4.nl/mcp \
-     --client-id <registered-client-id> --callback-port <callback-port>
+     --client-id identity-admin-mcp-operator --callback-port 9414
    ```
+
+   `redirectUris` is exact-match validated, so `--callback-port` must equal the port in the seed file;
+   change both together or not at all. The browser opens this service's own login form, and the token
+   it returns is bound to the MCP resource because the client passes `resource=` (RFC 8707).
 
    The operator signing in needs an **active assignment** to that client's application carrying a
    `platform_admin` role (`ADMIN_OPERATOR_ROLES`) — that is what `admin-auth` maps to the `admin`
-   superscope. Without it the login succeeds and the MCP call is still refused, by design.
+   superscope, and it, not the credential, is where the authority comes from. `seed.operators.yaml`
+   provisions that for `admin@identity-service.fps4.nl`. Without it the login succeeds and the MCP call
+   is still refused, by design.
 
 Authentication is any admin-plane principal (a machine token with an admin scope, or a `platform_admin`
 operator token — ADR-0010) whose `aud` includes the MCP resource; per-tool authorization is enforced

@@ -1,0 +1,41 @@
+# The OAuth credential a general-purpose MCP client uses to reach the management MCP resource
+# (ADR-0009) as a HUMAN operator, over the browser flow — as distinct from `identity-admin-mcp` in
+# config/seed.yaml, which is the machine (`client_credentials`) principal for scripts.
+#
+# Why a separate, pre-registered credential: MCP clients following the spec register ANONYMOUSLY, which
+# gated dynamic registration deliberately refuses (ADR-0009 §7), and a self-registered client would hold
+# no `admin:*` scope regardless. Pre-registration plus an explicit operator assignment is the intended
+# path for admin-power tooling, not a gap to close.
+#
+# Public client, no secret: it is a CLI on an operator's laptop and cannot keep one (RFC 8252). PKCE is
+# what authenticates the code exchange, and `redirectUris` is exact-match validated, so the loopback URI
+# below must match the client's `--callback-port` exactly.
+#
+# Needs NO secrets to apply — it defines a credential and no users, so it is safe to run any time:
+#   SEED_FILE=../config/seed.mcp-operator.yaml \
+#   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+#
+# Authority comes from the OPERATOR, never from this credential: the person signing in needs an active
+# `platform_admin` assignment on identity-console (ADMIN_OPERATOR_ROLES → the `admin` superscope, per
+# ADR-0010). config/seed.operators.yaml provisions exactly that. A credential alone grants nothing.
+
+applications:
+  # Restated in full because the seeder upserts the application with `roles: app.roles ?? []` — omitting
+  # the catalogue here would wipe it. Keep in sync with config/seed.operators.yaml.
+  - id: identity-console
+    name: identity-service admin console
+    audience: identity-console           # token `aud` when no RFC 8707 `resource` is requested
+    roles:
+      - { key: platform_admin, name: Platform Admin, description: Full management-plane authority (ADMIN_OPERATOR_ROLES) }
+    credentials:
+      - id: identity-admin-mcp-operator
+        name: MCP client — interactive operator login
+        grantTypes: [authorization_code]
+        redirectUris:
+          - http://localhost:9414/callback   # must equal the client's --callback-port
+        isConfidential: false
+        # The token's `aud` is bound to the MCP resource by the client passing
+        # `resource=https://auth-mcp.fps4.nl/mcp` (RFC 8707), which is what MCP_REQUIRE_AUDIENCE checks;
+        # `admin` here just lets that scope survive the client's allow-list filter. It is not the grant —
+        # the operator's platform_admin assignment is.
+        scopes: [admin]
