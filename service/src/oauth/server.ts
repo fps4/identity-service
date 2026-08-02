@@ -289,12 +289,29 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     deps.logger?.info?.({ clientId: client._id, idp: idpKind }, 'started user authorization');
     if (idpKind === 'local') {
-      return { mode: 'login', loginToken: loginToken as string };
+      return { mode: 'login', loginToken: loginToken as string, redirectUri: input.redirectUri };
     }
     return {
       mode: 'redirect',
       redirectTo: getGoogleIdp().buildAuthorizationUrl({ state: googleState, nonce, scope: GOOGLE_SCOPE })
     };
+  }
+
+  /**
+   * The pre-registered redirect target of a pending local login, so a re-rendered login page can name it
+   * in its CSP `form-action` (see StartAuthorizationResult). Read-only and non-committal: it neither
+   * consumes the login nor reveals anything the consumer did not already supply. Null when the login is
+   * unknown, expired, or already used.
+   */
+  async function getLoginContext(loginToken: string): Promise<{ redirectUri: string } | null> {
+    if (!loginToken) return null;
+    const connection = await deps.getMasterConnection();
+    const models = deps.makeModels(connection);
+    const record = await models.OAuthAuthorization.findOne({ loginToken, status: 'pending' }).lean().exec() as
+      { consumerRedirectUri?: string; expiresAt?: Date } | null;
+    if (!record?.consumerRedirectUri) return null;
+    if (record.expiresAt && record.expiresAt.getTime() < nowFn().getTime()) return null;
+    return { redirectUri: record.consumerRedirectUri };
   }
 
   /**
@@ -865,6 +882,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     issueClientCredentialsToken,
     startAuthorization,
     completeLocalLogin,
+    getLoginContext,
     handleGoogleCallback,
     issueAuthorizationCodeToken,
     issuePasswordToken,

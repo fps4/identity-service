@@ -84,7 +84,14 @@ export interface StartAuthorizationInput {
  */
 export type StartAuthorizationResult =
   | { mode: 'redirect'; redirectTo: string }
-  | { mode: 'login'; loginToken: string };
+  | {
+    mode: 'login';
+    loginToken: string;
+    /** The consumer's pre-registered redirect target. The login page must name it in its CSP
+     *  `form-action`, because a redirect that RESULTS from a form submission is checked against that
+     *  directive — omit it and the browser silently refuses to deliver the OAuth callback. */
+    redirectUri: string;
+  };
 
 export interface LocalLoginInput {
   loginToken: string; // single-use handle for the pending authorization, issued with the form

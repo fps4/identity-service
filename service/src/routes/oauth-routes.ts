@@ -69,7 +69,7 @@ router.get('/authorize', authorizeLimiter, async (req: Request, res: Response) =
       resource: req.query?.resource ? String(req.query.resource) : undefined
     });
     if (result.mode === 'login') {
-      return sendLoginPage(res, { loginToken: result.loginToken });
+      return sendLoginPage(res, { loginToken: result.loginToken, redirectUri: result.redirectUri });
     }
     return res.redirect(302, result.redirectTo);
   } catch (error: any) {
@@ -97,8 +97,12 @@ router.post('/authorize/login', loginLimiter, async (req: Request, res: Response
     // let the person retry. Anything else — expired, unknown, or already-used login token — is terminal
     // and surfaces as a plain OAuth error, since there is no form left to return to.
     if (error instanceof InvalidGrantError) {
+      // Re-read the redirect target: the retry page will itself redirect on success, so it needs the
+      // same `form-action` allowance as the original render.
+      const context = await oauthServer.getLoginContext(loginToken).catch(() => null);
       return sendLoginPage(res, {
         loginToken,
+        redirectUri: context?.redirectUri,
         error: error.description ?? error.message,
         status: 401
       });
@@ -213,18 +217,40 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * The origin of a pre-registered redirect URI, as a CSP source expression. Returns undefined for
+ * anything unparseable, so a bad value degrades to a stricter policy rather than a broken one.
+ */
+function redirectOrigin(redirectUri?: string): string | undefined {
+  if (!redirectUri) return undefined;
+  try {
+    return new URL(redirectUri).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The first-party login page (RQ-0002). Hand-rendered rather than templated: the service ships no view
  * engine, and an authentication page is the last place to add a dependency for the sake of syntax.
  * Every interpolated value is escaped.
  *
  * Headers matter as much as the markup here — `no-store` keeps the form (and any typed credential) out
- * of caches, and the CSP forbids scripts entirely, pins form submission to this origin, and blocks
- * framing, so the page cannot be clickjacked into approving a login.
+ * of caches, and the CSP forbids scripts entirely and blocks framing, so the page cannot be clickjacked
+ * into approving a login.
+ *
+ * `form-action` needs care. It must list the consumer's redirect origin as well as `'self'`, because
+ * browsers check this directive against redirects that RESULT from the form submission, not just the
+ * POST target — with `'self'` alone the browser silently refuses to follow the 302 that delivers the
+ * authorization code, and the flow dies after a login the server considers successful. The origin
+ * comes from `consumerRedirectUri`, which was exact-match validated against the client's registered
+ * list before this page was ever rendered, so this widens the policy only to a target the deployment
+ * already trusts.
  */
 function sendLoginPage(
   res: Response,
-  opts: { loginToken: string; error?: string; status?: number }
+  opts: { loginToken: string; redirectUri?: string; error?: string; status?: number }
 ) {
+  const formAction = ["'self'", redirectOrigin(opts.redirectUri)].filter(Boolean).join(' ');
   const banner = opts.error
     ? `<p class="error" role="alert">${escapeHtml(opts.error)}</p>`
     : '';
@@ -276,7 +302,7 @@ function sendLoginPage(
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy':
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`
     })
     .send(html);
 }

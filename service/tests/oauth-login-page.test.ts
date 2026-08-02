@@ -12,12 +12,14 @@ import { InvalidGrantError, AccessDeniedError } from '../src/oauth/errors.js';
 
 const startAuthorization = vi.fn();
 const completeLocalLogin = vi.fn();
+const getLoginContext = vi.fn(async () => null as { redirectUri: string } | null);
 
 // The routes pull the live oauth server (and therefore a Mongo connection) off the container; stub it.
 vi.mock('../src/container.js', () => ({
   oauthServer: {
     startAuthorization: (...a: unknown[]) => startAuthorization(...a),
     completeLocalLogin: (...a: unknown[]) => completeLocalLogin(...a),
+    getLoginContext: (...a: unknown[]) => getLoginContext(...(a as [])),
     issueClientCredentialsToken: vi.fn(),
     issueAuthorizationCodeToken: vi.fn(),
     issuePasswordToken: vi.fn(),
@@ -60,7 +62,7 @@ const postLogin = (body: Record<string, string>) =>
 
 describe('GET /oauth2/authorize — login page', () => {
   it('renders a login form carrying the login token', async () => {
-    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123' });
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123', redirectUri: 'http://localhost:9414/callback' });
 
     const res = await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}`, { redirect: 'manual' });
     const html = await res.text();
@@ -73,7 +75,7 @@ describe('GET /oauth2/authorize — login page', () => {
   });
 
   it('sends the headers that keep a credential form out of caches and frames', async () => {
-    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123' });
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123', redirectUri: 'http://localhost:9414/callback' });
 
     const res = await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}`, { redirect: 'manual' });
 
@@ -82,12 +84,48 @@ describe('GET /oauth2/authorize — login page', () => {
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
     const csp = res.headers.get('content-security-policy') ?? '';
     expect(csp).toContain("default-src 'none'");   // no scripts at all
-    expect(csp).toContain("form-action 'self'");   // credentials cannot be posted off-origin
     expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("base-uri 'none'");
+  });
+
+  /**
+   * Regression: `form-action 'self'` alone is enough to break the whole OAuth flow. Browsers check this
+   * directive against the redirect that RESULTS from the form submission, so the 302 carrying the
+   * authorization code to the consumer is refused — silently, and only in the browser. Every server-side
+   * signal says the login succeeded, which is exactly what made this expensive to diagnose.
+   */
+  it('permits the redirect that carries the code back to the consumer', async () => {
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123', redirectUri: 'http://localhost:9414/callback' });
+
+    const res = await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}`, { redirect: 'manual' });
+
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain('form-action');
+    expect(csp).toContain('http://localhost:9414'); // the consumer's registered origin
+    expect(csp).toContain("'self'");                // and still our own POST target
+  });
+
+  it('names only the redirect origin, not the full URI, in form-action', async () => {
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123', redirectUri: 'https://app.example.com/auth/cb?x=1' });
+
+    const res = await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}`, { redirect: 'manual' });
+
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain('https://app.example.com');
+    expect(csp).not.toContain('/auth/cb');
+  });
+
+  it('falls back to a stricter policy when the redirect URI will not parse', async () => {
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123', redirectUri: 'not-a-url' });
+
+    const res = await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}`, { redirect: 'manual' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-security-policy')).toContain("form-action 'self'");
   });
 
   it('escapes the login token rather than reflecting markup into the page', async () => {
-    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: '"><script>alert(1)</script>' });
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: '"><script>alert(1)</script>', redirectUri: 'http://localhost:9414/callback' });
 
     const res = await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}`, { redirect: 'manual' });
     const html = await res.text();
@@ -106,7 +144,7 @@ describe('GET /oauth2/authorize — login page', () => {
   });
 
   it('passes a resource indicator through to the authorization request', async () => {
-    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123' });
+    startAuthorization.mockResolvedValueOnce({ mode: 'login', loginToken: 'tok-123', redirectUri: 'http://localhost:9414/callback' });
 
     await fetch(`${base}/oauth2/authorize?${AUTHORIZE_QUERY}&resource=https%3A%2F%2Fauth-mcp.fps4.nl%2Fmcp`, { redirect: 'manual' });
 
@@ -136,6 +174,28 @@ describe('POST /oauth2/authorize/login', () => {
     expect(res.headers.get('content-type')).toContain('text/html');
     expect(html).toContain('Invalid credentials');
     expect(html).toContain('name="login_token" value="tok-123"'); // the retry keeps the same authorization
+  });
+
+  // The retry page redirects on success just like the first render, so it needs the same allowance —
+  // otherwise a single mistyped password permanently breaks the flow for that authorization.
+  it('carries the redirect allowance onto the retry page too', async () => {
+    completeLocalLogin.mockRejectedValueOnce(new InvalidGrantError('Invalid credentials'));
+    getLoginContext.mockResolvedValueOnce({ redirectUri: 'http://localhost:9414/callback' });
+
+    const res = await postLogin({ login_token: 'tok-123', email: 'operator@fps4.test', password: 'wrong' });
+
+    expect(getLoginContext).toHaveBeenCalledWith('tok-123');
+    expect(res.headers.get('content-security-policy')).toContain('http://localhost:9414');
+  });
+
+  it('still renders the retry page when the redirect target cannot be resolved', async () => {
+    completeLocalLogin.mockRejectedValueOnce(new InvalidGrantError('Invalid credentials'));
+    getLoginContext.mockRejectedValueOnce(new Error('db down'));
+
+    const res = await postLogin({ login_token: 'tok-123', email: 'operator@fps4.test', password: 'wrong' });
+
+    expect(res.status).toBe(401); // degrades to a stricter CSP, not a 500
+    expect(res.headers.get('content-security-policy')).toContain("form-action 'self'");
   });
 
   it('does not reflect a submitted password back into the retry page', async () => {
