@@ -57,7 +57,7 @@ export interface TokenResponse {
   scope: string[];
 }
 
-// --- User login flow (RQ-0001: Google SSO via OIDC Authorization Code + PKCE) ---
+// --- User login flow (Authorization Code + PKCE; RQ-0001 Google SSO or RQ-0002 local credentials) ---
 
 export interface StartAuthorizationInput {
   clientId: string;
@@ -66,10 +66,34 @@ export interface StartAuthorizationInput {
   codeChallengeMethod?: string; // only 'S256' is supported
   state?: string;               // the consumer's opaque state, echoed back
   scope?: string[];
+  /**
+   * RFC 8707 resource indicator — the protected resource the eventual token is for. When present and
+   * recognized, the token's `aud` is bound to it (ADR-0009 Phase 2) rather than to the application
+   * default; this is how an MCP client obtains a token its resource server will accept. An
+   * unrecognized resource is rejected (`invalid_target`).
+   */
+  resource?: string;
 }
 
-export interface StartAuthorizationResult {
-  // Fully-formed Google authorization URL the caller should redirect the browser to.
+/**
+ * Where the browser goes next. The deployment's IdP decides which:
+ *   - `redirect` — hand the person to the upstream provider (Google, RQ-0001).
+ *   - `login`    — this service authenticates them itself against the local-credential IdP
+ *                  (RQ-0002); the caller renders a login form carrying `loginToken`.
+ * A union rather than optional fields so a caller cannot forget to handle one leg.
+ */
+export type StartAuthorizationResult =
+  | { mode: 'redirect'; redirectTo: string }
+  | { mode: 'login'; loginToken: string };
+
+export interface LocalLoginInput {
+  loginToken: string; // single-use handle for the pending authorization, issued with the form
+  email: string;
+  password: string;
+}
+
+export interface LocalLoginResult {
+  // Where to 302 the browser back to the consumer, carrying our single-use code + the echoed state.
   redirectTo: string;
 }
 
@@ -88,6 +112,9 @@ export interface AuthorizationCodeInput {
   codeVerifier: string;  // PKCE verifier, hashed and matched against the stored challenge
   clientId: string;
   redirectUri: string;
+  /** RFC 8707 resource indicator, repeated at the exchange. Must match the one the authorization
+   *  request named — a mismatch is rejected rather than quietly re-targeting the token. */
+  resource?: string;
 }
 
 export interface RefreshTokenInput {

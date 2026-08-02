@@ -4,7 +4,8 @@ import { oauthServer } from '../container.js';
 import {
   OAuthError,
   InvalidRequestError,
-  InvalidClientError
+  InvalidClientError,
+  InvalidGrantError
 } from '../oauth/errors.js';
 
 const router = express.Router();
@@ -39,7 +40,8 @@ router.post('/token', async (req: Request, res: Response) => {
   }
 });
 
-// Browser entry point: redirect the user to Google to authenticate (RQ-0001).
+// Browser entry point. Depending on the deployment's IdP this either redirects to Google (RQ-0001) or
+// renders this service's own login form (RQ-0002).
 router.get('/authorize', async (req: Request, res: Response) => {
   try {
     const scopeParam = req.query?.scope;
@@ -49,12 +51,45 @@ router.get('/authorize', async (req: Request, res: Response) => {
       codeChallenge: String(req.query?.code_challenge ?? ''),
       codeChallengeMethod: req.query?.code_challenge_method ? String(req.query.code_challenge_method) : undefined,
       state: req.query?.state ? String(req.query.state) : undefined,
-      scope: parseScope(scopeParam)
+      scope: parseScope(scopeParam),
+      resource: req.query?.resource ? String(req.query.resource) : undefined
     });
+    if (result.mode === 'login') {
+      return sendLoginPage(res, { loginToken: result.loginToken });
+    }
     return res.redirect(302, result.redirectTo);
   } catch (error: any) {
     if (error instanceof OAuthError) {
       // Cannot trust an unvalidated redirect_uri here — surface the error directly, no redirect.
+      return handleError(res, error);
+    }
+    return res.status(500).json({ error: 'server_error', error_description: 'Internal Server Error' });
+  }
+});
+
+// The local login form posts back here. `login_token` is the single-use handle minted with the form; it
+// identifies the pending authorization, so no cookie or ambient session is involved.
+router.post('/authorize/login', async (req: Request, res: Response) => {
+  const loginToken = String(req.body?.login_token ?? '');
+  try {
+    const result = await oauthServer.completeLocalLogin({
+      loginToken,
+      email: String(req.body?.email ?? ''),
+      password: String(req.body?.password ?? '')
+    });
+    return res.redirect(302, result.redirectTo);
+  } catch (error: any) {
+    // Wrong credentials (or a lockout) leave the authorization itself intact, so re-render the form and
+    // let the person retry. Anything else — expired, unknown, or already-used login token — is terminal
+    // and surfaces as a plain OAuth error, since there is no form left to return to.
+    if (error instanceof InvalidGrantError) {
+      return sendLoginPage(res, {
+        loginToken,
+        error: error.description ?? error.message,
+        status: 401
+      });
+    }
+    if (error instanceof OAuthError) {
       return handleError(res, error);
     }
     return res.status(500).json({ error: 'server_error', error_description: 'Internal Server Error' });
@@ -112,11 +147,13 @@ async function handleClientCredentials(req: Request, res: Response) {
 
 async function handleAuthorizationCode(req: Request, res: Response) {
   // Public client + PKCE: the code_verifier authenticates the exchange, not a client_secret.
+  const resourceParam = req.body?.resource ?? req.query?.resource;
   const token = await oauthServer.issueAuthorizationCodeToken({
     code: String(req.body?.code ?? ''),
     codeVerifier: String(req.body?.code_verifier ?? ''),
     clientId: String(req.body?.client_id ?? ''),
-    redirectUri: String(req.body?.redirect_uri ?? '')
+    redirectUri: String(req.body?.redirect_uri ?? ''),
+    resource: resourceParam ? String(resourceParam) : undefined
   });
   return res.status(200).json(userTokenBody(token));
 }
@@ -150,6 +187,84 @@ function userTokenBody(token: {
     refresh_expires_in: token.refreshExpiresIn,
     scope: token.scope.join(' ')
   };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * The first-party login page (RQ-0002). Hand-rendered rather than templated: the service ships no view
+ * engine, and an authentication page is the last place to add a dependency for the sake of syntax.
+ * Every interpolated value is escaped.
+ *
+ * Headers matter as much as the markup here — `no-store` keeps the form (and any typed credential) out
+ * of caches, and the CSP forbids scripts entirely, pins form submission to this origin, and blocks
+ * framing, so the page cannot be clickjacked into approving a login.
+ */
+function sendLoginPage(
+  res: Response,
+  opts: { loginToken: string; error?: string; status?: number }
+) {
+  const banner = opts.error
+    ? `<p class="error" role="alert">${escapeHtml(opts.error)}</p>`
+    : '';
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Sign in</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: Canvas; color: CanvasText; }
+  main { width: min(22rem, calc(100vw - 3rem)); padding: 2rem 0; }
+  h1 { font-size: 1.25rem; margin: 0 0 1.5rem; }
+  label { display: block; margin: 0 0 .35rem; font-weight: 500; }
+  input { width: 100%; box-sizing: border-box; padding: .55rem .65rem; margin: 0 0 1rem;
+          font: inherit; border: 1px solid GrayText; border-radius: .375rem;
+          background: Field; color: FieldText; }
+  button { width: 100%; padding: .6rem; font: inherit; font-weight: 600; cursor: pointer;
+           border: 0; border-radius: .375rem; background: Highlight; color: HighlightText; }
+  .error { padding: .6rem .75rem; margin: 0 0 1rem; border-radius: .375rem;
+           background: color-mix(in srgb, Mark 40%, Canvas); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sign in</h1>
+  ${banner}
+  <form method="post" action="/oauth2/authorize/login" autocomplete="on">
+    <input type="hidden" name="login_token" value="${escapeHtml(opts.loginToken)}">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+</main>
+</body>
+</html>`;
+
+  return res
+    .status(opts.status ?? 200)
+    .set({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy':
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    })
+    .send(html);
 }
 
 function parseScope(scopeParam: unknown): string[] {

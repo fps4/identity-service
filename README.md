@@ -82,13 +82,16 @@ const token = await client.requestClientCredentialsToken({
 console.log(token.accessToken);
 ```
 
-### User login via Google (RQ-0001)
+### Browser login (RQ-0001 Google SSO / RQ-0002 local credentials)
 
 A browser frontend drives the redirect login with PKCE and forwards the issued token as
-`Authorization: Bearer` to its own API:
+`Authorization: Bearer` to its own API. The SDK calls are named for Google because that was the first
+IdP, but the flow is provider-agnostic: `/oauth2/authorize` redirects to Google when the deployment
+configures a Google app, and otherwise serves this service's own login form. The consumer's half —
+`beginGoogleLogin` → navigate → `completeGoogleLogin` — is identical either way.
 
 ```ts
-// 1. Begin: stash the verifier/state, then navigate to Google.
+// 1. Begin: stash the verifier/state, then navigate to the authorization endpoint.
 const { authorizationUrl, codeVerifier, state } = await client.beginGoogleLogin({
   clientId: 'client-maestro',
   redirectUri: 'https://app.example.com/auth/callback'

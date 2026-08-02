@@ -61,13 +61,19 @@ export function authorizationServerMetadata() {
   const iss = CONFIG.auth.jwtIssuer;
   return {
     issuer: iss,
+    // Advertising `authorization_code` without an `authorization_endpoint` leaves a spec-following
+    // client nowhere to send the user, so discovery dead-ends before the browser leg starts.
+    authorization_endpoint: `${iss}/oauth2/authorize`,
     token_endpoint: `${iss}/oauth2/token`,
+    revocation_endpoint: `${iss}/oauth2/revoke`,
     jwks_uri: `${iss}/.well-known/jwks.json`,
     grant_types_supported: ['client_credentials', 'authorization_code', 'refresh_token'],
     token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
     response_types_supported: ['code'],
     code_challenge_methods_supported: ['S256'],
-    scopes_supported: [CONFIG.admin.requiredScope, ...ADMIN_AREA_SCOPES]
+    scopes_supported: [CONFIG.admin.requiredScope, ...ADMIN_AREA_SCOPES],
+    // RFC 8707: the resource indicator is what binds a token to the MCP resource (§ audience-binding).
+    resource_indicators_supported: true
   };
 }
 

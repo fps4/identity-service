@@ -78,6 +78,20 @@ describe('MCP HTTP transport (ADR-0009 Phase 1) — discovery metadata', () => {
     expect(m.jwks_uri).toBe(`${CONFIG.auth.jwtIssuer}/.well-known/jwks.json`);
     expect(m.grant_types_supported).toContain('client_credentials');
   });
+
+  // Without this, a client that discovers the AS correctly still has nowhere to send the user, so the
+  // browser leg dead-ends despite `authorization_code` being advertised as supported.
+  it('advertises an authorization endpoint for the browser leg it claims to support', () => {
+    const m = authorizationServerMetadata();
+    expect(m.grant_types_supported).toContain('authorization_code');
+    expect(m.authorization_endpoint).toBe(`${CONFIG.auth.jwtIssuer}/oauth2/authorize`);
+    expect(m.response_types_supported).toContain('code');
+    expect(m.code_challenge_methods_supported).toContain('S256');
+  });
+
+  it('advertises resource-indicator support, which is how a token gets bound to this resource', () => {
+    expect(authorizationServerMetadata().resource_indicators_supported).toBe(true);
+  });
 });
 
 describe('MCP HTTP transport — authentication', () => {

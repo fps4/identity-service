@@ -3,15 +3,20 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
 
 /**
  * A single in-flight user login (RQ-0001). Created when the consumer's browser hits
- * `/oauth2/authorize`, carried through the Google redirect leg, and consumed once at the
- * `authorization_code` token exchange.
+ * `/oauth2/authorize`, carried through whichever IdP authenticates the person, and consumed once at
+ * the `authorization_code` token exchange.
  *
- * Lifecycle: `pending` (awaiting Google) -> `authenticated` (Google verified, our code minted,
- * identity captured) -> `consumed` (token issued; the code is single-use). A short TTL index
- * sweeps abandoned records.
+ * Lifecycle: `pending` (awaiting the IdP) -> `authenticated` (identity established, our code minted)
+ * -> `consumed` (token issued; the code is single-use). A short TTL index sweeps abandoned records.
  *
  * `codeChallenge` is the consumer's PKCE challenge (S256), verified against its `code_verifier`
  * at exchange. `googleState` / `nonce` protect the Google leg against CSRF / replay.
+ *
+ * `idp` records WHICH provider authenticated this login, because the two legs establish identity
+ * differently and the exchange must not confuse them: `google` carries a federated subject that gets
+ * JIT-provisioned or linked (RQ-0011), while `local` (RQ-0002) has already authenticated a real user
+ * record and its `sub` IS that user's `_id`. Records written before the local IdP existed have no
+ * value stored, hence the `google` default.
  */
 export interface OAuthAuthorizationDocument extends Document<string> {
   _id: string;                 // internal authorization id
@@ -21,13 +26,16 @@ export interface OAuthAuthorizationDocument extends Document<string> {
   codeChallenge: string;       // PKCE S256 challenge from the consumer
   codeChallengeMethod: 'S256';
   scope: string[];
+  idp: 'google' | 'local';     // which provider authenticates this login
+  resource?: string;           // RFC 8707 resource indicator; binds the issued token's `aud`
+  loginToken?: string;         // single-use handle tying the local login form back to this record
   googleState: string;         // random state for the Google leg (matched on callback)
   nonce: string;               // random nonce embedded in + verified from Google's id_token
   status: 'pending' | 'authenticated' | 'consumed';
-  code?: string;               // our single-use authorization code (minted after Google succeeds)
-  email?: string;              // captured identity once Google verifies
-  sub?: string;                // stable Google subject
-  emailVerified?: boolean;     // whether Google vouched the email — gates account linking (RQ-0011)
+  code?: string;               // our single-use authorization code (minted once the IdP succeeds)
+  email?: string;              // captured identity once the IdP verifies
+  sub?: string;                // federated subject (google), or the local user's `_id`
+  emailVerified?: boolean;     // whether the provider vouched the email — gates account linking (RQ-0011)
   expiresAt: Date;
   createdAt?: Date;
 }
@@ -40,6 +48,9 @@ const oauthAuthorizationSchema = new mongoose.Schema<OAuthAuthorizationDocument>
   codeChallenge: { type: String, required: true },
   codeChallengeMethod: { type: String, enum: ['S256'], default: 'S256' },
   scope: { type: [String], default: [] },
+  idp: { type: String, enum: ['google', 'local'], default: 'google' },
+  resource: { type: String },
+  loginToken: { type: String, index: true },
   googleState: { type: String, required: true, index: true },
   nonce: { type: String, required: true },
   status: { type: String, enum: ['pending', 'authenticated', 'consumed'], default: 'pending', index: true },
