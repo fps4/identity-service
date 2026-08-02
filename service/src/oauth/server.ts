@@ -485,7 +485,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email: record.email,
       sub: record.sub,
       scope: record.scope ?? [],
-      roles: assignment.roles ?? []
+      roles: assignment.roles ?? [],
+      resource: record.resource
     });
   }
 
@@ -627,14 +628,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     tokenDoc.status = 'revoked';
     await tokenDoc.save();
 
+    // Re-mint against the SAME resource the chain was bound to (ADR-0009 Phase 2). Dropping it here
+    // would hand back a token audienced at the application instead, which the resource server must
+    // reject — and because that only bites at the first refresh, the login itself looks perfectly fine.
     return issueUserTokens(models, {
       client,
-      audience: effectiveAudience(client, application),
+      audience: resolveUserAudience(client, application, tokenDoc.resource),
       email,
       sub,
       scope: tokenDoc.scope ?? [],
       roles: assignment.roles ?? [],
-      session
+      session,
+      resource: tokenDoc.resource
     });
   }
 
@@ -761,12 +766,14 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     models: ModelsBucket,
     args: {
       client: OAuthClientDocument;
-      audience?: string; // resolved from the credential override / application default (ADR-0020)
+      audience?: string; // resolved from the resource indicator / credential override / application (ADR-0020)
       email?: string;
       sub: string;
       scope: string[];
       roles?: string[];
       session?: { _id: string; expiresAt: Date };
+      /** The resource the audience came from, persisted so a later refresh re-mints the same `aud`. */
+      resource?: string;
     }
   ): Promise<UserTokenResponse> {
     if (!args.audience) {
@@ -815,7 +822,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       scope: args.scope,
       expiresAt: accessExp,
       issuedAt,
-      status: 'active'
+      status: 'active',
+      resource: args.resource
     });
 
     // Opaque, high-entropy refresh token — only its hash is stored.
@@ -831,6 +839,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       expiresAt: sessionExpiresAt,
       issuedAt,
       status: 'active',
+      resource: args.resource,
       hashedToken: sha256Hex(refreshTokenValue)
     });
 

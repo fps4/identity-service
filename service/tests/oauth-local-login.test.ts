@@ -48,6 +48,16 @@ const attachSave = <T extends object>(doc: T): T & { save: () => Promise<void> }
 const matches = (item: any, query: any): boolean =>
   Object.entries(query).every(([key, value]) => item[key] === value);
 
+// `resolveUserBySubject` (used by the refresh grant) queries with `$or` over `_id` and the linked
+// identities, which the flat matcher above cannot express — so the User mock gets its own.
+function userMatches(u: any, query: any): boolean {
+  return Object.entries(query).every(([key, value]) => {
+    if (key === '$or') return (value as any[]).some((sub) => userMatches(u, sub));
+    if (key === 'identities.subject') return (u.identities ?? []).some((i: any) => i.subject === value);
+    return u[key] === value;
+  });
+}
+
 interface Store {
   clients: any[];
   applications: any[];
@@ -86,8 +96,8 @@ function makeDeps(store: Store, now: () => Date) {
       },
       User: {
         findOne: (q: any) => ({
-          exec: async () => { const u = store.users.find((x) => matches(x, q)); return u ? attachSave(u) : null; },
-          lean: () => ({ exec: async () => store.users.find((x) => matches(x, q)) ?? null })
+          exec: async () => { const u = store.users.find((x) => userMatches(x, q)); return u ? attachSave(u) : null; },
+          lean: () => ({ exec: async () => store.users.find((x) => userMatches(x, q)) ?? null })
         }),
         create: async (doc: any) => { store.users.push(doc); return attachSave(doc); }
       },
@@ -326,6 +336,68 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
     });
 
     expect(decodeJwt(token.accessToken).aud).toBe(RESOURCE);
+  });
+
+  /**
+   * Regression: audience-binding has to survive token ROTATION, not just the first issue. A refresh that
+   * re-resolves the audience from the application hands back a token the resource server must reject —
+   * and because it only bites at the first expiry, the login and the first calls all look correct. That
+   * is precisely how it presented: a working MCP connection that died ~15 minutes later.
+   */
+  it('keeps the resource audience across a refresh', async () => {
+    const verifier = 'verifier-abc-123';
+    const started = await server.startAuthorization(authorizeArgs(verifier, { resource: RESOURCE }));
+    const loginToken = started.mode === 'login' ? started.loginToken : '';
+    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+
+    const first = await server.issueAuthorizationCodeToken({
+      code: store.authorizations[0].code,
+      codeVerifier: verifier,
+      clientId: 'client-mcp',
+      redirectUri: 'http://localhost:9876/callback',
+      resource: RESOURCE
+    });
+    expect(decodeJwt(first.accessToken).aud).toBe(RESOURCE);
+
+    const refreshed = await server.refreshUserToken({ refreshToken: first.refreshToken, clientId: 'client-mcp' });
+
+    expect(decodeJwt(refreshed.accessToken).aud).toBe(RESOURCE); // not the application default
+  });
+
+  it('keeps the binding across repeated refreshes, so a long session does not drift', async () => {
+    const verifier = 'verifier-abc-123';
+    const started = await server.startAuthorization(authorizeArgs(verifier, { resource: RESOURCE }));
+    const loginToken = started.mode === 'login' ? started.loginToken : '';
+    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+
+    let token = await server.issueAuthorizationCodeToken({
+      code: store.authorizations[0].code,
+      codeVerifier: verifier,
+      clientId: 'client-mcp',
+      redirectUri: 'http://localhost:9876/callback',
+      resource: RESOURCE
+    });
+    for (let i = 0; i < 3; i++) {
+      token = await server.refreshUserToken({ refreshToken: token.refreshToken, clientId: 'client-mcp' });
+      expect(decodeJwt(token.accessToken).aud).toBe(RESOURCE);
+    }
+  });
+
+  it('still falls back to the application audience when no resource was ever named', async () => {
+    const verifier = 'verifier-abc-123';
+    const started = await server.startAuthorization(authorizeArgs(verifier));
+    const loginToken = started.mode === 'login' ? started.loginToken : '';
+    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+
+    const first = await server.issueAuthorizationCodeToken({
+      code: store.authorizations[0].code,
+      codeVerifier: verifier,
+      clientId: 'client-mcp',
+      redirectUri: 'http://localhost:9876/callback'
+    });
+    const refreshed = await server.refreshUserToken({ refreshToken: first.refreshToken, clientId: 'client-mcp' });
+
+    expect(decodeJwt(refreshed.accessToken).aud).toBe('identity-console');
   });
 
   it('rejects an unrecognized resource at the authorization request, before any login prompt', async () => {
