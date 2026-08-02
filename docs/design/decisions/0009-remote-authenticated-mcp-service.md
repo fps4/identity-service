@@ -2,7 +2,7 @@
 title: "0009: A remotely-reachable, OAuth-authenticated MCP service — Streamable HTTP on a dedicated resource origin (auth-mcp.fps4.nl), sender-constrained tokens, with identity-service as its own authorization server"
 summary: "Expose the management MCP server over the network as an OAuth 2.1 protected resource at https://auth-mcp.fps4.nl (a dedicated origin, distinct from the authorization server auth.fps4.nl) using the MCP Streamable HTTP transport. identity-service is the authorization server for its own MCP resource. Tokens are audience-bound and sender-constrained (DPoP/mTLS), admin scopes are role-derived and step-up-gated, clients self-register via gated dynamic registration, and every call flows through the existing admin-auth + audit path — so any MCP client connects with the standard remote-MCP flow instead of SSH+stdio."
 status: accepted
-last_updated: 2026-07-05
+last_updated: 2026-08-01
 date: 2026-06-24
 related:
   - ./0001-local-credential-idp.md
@@ -191,9 +191,17 @@ tooling**, so open registration is unacceptable. The resolution is **gated** dyn
   management protocol, with fixed redirect-URI and scope allow-lists enforced server-side.
 
 Phase 1 may still pre-register the known clients (Claude, the operator's IDE, the seeded
-`identity-admin-mcp`) to bootstrap; gated DCR is the **target steady state**, not a "maybe later." The
-expected holder of the initial access token — and custodian of the resulting agent credentials — is
-**maestro** (§10), not a human copy-pasting secrets.
+`identity-admin-mcp`) to bootstrap; gated DCR is the **target steady state**, not a "maybe later."
+
+Initial access tokens are minted by identity-service's **own admin plane** (§10, amended) — an
+`admin:clients` action in `/admin/v1` or the operator console, audited like any other. Custody of the
+resulting agent credentials belongs to whatever runtime uses them; no external broker sits between this
+service and the ability to register or revoke an agent.
+
+Note that gated DCR is not what connects a general-purpose MCP client: clients following the MCP
+specification register **anonymously**, which this deliberately refuses, and a freshly registered client
+holds no `admin:*` scope regardless. Such clients are pre-registered and granted scope explicitly —
+which is the intended friction for admin-power tooling, not a gap.
 
 ### 8. Authorization and audit are unchanged in model — strengthened in observability
 
@@ -204,11 +212,11 @@ denied, failed) is written append-only to the `AuditLog` collection. One authori
 trail, **three transports.** Strengthened:
 
 - **Structured, attributable audit** gains a transport discriminator (`method: 'MCP'`, `transport: 'http'`),
-  the `client_id`, the `resource`, the scopes actually exercised, and a request/trace id — and is **emitted
-  to maestro** (§10), the internal agentic-ops plane, for fleet-level correlation and alerting on anomalous
-  admin activity. fps4/* services do not onboard to external SaaS such as Datadog.
+  the `client_id`, the `resource`, the scopes actually exercised, and a request/trace id — **readable over
+  `/admin/v1/audit`** and correlatable by an ops plane that chooses to subscribe (§10). fps4/* services do
+  not onboard to external SaaS such as Datadog.
 - **Tamper-evidence (optional, follow-up):** the per-call records are hash-chainable so retroactive edits
-  are detectable; the fleet-wide chain/correlation lives in maestro, this service emits the links.
+  are detectable; this service emits the links, and any fleet-wide chain is built by a reader from them.
 - For **interactive users**, the audited principal is the `sub` (the human), preserving per-actor
   attribution that ADR-0003 required and a static secret could not give.
 
@@ -235,36 +243,43 @@ It ships with layered controls, not a single gate:
 - **stdio retained as break-glass:** the SSH `docker/mcp-admin.sh` path stays for local/dev and for
   recovery when the HTTP plane is intentionally closed or down; it is no longer the *primary* remote path.
 
-### 10. Relationship to maestro — the agentic-ops plane this resource is built for
+### 10. Relationship to the ops plane — self-hosted custody, no consumer dependency
 
-The remote MCP endpoint is not built for ad-hoc human callers in isolation; its primary consumer is
-**maestro**, fps4's internal agentic-ops product (and the reason fps4/* services ship ops to maestro, not
-to external SaaS like Datadog). This ADR draws the boundary so identity-service exposes clean **emission**
-and **action** contracts and delegates ops *intelligence* to maestro, rather than growing a mini-observability
-stack inside the IdP (consistent with the decentralization spirit of [ADR-0005](0005-decentralized-authorization.md)):
+> **Amended 2026-08-01.** This section originally designated **maestro** — fps4's internal agentic-ops
+> product — as the agent-credential custodian, the audit aggregation plane, and the closed-loop
+> remediation caller. maestro is being decommissioned. A replacement is expected later, and this ADR
+> deliberately does **not** re-create the dependency on it. None of what follows was ever built, so the
+> amendment costs no rework.
 
-- **maestro is the agent-credential custodian.** The gated DCR of #7 is designed around maestro holding the
-  initial access token and being the broker that **registers, scopes, rotates, and revokes** agent
-  credentials against this service's `/oauth2` + registration endpoints. identity-service stays the
-  authorization server (it mints and verifies tokens); maestro is the operator runtime that **holds** the
-  credentials and the keys backing DPoP/mTLS (#5). Agents never carry standing long-lived secrets that a
-  human pasted.
-- **maestro is the audit aggregation and alerting plane.** identity-service keeps its append-only
-  `AuditLog` as the local system of record (per [ADR-0008](0008-drop-sops-db-is-system-of-record.md)) and
-  **emits** structured, correlated records (#8); maestro owns fleet-wide correlation (by request/trace id
-  across services), the tamper-evident chain, anomaly detection, and notification routing. This service does
-  not implement monitors or dashboards itself.
-- **maestro is the closed-loop remediation caller.** The eleven MCP tools are precisely the **action
-  surface** maestro invokes from agentic runbooks — e.g. a lockout-storm signal drives an automated
-  `unlock_user`, a leaked-secret signal drives `rotate_client_secret`. This is *why* the security controls
-  above are load-bearing rather than ceremonial: an automated operator that can act must do so under
-  least-privilege scopes, sender-constrained tokens, step-up for the highest-risk tools (`rotate_signing_key`
-  stays behind the strongest constraint even for a runbook), and full per-actor audit attributing the action
-  to the maestro principal.
+identity-service is **upstream** of every consumer it authenticates. Delegating custody of the
+credentials it issues to one of those consumers inverts the layering: the IdP would be unable to onboard
+an agent, or rotate a compromised credential, without a downstream service being available. That is the
+wrong dependency direction for the component the rest of the fleet's trust roots in, and the objection
+holds regardless of which product occupies the ops role. The boundary is therefore drawn at capability,
+not at product:
 
-The concrete contracts (DCR/initial-access-token handshake, the audit emission schema and transport, and
-the remediation scope grants for automated runbooks) are specified with maestro and tracked as follow-ups,
-not frozen here.
+- **This service is its own credential custodian.** The gated DCR of #7 issues initial access tokens from
+  identity-service's **own admin plane** — `/admin/v1` plus the operator console, which already
+  authenticate `platform_admin` operators (ADR-0010) and already write the audit trail. Registering,
+  scoping, rotating and revoking an agent credential is an admin-plane action like any other, gated by
+  `admin:clients` and attributed to the principal that performed it. No external broker is required for
+  the IdP to be fully operable.
+- **The local `AuditLog` is the system of record, and is sufficient on its own.** identity-service keeps
+  its append-only audit (per [ADR-0008](0008-drop-sops-db-is-system-of-record.md)) and exposes it over
+  `/admin/v1/audit`. A future ops plane may *subscribe* to add fleet-wide correlation, anomaly detection
+  and notification routing — but as an optional **reader**, never as a dependency: losing it degrades
+  analysis, not authentication, and not the ability to investigate.
+- **Runtime signals stay in-process.** Golden signals are recorded locally and reported through
+  `/admin/v1/stats`. The outbound heartbeat/telemetry push to maestro has been removed.
+- **The MCP tools remain the action surface** for whatever operator runtime exists — human, scripted, or
+  agentic. This is *why* the security controls above are load-bearing rather than ceremonial: any
+  automated caller must act under least-privilege scopes, sender-constrained tokens, step-up for the
+  highest-risk tools (`rotate_signing_key` stays behind the strongest constraint even for a runbook), and
+  per-actor audit. Those controls are properties of the endpoint, so they hold whoever calls it.
+
+Ops *intelligence* — dashboards, correlation, alerting — still does not belong in the IdP (consistent
+with [ADR-0005](0005-decentralized-authorization.md)). What changes is that its absence is now a missing
+**consumer** of already-exposed contracts, not a missing dependency of this service.
 
 ### Rollout phases
 
@@ -272,7 +287,7 @@ not frozen here.
 2. **Principal model:** extend admin-auth to accept role-derived, assurance-gated **user** admin tokens
    (the §4/§8 crux), with per-actor audit on `sub`.
 3. **Resource endpoint:** mount Streamable HTTP, stand up `auth-mcp.fps4.nl` (vhost + cert + WAF), serve
-   RFC 9728/8414 metadata and the 401 challenge; audience-bind tokens; ship audit to maestro.
+   RFC 9728/8414 metadata and the 401 challenge; audience-bind tokens.
 4. **Sender-constraining:** DPoP (interactive) and mTLS (agents); require it for `admin:keys`, short-TTL
    bearer fallback elsewhere as a tracked deprecation.
 5. **Self-service:** gated RFC 7591/7592 dynamic registration with initial access tokens and zero-default
@@ -331,23 +346,22 @@ not frozen here.
   one code path (and one place to add tools).
 - **MCP protocol version moves forward** (`2024-11-05` → `2025-03-26`+) to get Streamable HTTP and the
   authorization spec; the tool catalogue and scopes are unchanged from ADR-0007.
-- **Audit becomes an observability stream, not just a collection** — maestro ingestion, anomaly alerts, and
-  (optionally) hash-chaining for tamper-evidence; this is new operational surface with its own value.
+- **Audit becomes an observability stream, not just a collection** — readable over `/admin/v1/audit`, with
+  anomaly alerting and (optionally) hash-chaining for tamper-evidence left to a subscriber (§10).
 - **DPoP introduces an interop tradeoff:** clients that cannot do DPoP yet fall back to short-TTL bearer on
   lower-privilege scopes only, tracked as a deprecation; the highest-privilege tools are unavailable to
   non-constrained clients by design.
-- **maestro is the named primary consumer** (§10): the agent-credential custodian via gated DCR, the audit
-  aggregation/alerting plane, and the closed-loop remediation caller of the MCP tools. The boundary keeps
-  ops intelligence in maestro and leaves identity-service exposing clean emission + action contracts — but
-  it creates a real dependency: the DCR/initial-access-token handshake, the audit emission schema/transport,
-  and the remediation scope grants must be co-designed with maestro, and automated remediation means a
-  maestro compromise can drive admin actions (bounded by least-privilege scopes, step-up on the riskiest
-  tools, and audit).
+- **No consumer is on the critical path** (§10, amended 2026-08-01): credential custody, audit, and
+  runtime signals are all self-hosted, so this service stays fully operable with no ops plane present. The
+  cost is that fleet-wide correlation, anomaly detection and alerting do not exist until some consumer
+  subscribes to the contracts exposed here — an accepted gap, and a smaller one than an IdP that cannot
+  onboard or revoke an agent while a downstream service is down. Automated remediation still means a
+  compromised operator runtime can drive admin actions, bounded as ever by least-privilege scopes, step-up
+  on the riskiest tools, and audit.
 - **Follow-ups (named, not built here):** the concrete role/group model and where membership lives; the
   step-up assurance mechanism for local-credential users (Google SSO can enforce MFA upstream); audit
-  hash-chaining; the **maestro contracts** (credential custody/DCR handshake, audit emission schema, runbook
-  remediation scopes); CORS specifics for browser MCP clients; refresh-token rotation tuning for long-lived
-  MCP sessions; and load/abuse testing of the public MCP surface.
+  hash-chaining; CORS specifics for browser MCP clients; refresh-token rotation tuning for long-lived MCP
+  sessions; and load/abuse testing of the public MCP surface.
 
 ## Status & phased implementation (accepted 2026-07-05)
 
@@ -366,7 +380,7 @@ ADR removes. Delivered in phases so "remote, no-SSH" lands early and the hardeni
   standard MCP OAuth flow, no SSH, no prod shell account."
 - **Phase 2 — hardening.** Dedicated `auth-mcp.fps4.nl` resource origin, audience-binding (RFC 8707),
   sender-constraint (DPoP / mTLS), role-derived scopes with a step-up assurance claim, gated dynamic client
-  registration, and the maestro contracts (§10). stdio-over-SSH is kept as documented break-glass.
+  registration, and self-hosted credential custody (§10). stdio-over-SSH is kept as documented break-glass.
 
 Related enabler: [ADR-0017](0017-product-runtime-self-registration-invites.md)'s self-registration and the
 management plane's `create_client` both need the client to carry `claims` (e.g.
@@ -387,7 +401,7 @@ work so product-runtime clients can be created wholly through the management pla
 | Phase 2 — **step-up assurance** (acr/amr on the riskiest tools) | **Backlog** | — |
 | Phase 2 — **gated dynamic client registration** (RFC 7591) | **Backlog** | — |
 | Phase 2 — **browser-client `Origin` allow-listing** (populate `MCP_ALLOWED_ORIGINS`) | **Backlog** | — |
-| **maestro contracts** (§10: DCR custody, audit emission, remediation scopes) | **Backlog** (cross-repo) | — |
+| **Ops-plane subscriber** (§10: reads `/admin/v1/audit` + `/admin/v1/stats`) | **Backlog** (awaits maestro's replacement) | — |
 
 The remote, no-SSH transport is in production and hardened for the machine/agent case (audience-bound
 bearer + `Origin` allow-list + per-tool scope + audit, on an isolated origin). The backlog items above are
