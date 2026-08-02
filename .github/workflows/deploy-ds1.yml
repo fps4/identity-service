@@ -62,9 +62,6 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
-          # Runtime secret for the maestro fleet-telemetry channel. Must equal the seeded
-          # seeded identity-service-ds1-runtime client secret (in the live DB — ADR-0008). Unset → telemetry stays inert.
-          MAESTRO_RUNTIME_CLIENT_SECRET: ${{ secrets.MAESTRO_RUNTIME_CLIENT_SECRET }}
           # Management-plane admin client secret (ADR-0007). Injected into the service container so the
           # in-container MCP launcher (docker/mcp-admin.sh) can mint an admin token. Must equal the
           # seeded identity-admin-mcp client secret (in the live DB — ADR-0008). Unset → MCP admin auth off.
@@ -77,10 +74,8 @@ jobs:
             [ -n "$GOOGLE_CLIENT_ID" ] && echo "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"
             [ -n "$GOOGLE_CLIENT_SECRET" ] && echo "GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET"
             [ -n "$GOOGLE_REDIRECT_URI" ] && echo "GOOGLE_REDIRECT_URI=$GOOGLE_REDIRECT_URI"
-            [ -n "$MAESTRO_RUNTIME_CLIENT_SECRET" ] && echo "MAESTRO_RUNTIME_CLIENT_SECRET=$MAESTRO_RUNTIME_CLIENT_SECRET"
             [ -n "$IDENTITY_ADMIN_CLIENT_SECRET" ] && echo "IDENTITY_ADMIN_CLIENT_SECRET=$IDENTITY_ADMIN_CLIENT_SECRET"
           } >> config/ds1/.env
-          [ -n "$MAESTRO_RUNTIME_CLIENT_SECRET" ] || echo "::warning::MAESTRO_RUNTIME_CLIENT_SECRET unset — maestro fleet telemetry stays dormant"
           [ -n "$IDENTITY_ADMIN_CLIENT_SECRET" ] || echo "::warning::IDENTITY_ADMIN_CLIENT_SECRET unset — management plane / MCP admin auth unavailable"
           [ -n "$OAUTH_KEY_PASSPHRASE" ] || echo "::warning::OAUTH_KEY_PASSPHRASE unset — signing keys stored unencrypted at rest (ds1 SMOKE)"
           echo "Assembled config/ds1/.env ($(grep -c . config/ds1/.env) non-empty lines)"
@@ -117,34 +112,6 @@ jobs:
           done
           docker logs --tail 20 identity-service 2>&1 | tail -20 || true
           [ "$ok" = 1 ] || { echo "::error::identity-service did not become healthy"; exit 1; }
-
-      - name: Report product_runtime client coverage (non-blocking — ADR-0017)
-        # A managed-product runtime authorizes to maestro with a client_credentials JWT minted from a
-        # `product_runtime` client in THIS service's DB (US-0086; docs/reference/product-runtime-credential.md).
-        # This step used to HARD-FAIL the deploy on any seed-vs-DB gap. That red-walled every unrelated merge
-        # (the deploy re-fires on each green DoD) for seed-data state a deploy cannot fix — see
-        # docs/guides/ds1-delivery-pipeline-findings.md. Per ADR-0017:
-        #   * other products now SELF-REGISTER their runtime client via an operator-issued invite (RQ-0018),
-        #     so config/seed.yaml declares only identity-service's OWN runtime client — the deploy is no
-        #     longer the right place to notice another product's missing registration;
-        #   * the fleet-level "can every managed runtime mint a token?" check belongs to MAESTRO, which owns
-        #     the register of expected runtimes and their telemetry (agentic-ops), as an ALERT — not this gate.
-        # So this stays as a NON-BLOCKING signal: it reports coverage and warns on a gap, but never exits 1.
-        run: |
-          DB=$(grep -E '^MONGO_DB_NAME=' config/ds1/.env.base | cut -d= -f2)
-          DB=${DB:-identity-service}
-          expected=$(grep -cE '^[[:space:]]*role:[[:space:]]*product_runtime[[:space:]]*$' config/seed.yaml || true)
-          echo "config/seed.yaml declares ${expected:-0} product_runtime client(s) (identity-service's own)"
-          actual=$(docker exec identity-service-mongo mongosh "$DB" --quiet \
-            --eval 'db.oauth_clients.countDocuments({"claims.role":"product_runtime"})' 2>/dev/null | tr -dc '0-9')
-          echo "ds1 auth DB ($DB) has ${actual:-0} product_runtime client(s) total (incl. self-registered — ADR-0017)"
-          if [ "${actual:-0}" -lt "${expected:-0}" ]; then
-            echo "::warning::identity-service's own product_runtime client is not seeded on ds1 (${actual:-0}/${expected})."
-            echo "::warning::Re-seed with: MAESTRO_RUNTIME_CLIENT_SECRET=… MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=$DB npm run seed"
-            echo "::warning::Fleet-wide runtime-registration coverage is monitored by maestro (ADR-0017), not this deploy."
-          else
-            echo "OK: identity-service's own product_runtime client is present — it can authorize to maestro."
-          fi
 
       - name: Cleanup assembled secrets (always)
         if: always()
