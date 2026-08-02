@@ -12,6 +12,13 @@ export interface OAuthTokenDocument extends Document<string> {
   refreshTokenId?: string;
   status: 'active' | 'revoked' | 'expired';
   hashedToken?: string; // for refresh tokens to avoid storing raw value
+  /**
+   * The RFC 8707 resource this token chain is bound to (ADR-0009 Phase 2), carried so a REFRESH can
+   * re-mint the same `aud`. Without it the refresh silently falls back to the application's audience and
+   * the resource server rejects the result — the login looks fine and the connection dies at the first
+   * token expiry. Absent for tokens issued without a resource indicator.
+   */
+  resource?: string;
 }
 
 const oauthTokenSchema = new mongoose.Schema<OAuthTokenDocument>({
@@ -25,7 +32,8 @@ const oauthTokenSchema = new mongoose.Schema<OAuthTokenDocument>({
   issuedAt: { type: Date, required: true },
   refreshTokenId: { type: String },
   status: { type: String, enum: ['active', 'revoked', 'expired'], default: 'active', index: true },
-  hashedToken: { type: String }
+  hashedToken: { type: String },
+  resource: { type: String }
 }, { timestamps: false });
 
 oauthTokenSchema.index({ clientId: 1, status: 1 });
