@@ -61,19 +61,19 @@ applications:
         redirectUris: []
         isConfidential: false
 
-  - id: coach
+  # Supersedes the former `coach` application, whose id, audience, role catalogue and redirect URIs had
+  # all drifted from what the product actually deploys. See config/seed.skills-coach.yaml for the detail.
+  - id: skills-coach
     name: Skills Coach
-    audience: coach-workspace            # matches the coach API's IDENTITY_SERVICE_AUDIENCE
-    roles:                               # the coach role catalogue (RQ-0005) → token `roles`
+    audience: skills-coach               # matches AUTH_AUDIENCE in skills-coach config/ds1/.env.base
+    roles:                               # the role catalogue (RQ-0005) → token `roles`
       - { key: learner, name: Learner }
-      - { key: compliance-officer, name: Compliance Officer }
+      - { key: coach, name: Coach }
     credentials:
-      - id: coach-web
+      - id: skills-coach-web             # matches WEB_IDENTITY_CLIENT_ID
         name: Skills Coach Web
-        grantTypes: [password, authorization_code]   # password + Google SSO (authorization_code + PKCE, RQ-0012)
-        redirectUris:                    # the coach web /auth/callback (exact-match validated) — RQ-0012
-          - http://localhost:3000/auth/callback
-          - https://coach.fps4.nl/auth/callback
+        grantTypes: [password]           # the web signs in via the password grant (WEB_AUTH_MODE=component-auth)
+        redirectUris: []                 # no browser redirect leg — the app has no OAuth callback route
         isConfidential: false
 
   # --- identity-service's OWN application: its machine credentials. The admin credential drives the

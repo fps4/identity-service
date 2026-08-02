@@ -1,0 +1,35 @@
+# Focused STRUCTURAL seed for the Skills Coach (ADR-0011, ADR-0019, ADR-0020).
+#
+# Per ADR-0011, applications + credentials are declarative/GitOps (this file); users are operational and
+# owned by the live DB (ADR-0008), managed via the admin plane. So this file lists NO users and
+# references NO ${SEED_*} secrets — it is dispatchable on its own.
+#
+# Replaces the former `coach` application, which had drifted from the product on every field that
+# matters. What the deployment actually expects, from skills-coach `config/ds1/.env.base`:
+#   - `AUTH_AUDIENCE=skills-coach`          — was `coach-workspace`, so no token it issued would verify
+#   - `WEB_IDENTITY_CLIENT_ID=skills-coach-web` — was `coach-web`, so the login call named a client that
+#                                             did not exist
+# The role catalogue drifted too: the product's vocabulary is `learner` + `coach`
+# (api/src/auth/capabilities.ts ROLE_CAPABILITIES), never the `compliance-officer` the old catalogue
+# carried — a token with that role would resolve to no capabilities at all.
+#
+# Apply via the seed-ds1 workflow:  gh workflow run seed-ds1.yml -f seed_file=config/seed.skills-coach.yaml
+# Or on the ds1 host from service/:  SEED_FILE=../config/seed.skills-coach.yaml \
+#   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+
+applications:
+  - id: skills-coach
+    name: Skills Coach
+    audience: skills-coach               # the coach API verifies this as AUTH_AUDIENCE
+    roles:                               # the role catalogue (ADR-0019) → token `roles` (RQ-0005)
+      - { key: learner, name: Learner, description: Practise drills and read their own progress }
+      - { key: coach, name: Coach, description: Publish packs, read all submissions, write corrections }
+    credentials:
+      - id: skills-coach-web
+        name: Skills Coach Web
+        # The web surface signs in with the password grant (WEB_AUTH_MODE=component-auth); it has no
+        # /auth/callback route, so there is no redirect leg to register. Add `authorization_code` and the
+        # callback URI here together, if and when it grows one.
+        grantTypes: [password]
+        redirectUris: []
+        isConfidential: false            # public client — the browser sends client_id with no secret
