@@ -35,6 +35,11 @@ network-restricted — kept off the public token-issuance surface by default.
 - `Origin` – checked against the deployment's `CORS_ORIGINS` allow-list, plus the service's own origins
   (`AUTH_JWT_ISSUER`, `MCP_RESOURCE_URL`), which are always allowed — a browser sends `Origin` on every
   non-GET request, including the same-origin POST from this service's own login form.
+- `Sec-Fetch-Site: same-origin` (or `none`) – skips the allow-list check entirely: the browser has stated
+  the request is not cross-site, so there is no CORS decision to make. This is what lets a form-submission
+  navigation through, since Chromium gives such a POST `Origin: null` when the page carries
+  `Referrer-Policy: no-referrer` — as the sign-in page deliberately does. CSRF on that route is defended
+  by the single-use `login_token`, not by the origin check.
 
 ---
 
