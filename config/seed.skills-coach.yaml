@@ -33,3 +33,39 @@ applications:
         grantTypes: [password]
         redirectUris: []
         isConfidential: false            # public client — the browser sends client_id with no secret
+
+      # --- The coach surface (ADR-0001 over there: content and corrections enter through /coach/v1).
+      # A machine principal, because the caller is a script or an agent runner, not a person: the
+      # importer publishing a pack manifest, and the publish-pack workflow that wraps it.
+      #
+      # `claims.roles` is how a client-credentials token carries authority at all (US-0086). Skills
+      # Coach maps roles to capabilities in its own code and reads nothing else — a token without
+      # `roles` falls back to its documented baseline, `learner`, and every coach call is refused.
+      - id: skills-coach-coach
+        name: Skills Coach — coach automation
+        grantTypes: [client_credentials]
+        isConfidential: true
+        secret: ${SKILLS_COACH_COACH_CLIENT_SECRET}
+        subject: coach@skills-coach.fps4.nl
+        claims:
+          roles: [coach]
+
+      # --- The interactive coach credential, for an MCP client on an operator's laptop.
+      #
+      # Public and PKCE-authenticated: a CLI cannot keep a secret (RFC 8252). `redirectUris` is
+      # exact-matched, so this loopback URI must equal the client's `--callback-port` exactly —
+      # there is no wildcard-port allowance.
+      #
+      # Authority is the OPERATOR's, never this credential's: the person signing in needs an active
+      # `coach` assignment on this application, which is operational state and so is not seeded
+      # here (ADR-0011). Without it the login succeeds and every tool still refuses.
+      #
+      # The token's `aud` is bound to the MCP resource by the client passing
+      # `resource=https://coach-mcp.fps4.nl/mcp` (RFC 8707); Skills Coach accepts that URL as an
+      # audience alongside `skills-coach` itself.
+      - id: skills-coach-mcp-operator
+        name: MCP client — interactive coach login
+        grantTypes: [authorization_code]
+        redirectUris:
+          - http://localhost:9415/callback
+        isConfidential: false
