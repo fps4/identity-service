@@ -108,6 +108,9 @@ function bearer(req: Request): string | null {
 function checkOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.headers.origin;
   if (origin && !CONFIG.mcp.allowedOrigins.includes(origin)) {
+    // Same reasoning as the service-wide handler: record what was refused, or the rejection is invisible
+    // from the server side. MCP_ALLOWED_ORIGINS is empty by default, so this fires on ANY browser origin.
+    logger.warn({ origin, method: req.method, path: req.originalUrl }, 'rejected an MCP request whose Origin is not allowed');
     res.status(403).json({ error: 'origin_not_allowed', error_description: `Origin '${origin}' is not permitted for the MCP endpoint` });
     return;
   }
