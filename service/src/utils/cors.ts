@@ -1,5 +1,6 @@
 import type cors from 'cors';
 import type { Request, Response, NextFunction } from 'express';
+import logger from './logger.js';
 
 /** Marker on the Error a rejected CORS origin produces, so the error handler can map it to a 403. */
 export const CORS_FORBIDDEN = 'cors_forbidden';
@@ -76,12 +77,20 @@ export function buildCorsOptions(opts: {
  */
 export function corsErrorHandler(
   err: (Error & { code?: string }) | undefined,
-  _req: Request,
+  req: Request,
   res: Response,
   next: NextFunction
 ): void {
   if (err && err.code === CORS_FORBIDDEN) {
     if (res.headersSent) return next(err);
+    // Say WHICH origin was refused, and where. The client is told only `origin_not_allowed`, and a
+    // browser will not show the `Origin` header it generated — so without this line the server side of a
+    // rejected sign-in is indistinguishable from any other 403, and diagnosing one costs a packet
+    // capture. `Origin` is a public request header, not a credential; the rest is ordinary request shape.
+    logger.warn(
+      { origin: req.headers.origin, method: req.method, path: req.originalUrl, host: req.headers.host },
+      'rejected a request whose Origin is not allowed'
+    );
     res.status(403).json({ error: 'origin_not_allowed', error_description: 'Origin not allowed' });
     return;
   }

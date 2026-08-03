@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import cors from 'cors';
 import type { Server } from 'http';
-import { buildCorsOptions, corsErrorHandler, selfOrigins } from '../src/utils/cors.js';
+
+// The rejection path logs; capture it rather than letting pino write through the suite.
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock('../src/utils/logger.js', () => {
+  const stub = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  return { default: stub, logger: stub };
+});
+
+const { buildCorsOptions, corsErrorHandler, selfOrigins } = await import('../src/utils/cors.js');
 
 // Regression: a disallowed Origin used to hit cors's `callback(new Error())` and surface as Express's
 // default 500 HTML. It must instead be a clean 403 JSON, while allowed / origin-less requests pass.
@@ -44,6 +52,19 @@ describe('CORS origin handling', () => {
     expect(res.status).toBe(403);
     expect(res.headers.get('content-type')).toContain('application/json');
     await expect(res.json()).resolves.toMatchObject({ error: 'origin_not_allowed' });
+  });
+
+  // The client is told only `origin_not_allowed`, and a browser will not show the `Origin` it generated,
+  // so a rejection used to be invisible from both ends — diagnosing one meant capturing packets.
+  it('logs the refused origin, method and path so the 403 is diagnosable from the server', async () => {
+    warn.mockClear();
+    await post({ Origin: 'https://evil.example' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatchObject({
+      origin: 'https://evil.example',
+      method: 'POST',
+      path: '/oauth2/token'
+    });
   });
 
   it('allows a request with no Origin (non-browser caller)', async () => {
