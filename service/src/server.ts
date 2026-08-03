@@ -8,7 +8,7 @@ import { metricsRecorder } from './container.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
-import { buildCorsOptions, corsErrorHandler } from './utils/cors.js';
+import { buildCorsOptions, corsErrorHandler, selfOrigins } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
 import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from './mcp/http-transport.js';
 
@@ -29,7 +29,14 @@ async function bootstrap() {
         'http://localhost:8080',
         'http://127.0.0.1:8080'
       ];
-  const allowedOrigins = new Set([...staticOrigins, ...devOrigins]);
+  // The deployment's configured origins, plus the service's own — CORS_ORIGINS lists the CONSUMERS that
+  // call this API from a browser, so it is routinely written without the issuer itself, which silently
+  // breaks the first-party login form's same-origin POST (see `selfOrigins`).
+  const allowedOrigins = new Set([
+    ...staticOrigins,
+    ...devOrigins,
+    ...selfOrigins([CONFIG.auth.jwtIssuer, CONFIG.mcp.resourceUrl])
+  ]);
 
   app.use(cors(buildCorsOptions({ allowedOrigins, isProd, methods: Array.from(CONFIG.cors.allowedMethods) })));
 

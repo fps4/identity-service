@@ -32,7 +32,9 @@ network-restricted — kept off the public token-issuance surface by default.
 ## Headers
 
 - `Content-Type: application/json`
-- `Origin` – checked against the deployment's `CORS_ORIGINS` allow-list.
+- `Origin` – checked against the deployment's `CORS_ORIGINS` allow-list, plus the service's own origins
+  (`AUTH_JWT_ISSUER`, `MCP_RESOURCE_URL`), which are always allowed — a browser sends `Origin` on every
+  non-GET request, including the same-origin POST from this service's own login form.
 
 ---
 

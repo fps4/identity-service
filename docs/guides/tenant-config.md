@@ -43,7 +43,7 @@ What used to live on a per-tenant `oauth` block is now deployment configuration.
 
 | Former per-tenant field | New home (deployment env) | Notes |
 | --- | --- | --- |
-| `allowedOrigins` | `CORS_ORIGINS` | Comma-separated allow-list of browser origins; a single, deployment-wide list. |
+| `allowedOrigins` | `CORS_ORIGINS` | Comma-separated allow-list of browser origins; a single, deployment-wide list. List the **consumers**: the service's own origins (`AUTH_JWT_ISSUER`, `MCP_RESOURCE_URL`) are always allowed, so the first-party login form's same-origin POST works whatever this is set to. |
 | `oauth.registration` (`open`\|`invite`\|`closed`) | `AUTH_REGISTRATION_MODE` | Default `open`. Governs self-registration (see [Registration & invites](#registration-policy--invites)). |
 | `oauth.idp.provider` (`google`\|`local`) | `AUTH_LOCAL_IDP_ENABLED` + the Google app env | Local IdP is on by default; set `AUTH_LOCAL_IDP_ENABLED=false` to disable it. One Google app per deployment (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`), and configuring it is what makes `/oauth2/authorize` federate — with no Google app that endpoint serves this service's own login form instead. Turning both off leaves no interactive login. |
 | `oauth.allowedRoles` | `AUTH_ALLOWED_ROLES` | Legacy deployment-wide role vocabulary. Superseded by per-application **role catalogues** under [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) — the app's catalogue is now the vocabulary an assignment draws from (see [Application role catalogues & assignments](#application-role-catalogues--assignments-adr-0019)). |
