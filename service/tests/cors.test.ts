@@ -10,7 +10,8 @@ vi.mock('../src/utils/logger.js', () => {
   return { default: stub, logger: stub };
 });
 
-const { buildCorsOptions, corsErrorHandler, selfOrigins } = await import('../src/utils/cors.js');
+const { buildCorsOptions, corsErrorHandler, selfOrigins, isBrowserSameOriginRequest } =
+  await import('../src/utils/cors.js');
 
 // Regression: a disallowed Origin used to hit cors's `callback(new Error())` and surface as Express's
 // default 500 HTML. It must instead be a clean 403 JSON, while allowed / origin-less requests pass.
@@ -94,6 +95,73 @@ describe('selfOrigins', () => {
 
   it('skips unset and unparseable entries rather than throwing at boot', () => {
     expect(selfOrigins([undefined, '', 'not a url', 'http://localhost:7305'])).toEqual(['http://localhost:7305']);
+  });
+});
+
+// The failure this reproduces, from the ds1 log line that finally identified it:
+//   {"origin":"null","method":"POST","path":"/oauth2/authorize/login","host":"auth.fps4.nl",
+//    "msg":"rejected a request whose Origin is not allowed"}
+// Chromium derives a form-submission navigation's `Origin` from the document's referrer policy, and the
+// login page is served `Referrer-Policy: no-referrer` deliberately — so it submits its own form with the
+// opaque `Origin: null`, which no allow-list can match. `Sec-Fetch-Site` is how the browser states the
+// request is same-origin regardless.
+describe('same-origin navigation carrying an opaque Origin', () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.urlencoded({ extended: false }));
+    // Mirrors server.ts: browser-declared same-origin requests bypass the allow-list.
+    const corsMw = cors(buildCorsOptions({ allowedOrigins: new Set(['https://ids.fps4.nl']), isProd: true, methods: ['GET', 'POST'] }));
+    app.use((req, res, next) => (isBrowserSameOriginRequest(req) ? next() : corsMw(req, res, next)));
+    app.post('/oauth2/authorize/login', (_req, res) => { res.status(302).set('Location', 'http://localhost:9414/callback?code=x').end(); });
+    app.use(corsErrorHandler);
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, () => {
+        const addr = server.address();
+        base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  const submit = (headers: Record<string, string>) =>
+    fetch(`${base}/oauth2/authorize/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+      body: 'login_token=tok-123',
+      redirect: 'manual'
+    });
+
+  it('accepts Origin: null when the browser says the request is same-origin', async () => {
+    const res = await submit({ Origin: 'null', 'Sec-Fetch-Site': 'same-origin' });
+    expect(res.status).toBe(302);
+  });
+
+  it('accepts a user-typed navigation (Sec-Fetch-Site: none)', async () => {
+    const res = await submit({ Origin: 'null', 'Sec-Fetch-Site': 'none' });
+    expect(res.status).toBe(302);
+  });
+
+  it('still rejects Origin: null when the browser calls it cross-site', async () => {
+    const res = await submit({ Origin: 'null', 'Sec-Fetch-Site': 'cross-site' });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ error: 'origin_not_allowed' });
+  });
+
+  it('still rejects a foreign origin that claims cross-site', async () => {
+    const res = await submit({ Origin: 'https://evil.example', 'Sec-Fetch-Site': 'cross-site' });
+    expect(res.status).toBe(403);
+  });
+
+  it('still rejects an opaque origin from a client sending no Sec-Fetch-Site', async () => {
+    const res = await submit({ Origin: 'null' });
+    expect(res.status).toBe(403);
   });
 });
 

@@ -8,7 +8,7 @@ import { metricsRecorder } from './container.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
-import { buildCorsOptions, corsErrorHandler, selfOrigins } from './utils/cors.js';
+import { buildCorsOptions, corsErrorHandler, selfOrigins, isBrowserSameOriginRequest } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
 import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from './mcp/http-transport.js';
 
@@ -38,7 +38,11 @@ async function bootstrap() {
     ...selfOrigins([CONFIG.auth.jwtIssuer, CONFIG.mcp.resourceUrl])
   ]);
 
-  app.use(cors(buildCorsOptions({ allowedOrigins, isProd, methods: Array.from(CONFIG.cors.allowedMethods) })));
+  // A request the browser itself marks same-origin skips the allow-list entirely: there is no CORS
+  // decision to make, and a form-submission navigation can arrive with `Origin: null` that no allow-list
+  // could ever match (see `isBrowserSameOriginRequest`). Everything else goes through the policy.
+  const corsMiddleware = cors(buildCorsOptions({ allowedOrigins, isProd, methods: Array.from(CONFIG.cors.allowedMethods) }));
+  app.use((req, res, next) => (isBrowserSameOriginRequest(req) ? next() : corsMiddleware(req, res, next)));
 
   // Time every request into the shared rolling window. Recording only — /admin/v1/stats reads the
   // rollup on demand; nothing is pushed anywhere.

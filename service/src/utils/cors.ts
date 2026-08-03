@@ -21,6 +21,29 @@ function isPrivateNetworkOriginAllowed(origin: string, isProd: boolean): boolean
 }
 
 /**
+ * True when the BROWSER ITSELF states the request is not cross-site: `Sec-Fetch-Site: same-origin`, or
+ * `none` for a user-typed URL / bookmark.
+ *
+ * Why this is needed even though same-origin requests carry a matching `Origin`: they do not always.
+ * Chromium derives the `Origin` of a form-submission NAVIGATION from the document's referrer policy, so
+ * the first-party sign-in page — served `Referrer-Policy: no-referrer` on purpose, to keep the authorize
+ * URL's `state` / `code_challenge` from leaking onward — submits its own form with `Origin: null`. No
+ * allow-list can match that, and the deployment rejected its own login with `origin_not_allowed`.
+ *
+ * The deeper point is that CORS does not govern top-level navigations at all; it gates script-initiated
+ * cross-origin fetches. Consulting the allow-list for a form submit was never a meaningful check, and the
+ * CSRF defence on that route is the single-use `login_token`, which this does not touch.
+ *
+ * `Sec-Fetch-*` is a forbidden header name — page script cannot set or forge it, so a browser's word here
+ * is trustworthy. A non-browser caller could send it, but such a caller can equally omit `Origin`, which
+ * is already allowed (CORS is browser-enforced, not an auth gate), so this concedes nothing new.
+ */
+export function isBrowserSameOriginRequest(req: Request): boolean {
+  const site = req.headers['sec-fetch-site'];
+  return site === 'same-origin' || site === 'none';
+}
+
+/**
  * The service's OWN public origins, derived from the URLs it publishes (the token issuer, the MCP
  * resource). These must always be allowed: the sign-in page is served from the issuer and its form posts
  * back to it, and a browser attaches `Origin` to any non-GET request — including a SAME-origin form
