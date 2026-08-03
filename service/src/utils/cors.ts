@@ -20,6 +20,25 @@ function isPrivateNetworkOriginAllowed(origin: string, isProd: boolean): boolean
 }
 
 /**
+ * The service's OWN public origins, derived from the URLs it publishes (the token issuer, the MCP
+ * resource). These must always be allowed: the sign-in page is served from the issuer and its form posts
+ * back to it, and a browser attaches `Origin` to any non-GET request — including a SAME-origin form
+ * submit. An allow-list that omits the issuer therefore rejects this service's own login flow with
+ * `origin_not_allowed`. Self-allowing concedes nothing: a same-origin request is not what CORS defends
+ * against. Unparseable / unset URLs are skipped rather than throwing at boot.
+ */
+export function selfOrigins(urls: Array<string | undefined>): string[] {
+  return urls.flatMap((u) => {
+    if (!u) return [];
+    try {
+      return [new URL(u).origin];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
  * Build the CORS options for the service. A disallowed Origin is rejected via a TAGGED error
  * ({@link CORS_FORBIDDEN}); pair this with {@link corsErrorHandler} so the rejection becomes a clean
  * 403 JSON instead of Express's default 500 HTML. A request with no Origin (non-browser callers) is
