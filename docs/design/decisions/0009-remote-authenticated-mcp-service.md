@@ -157,6 +157,15 @@ compromise. So MCP tokens are constrained two ways:
   token's audience is bound to the MCP resource and verified on every request. A token minted for another
   resource is rejected at the MCP endpoint, and an MCP token cannot be replayed against an unrelated
   resource server — the token-confusion mitigation the MCP authorization spec calls for.
+
+  **Which resources are acceptable is a per-application registry**, not a single global value: an
+  application (ADR-0020) declares the resources it owns in its `resources` list, and a credential may bind
+  a token only to one of those — or to this service's own `MCP_RESOURCE_URL`. The scoping *is* the
+  token-confusion mitigation applied one level up: without it, either every product's resource would be
+  acceptable to every credential, or (as was the case until this registry existed) only identity-service's
+  own MCP resource would be acceptable at all, and no other product could sit behind this authorization
+  server. Registration is GitOps by default (`resources:` in the seed file), runtime-editable through
+  `PUT /admin/v1/applications/{id}/resources` and the `set_application_resources` MCP tool.
 - **Sender-constrained (RFC 9449 DPoP / RFC 8705 mTLS).** Tokens are bound to a key the client holds:
   **DPoP** for interactive/public clients (a per-request proof JWT), **mTLS-bound** as the option for
   headless agents. **Sender-constraining is required for high-privilege scopes** (notably `admin:keys`);
@@ -400,6 +409,7 @@ work so product-runtime clients can be created wholly through the management pla
 | **`authorization_endpoint` published in AS metadata** (§3) | **Done** | #86 |
 | **First-party interactive login** — browser leg without a Google app | **Done** | #86 |
 | **Audience-binding for *user* tokens** (`resource` on authorize + exchange) | **Done** | #86 |
+| **Per-application protected-resource registry** (§5 — another product's MCP endpoint) | **Done** | this change |
 | Phase 2 — **DPoP / mTLS sender-constraint** | **Backlog** | — |
 | Phase 2 — **step-up assurance** (acr/amr on the riskiest tools) | **Backlog** | — |
 | Phase 2 — **gated dynamic client registration** (RFC 7591) | **Backlog** | — |
@@ -434,3 +444,18 @@ token gets a `200`, so the failure looked like a client problem:
 Gated DCR (§7) remains backlog and remains *not* the thing that connects a general-purpose MCP client:
 those register anonymously, which §7 refuses, and a self-registered client holds no `admin:*` scope. The
 intended path is pre-registration plus an explicit operator assignment carrying `platform_admin`.
+
+**#86 closed the interactive path for *this service's own* resource only.** The allow-list it introduced
+was `[CONFIG.mcp.resourceUrl]` — a single global value, this service's own MCP URL — so an MCP client for
+any *other* product (Skills Coach's `https://coach-mcp.fps4.nl/mcp` was the first) was refused
+`invalid_target` at `/oauth2/authorize` no matter how it was registered. Because MCP spec 2025-06-18
+requires the `resource` parameter, that 400 lands before the browser opens, so the failure reads as "the
+client did nothing" and sends you looking at the client, the credential, or the seed file — none of which
+were at fault. The allow-list is now `[own MCP resource, ...application.resources]`, and a product
+declares its own endpoint in its seed file. Two things worth keeping in mind:
+
+- The registry is **replaced wholesale** on every seed run, exactly like `roles` — a seed file naming an
+  application must restate its full `resources` list or it silently empties it.
+- It gates **issuance**, not verification. Removing a resource stops new tokens; already-issued ones keep
+  their `aud` until they expire, and a refresh re-mints against the resource the chain was bound to — so
+  revoke the session to cut an in-flight chain off.

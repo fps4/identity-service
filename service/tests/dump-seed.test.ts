@@ -8,7 +8,7 @@ import { parseSeedConfig } from '../src/services/seed-config.js';
 // plus a local user assigned to the human app.
 const applications: DumpApplication[] = [
   { _id: 'telemetry', name: 'Telemetry' },
-  { _id: 'demo', name: 'Demo', audience: 'demo-workspace', roles: [{ key: 'member' }] }
+  { _id: 'demo', name: 'Demo', audience: 'demo-workspace', roles: [{ key: 'member' }], resources: ['https://demo-mcp.fps4.nl/mcp'] }
 ];
 const credentials: DumpCredential[] = [
   { _id: 'telemetry-ingest', applicationId: 'telemetry', name: 'Ingest', grantTypes: ['client_credentials'], scopes: ['telemetry:write'], isConfidential: true, subject: 'runtime', claims: { role: 'product_runtime' } },
@@ -33,6 +33,9 @@ describe('dump-seed', () => {
     // Secrets are never exported, and users are excluded by default.
     expect(ingest.secret).toBeUndefined();
     expect(reparsed.users.length).toBe(0);
+    // A seed run REPLACES the resource registry, so a dump that lost it would empty the live one on
+    // re-apply (ADR-0009 Phase 2).
+    expect(reparsed.applications[1].resources).toEqual(['https://demo-mcp.fps4.nl/mcp']);
   });
 
   it('warns about every confidential credential dumped without a secret', () => {

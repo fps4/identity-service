@@ -60,6 +60,9 @@ user token).
 - Body parameters:
   - `grant_type=client_credentials`
   - `scope` (optional, space-delimited string; subset of client’s registered scopes)
+  - `resource` (optional) — RFC 8707 resource indicator; binds the token's `aud` to it. Accepted values
+    are this service's own MCP resource or one in the **application's `resources` registry**
+    (ADR-0009 Phase 2); anything else is `400 invalid_target`.
 
 Response (`200`):
 
@@ -166,6 +169,14 @@ Browser entry point for user login (RQ-0001). Validates the client and the regis
 - `code_challenge` – PKCE challenge; `code_challenge_method=S256` (the only supported method).
 - `state` (recommended) – opaque CSRF value, echoed back unchanged on the consumer redirect.
 - `scope` (optional) – space-delimited subset of the client's scopes.
+- `resource` (optional) – RFC 8707 resource indicator: the protected resource (e.g. an MCP endpoint URL)
+  the eventual token is for. When named, the token's `aud` binds to it instead of the application's
+  `audience`, and the same value must be repeated at the token exchange.
+
+  It must be either **this service's own MCP resource** (`MCP_RESOURCE_URL`) or one listed in the
+  **`resources` registry of the application the client belongs to** (ADR-0009 Phase 2, ADR-0020) —
+  otherwise `400 invalid_target`, raised *here*, before any login prompt. That is why a resource a
+  product has not registered presents to an MCP client as "nothing happened": the browser never opens.
 
 On success: `302` to Google. On a bad/unregistered request: a JSON OAuth error (no redirect, since
 an unvalidated `redirect_uri` is never trusted).
@@ -390,10 +401,12 @@ and the [admin console](../../console/README.md) all sit on the same service lay
 |---|---|---|
 | `GET /applications` | `admin:clients` | List applications (each with its `name`, default `audience`, and role catalogue — ADR-0020). |
 | `GET /applications/{id}` | `admin:clients` | Read one application. |
-| `POST /applications` | `admin:clients` | Create an application (ADR-0020): body `{ id?, name, audience?, roles? }` — `roles: AppRole[]` is the app's **role catalogue** (`AppRole = { key, name?, description? }`, ADR-0019); `audience` is the default token `aud`. |
+| `POST /applications` | `admin:clients` | Create an application (ADR-0020): body `{ id?, name, audience?, roles?, resources? }` — `roles: AppRole[]` is the app's **role catalogue** (`AppRole = { key, name?, description? }`, ADR-0019); `audience` is the default token `aud`; `resources: string[]` is the **protected-resource registry** (ADR-0009 Phase 2). |
 | `DELETE /applications/{id}` | `admin:clients` | Delete an application. |
 | `GET /applications/{id}/roles` | `admin:clients` | Read the application's role catalogue (`AppRole[]`, ADR-0019). |
 | `PUT /applications/{id}/roles` | `admin:clients` | Replace the application's role catalogue (`{ roles: AppRole[] }`, ADR-0019). |
+| `GET /applications/{id}/resources` | `admin:clients` | Read the application's protected-resource registry (`string[]`, ADR-0009 Phase 2). |
+| `PUT /applications/{id}/resources` | `admin:clients` | Replace it (`{ resources: string[] }`). Each entry must be an absolute, fragment-free URI — a `resource` indicator is exact-string-matched, so anything else could never match what a client sends and is refused `400 invalid_input`. |
 | `GET /applications/{id}/members` | `admin:clients` | List the users assigned to this application and their app-scoped roles (ADR-0019). |
 | `GET /applications/{id}/credentials` | `admin:clients` | List the OAuth-client **credentials** under this application (ADR-0020). |
 | `GET /clients` | `admin:clients` | List OAuth-client **credentials**; filter with `?applicationId=` (ADR-0020). Clients no longer carry a role catalogue. |
