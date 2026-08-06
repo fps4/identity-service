@@ -28,6 +28,7 @@ on:
       - config/seed.operators.yaml
       - config/seed.skills-coach.yaml
       - config/seed.mcp-operator.yaml
+      - config/seed.mstr-specs.yaml
 
 permissions:
   contents: read
@@ -82,6 +83,7 @@ jobs:
           SEED_COACH_OFFICER_PASSWORD: ${{ secrets.SEED_COACH_OFFICER_PASSWORD }}
           IDENTITY_ADMIN_CLIENT_SECRET: ${{ secrets.IDENTITY_ADMIN_CLIENT_SECRET }}
           SKILLS_COACH_COACH_CLIENT_SECRET: ${{ secrets.SKILLS_COACH_COACH_CLIENT_SECRET }}
+          MSTR_SPECS_AGENT_CLIENT_SECRET: ${{ secrets.MSTR_SPECS_AGENT_CLIENT_SECRET }}
           SEED_CONSOLE_ADMIN_PASSWORD: ${{ secrets.SEED_CONSOLE_ADMIN_PASSWORD }}
         run: |
           umask 077
@@ -93,7 +95,7 @@ jobs:
             SEED_MAESTRO_PO_PASSWORD SEED_MAESTRO_SA_PASSWORD SEED_MAESTRO_ADMIN_PASSWORD \
             SEED_COACH_ADMIN_PASSWORD SEED_COACH_LEARNER_PASSWORD SEED_COACH_OFFICER_PASSWORD \
             IDENTITY_ADMIN_CLIENT_SECRET SEED_CONSOLE_ADMIN_PASSWORD \
-            SKILLS_COACH_COACH_CLIENT_SECRET; do
+            SKILLS_COACH_COACH_CLIENT_SECRET MSTR_SPECS_AGENT_CLIENT_SECRET; do
             val="${!v}"
             [ -n "$val" ] && printf '%s=%s\n' "$v" "$val" >> seed.secrets.env
           done

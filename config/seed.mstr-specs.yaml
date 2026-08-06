@@ -1,0 +1,84 @@
+# Focused STRUCTURAL seed for mstr-specs (ADR-0011, ADR-0019, ADR-0020).
+#
+# Per ADR-0011, applications + credentials are declarative/GitOps (this file); users are operational
+# and owned by the live DB (ADR-0008), managed via the admin plane. So this file lists NO users, and
+# the one secret it references is supplied by the seed workflow — it is dispatchable on its own.
+#
+# What the deployment expects, from mstr-specs `config/ds1/.env.base`:
+#   - `AUTH_AUDIENCE=mstr-specs`
+#   - `WEB_IDENTITY_CLIENT_ID=mstr-specs-web`
+#   - `MCP_RESOURCE_URL=https://specs-mcp.fps4.nl/mcp`  — accepted as an audience alongside
+#     `mstr-specs` itself, so a token bound to the MCP resource (RFC 8707) verifies without the URL
+#     being configured twice and drifting.
+#
+# Apply via the seed-ds1 workflow:  gh workflow run seed-ds1.yml -f seed_file=config/seed.mstr-specs.yaml
+# Or on the ds1 host from service/:  SEED_FILE=../config/seed.mstr-specs.yaml \
+#   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+
+applications:
+  - id: mstr-specs
+    name: mstr-specs
+    audience: mstr-specs                 # the api verifies this as AUTH_AUDIENCE
+    roles:                               # the role catalogue (ADR-0019) → token `roles` (RQ-0005)
+      - key: author
+        name: Author
+        description: Create and edit drafts, and propose versions. Never decides at a gate.
+      - key: reviewer
+        name: Reviewer
+        description: Decide at a gate whose workspace definition names this role as the owner.
+      - key: workspace_admin
+        name: Workspace Admin
+        description: Apply workspace definitions, grant membership, refresh standards acceptances.
+      - key: auditor
+        name: Auditor
+        description: Read the whole chain of record — versions, decisions, lineage. No write at all.
+
+    credentials:
+      # --- The console.
+      #
+      # Password grant, matching WEB_AUTH_MODE=component-auth. There is no /auth/callback route yet,
+      # so there is no redirect leg to register. mstr-specs ADR-0011 records this as a deliberate
+      # deviation from its own architecture §7.1: the transparent-SSO property does not hold under
+      # the password grant, and authorization_code + PKCE is the named follow-up. When it lands, add
+      # `authorization_code` and the callback URI here together.
+      - id: mstr-specs-web
+        name: mstr-specs console
+        grantTypes: [password]
+        redirectUris: []
+        isConfidential: false            # public client — the browser sends client_id with no secret
+
+      # --- Agent runtimes, over MCP.
+      #
+      # A machine principal: the caller is an agent authoring drafts and proposing versions, not a
+      # person. `claims.roles: [author]` is deliberately the *only* role it carries, and that is the
+      # identity layer reinforcing mstr-specs ADR-0005 — agents author, they never decide.
+      #
+      # The service refuses a decision from a non-human principal regardless of role, so this is
+      # defence in depth rather than the control itself. Both are cheap; the control that is only in
+      # one place is the one that goes missing in a refactor.
+      - id: mstr-specs-agent
+        name: mstr-specs — agent authoring
+        grantTypes: [client_credentials]
+        isConfidential: true
+        secret: ${MSTR_SPECS_AGENT_CLIENT_SECRET}
+        subject: agent@specs.fps4.nl
+        claims:
+          roles: [author]
+          principal_kind: agent          # the api reads this to mint a principal of kind `agent`
+
+      # --- An MCP client on an operator's laptop.
+      #
+      # Public and PKCE-authenticated: a CLI cannot keep a secret (RFC 8252). `redirectUris` is
+      # exact-matched, so this loopback URI must equal the client's callback port exactly — there is
+      # no wildcard-port allowance.
+      #
+      # Authority is the OPERATOR's, never this credential's: the person signing in needs an active
+      # assignment on this application, which is operational state and so is not seeded here
+      # (ADR-0011). Without one the login succeeds and every workspace call is refused, because
+      # membership is granted in the workspace rather than by the token.
+      - id: mstr-specs-mcp-operator
+        name: MCP client — interactive mstr-specs login
+        grantTypes: [authorization_code]
+        redirectUris:
+          - http://localhost:9416/callback
+        isConfidential: false
