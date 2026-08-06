@@ -20,6 +20,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { decodeJwt } from 'jose';
 import { verifyAdminToken, principalHasScope, AdminTokenError, ADMIN_SCOPES, type AdminPrincipal } from '../core/admin-auth.js';
 import { CONFIG } from '../config.js';
+import { createRateLimiter } from '../utils/rate-limit.js';
 import logger from '../utils/logger.js';
 import { handleRpc } from './handler.js';
 
@@ -149,6 +150,15 @@ const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.
  */
 export function createMcpRouter(): Router {
   const router = Router();
+
+  // The same abuse guard the management plane carries, for the same reason: `authenticate` below runs an
+  // RS256 verification per request, so an unauthenticated flood is unbounded crypto. This endpoint reaches
+  // the identical admin tools, so leaving it unbounded would just move the cheap door one path over. Its
+  // own budget, since a busy agent session is a different traffic shape from a console operator's.
+  router.use(createRateLimiter({
+    limit: CONFIG.admin.rateLimit.perIpPerMinute,
+    globalLimit: CONFIG.admin.rateLimit.globalPerMinute
+  }));
 
   router.post('/', checkOrigin, authenticate, async (req, res) => {
     const principal = (req as Request & { mcpPrincipal?: AdminPrincipal }).mcpPrincipal!;

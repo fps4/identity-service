@@ -2,7 +2,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { extractClientMeta } from './request-metadata.js';
 
 /**
- * A small in-process sliding-window rate limiter for the **public, unauthenticated** endpoints.
+ * A small in-process sliding-window rate limiter for the endpoints whose *cost* a caller can drive
+ * without being trusted first: the public browser-login pair, and the management plane (`/admin/v1`),
+ * where an RS256 token verification runs before any principal is established.
  *
  * Hand-rolled for the same reason the registration cap (`users.ts`) and the token cap (`oauth/server.ts`)
  * are: the limits this service needs are small and well understood, and an IdP pays for every runtime
@@ -18,7 +20,9 @@ import { extractClientMeta } from './request-metadata.js';
  * Deliberate limits of this thing, so nobody mistakes it for more than it is: the window lives in
  * process memory, so it is per-container and resets on restart — right for a single-container
  * deployment, not a distributed limiter. It is an **abuse and DoS guard, not an authorization
- * control**; the per-account lockout in the local IdP remains what stops targeted brute force.
+ * control** — on the admin plane the scope check in `requireAdmin` is what decides who may do what, and
+ * the per-account lockout in the local IdP remains what stops targeted brute force. Being unauthenticated
+ * or authenticated is orthogonal: this bounds spend, not permission.
  */
 
 const DEFAULT_WINDOW_MS = 60_000;

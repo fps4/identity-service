@@ -88,7 +88,18 @@ export const CONFIG = {
     // `requiredScope` superscope. This is what lets the admin console attribute actions to a human
     // instead of one shared machine client. Empty list → no operator-by-role path (machine tokens only).
     operatorRoles: (process.env.ADMIN_OPERATOR_ROLES ?? 'platform_admin')
-      .split(',').map((r) => r.trim()).filter(Boolean)
+      .split(',').map((r) => r.trim()).filter(Boolean),
+    // Abuse guard in front of the whole management plane. Authenticated is not the same as bounded: the
+    // admin token is verified with an RS256 signature check on every request, BEFORE the principal is
+    // known, so an unauthenticated flood buys unbounded asymmetric crypto on the event loop for the price
+    // of a malformed header — the same shape of exposure as the login endpoint's scrypt. Being
+    // network-restricted (ADR-0007) narrows who can reach it; it does not bound what they can spend.
+    // Generous by design: these are ceilings on abuse, not a throttle a legitimate console or agent
+    // should ever feel.
+    rateLimit: {
+      perIpPerMinute: toNumber(process.env.ADMIN_API_REQUESTS_PER_MINUTE, 300),
+      globalPerMinute: toNumber(process.env.ADMIN_API_REQUESTS_GLOBAL_PER_MINUTE, 3000)
+    }
   },
   // Remote MCP transport (ADR-0009 Phase 1): the management MCP server exposed in-process over MCP
   // Streamable HTTP as an OAuth-protected resource, so agents connect with a bearer admin token instead

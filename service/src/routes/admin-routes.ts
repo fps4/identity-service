@@ -5,9 +5,27 @@ import { requireAdmin, ADMIN_SCOPES } from '../core/admin-auth.js';
 import { AdminServiceError } from '../services/admin.js';
 import { getMasterConnection } from '../utils/db.js';
 import { makeModels } from '../models/index.js';
+import { createRateLimiter } from '../utils/rate-limit.js';
+import { CONFIG } from '../config.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
+
+/**
+ * One abuse guard across the whole management plane, mounted BEFORE `requireAdmin` — deliberately, since
+ * the thing worth bounding is the admin-token verification itself: an RS256 signature check runs on every
+ * request, before any principal exists, so an unauthenticated flood costs the event loop real asymmetric
+ * crypto for the price of a junk `Authorization` header. Keyed on client IP with a spoof-proof global
+ * ceiling behind it (see `utils/rate-limit.ts`).
+ *
+ * Router-level rather than per-route, so a route added later is covered by construction rather than by
+ * whoever adds it remembering to. Being network-restricted (ADR-0007) is a separate control and does not
+ * replace this one; the limits are set high enough that a working console or agent never reaches them.
+ */
+router.use(createRateLimiter({
+  limit: CONFIG.admin.rateLimit.perIpPerMinute,
+  globalLimit: CONFIG.admin.rateLimit.globalPerMinute
+}));
 
 /** Append-only audit write (ADR-0007). Fire-and-forget after the response so it never blocks a call. */
 function audit(req: Request, res: Response, action: string, target?: { type?: string; id?: string }, meta?: Record<string, unknown>): void {
