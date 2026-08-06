@@ -436,3 +436,81 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
     })).rejects.toBeInstanceOf(InvalidTargetError);
   });
 });
+
+/**
+ * The registry that lets a product OTHER than identity-service put its own MCP endpoint behind this
+ * authorization server. Before it, the only acceptable `resource` was this service's own MCP URL, so a
+ * client naming e.g. Skills Coach's endpoint was refused `invalid_target` at `/oauth2/authorize` — an
+ * HTTP 400 raised before any browser opened, which presents as "nothing happened" rather than as an
+ * auth error.
+ */
+describe('Per-application protected-resource registry (ADR-0009 Phase 2, ADR-0020)', () => {
+  let store: Store;
+  let server: ReturnType<typeof createOAuthServer>;
+  const now = () => new Date('2026-08-06T12:00:00.000Z');
+  const COACH_RESOURCE = 'https://coach-mcp.fps4.nl/mcp';
+
+  beforeEach(() => {
+    store = makeStore();
+    seedClient(store);
+    // The client's own application owns the resource it wants its token audience-bound to.
+    store.applications[0].resources = [COACH_RESOURCE];
+    server = createOAuthServer(makeDeps(store, now) as any);
+  });
+
+  const login = async (verifier: string, resource?: string) => {
+    const started = await server.startAuthorization(authorizeArgs(verifier, resource ? { resource } : {}));
+    const loginToken = started.mode === 'login' ? started.loginToken : '';
+    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+  };
+
+  const exchange = (verifier: string, resource?: string) => server.issueAuthorizationCodeToken({
+    code: store.authorizations[0].code,
+    codeVerifier: verifier,
+    clientId: 'client-mcp',
+    redirectUri: 'http://localhost:9876/callback',
+    resource
+  });
+
+  it("binds a user token to a resource the credential's own application declares", async () => {
+    const verifier = 'verifier-abc-123';
+    await login(verifier, COACH_RESOURCE);
+    const token = await exchange(verifier, COACH_RESOURCE);
+
+    expect(decodeJwt(token.accessToken).aud).toBe(COACH_RESOURCE);
+  });
+
+  it("keeps this service's own MCP resource acceptable alongside the application's", async () => {
+    const verifier = 'verifier-abc-123';
+    await login(verifier, CONFIG.mcp.resourceUrl);
+    const token = await exchange(verifier, CONFIG.mcp.resourceUrl);
+
+    expect(decodeJwt(token.accessToken).aud).toBe(CONFIG.mcp.resourceUrl);
+  });
+
+  it('refuses a resource that belongs to a DIFFERENT application', async () => {
+    // A second product registers its own endpoint. This client's application must not be able to name
+    // it, or one product's credential could mint a token another product's resource server accepts.
+    store.applications.push({ _id: 'app-other', name: 'Other', audience: 'other', roles: [], resources: ['https://other-mcp.fps4.nl/mcp'] });
+
+    await expect(server.startAuthorization(authorizeArgs('verifier-abc-123', { resource: 'https://other-mcp.fps4.nl/mcp' })))
+      .rejects.toBeInstanceOf(InvalidTargetError);
+    expect(store.authorizations).toHaveLength(0); // nothing persisted
+  });
+
+  it("refuses the application's resource once it is removed from the registry", async () => {
+    store.applications[0].resources = [];
+    await expect(server.startAuthorization(authorizeArgs('verifier-abc-123', { resource: COACH_RESOURCE })))
+      .rejects.toBeInstanceOf(InvalidTargetError);
+  });
+
+  it("re-mints the application's resource as the aud across a refresh", async () => {
+    const verifier = 'verifier-abc-123';
+    await login(verifier, COACH_RESOURCE);
+    const first = await exchange(verifier, COACH_RESOURCE);
+
+    const refreshed = await server.refreshUserToken({ refreshToken: first.refreshToken, clientId: 'client-mcp' });
+
+    expect(decodeJwt(refreshed.accessToken).aud).toBe(COACH_RESOURCE);
+  });
+});

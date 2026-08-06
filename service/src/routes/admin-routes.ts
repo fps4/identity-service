@@ -86,6 +86,22 @@ router.put('/applications/:id/roles', requireAdmin(ADMIN_SCOPES.clients), async 
   } catch (e) { handleError(res, e); }
 });
 
+// The protected resources the application owns (ADR-0009 Phase 2) — the RFC 8707 `resource` values its
+// credentials may bind a token's `aud` to.
+router.get('/applications/:id/resources', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
+  try {
+    res.json({ resources: await adminService.getApplicationResources(req.params.id) });
+  } catch (e) { handleError(res, e); }
+});
+
+router.put('/applications/:id/resources', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
+  try {
+    const resources = await adminService.setApplicationResources(req.params.id, req.body?.resources ?? []);
+    audit(req, res, 'application.setResources', { type: 'application', id: req.params.id }, { resources });
+    res.json({ resources });
+  } catch (e) { handleError(res, e); }
+});
+
 // The users assigned to an application, with their app-scoped roles.
 router.get('/applications/:id/members', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {

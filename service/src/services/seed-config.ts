@@ -33,6 +33,9 @@ export interface SeedApplication {
   name: string;
   audience?: string;          // default token `aud` for this application's credentials
   roles?: SeedAppRole[];      // the application's role catalogue
+  /** Protected resources this application owns — the RFC 8707 `resource` values its credentials may
+   *  bind a token to (ADR-0009 Phase 2), e.g. its MCP endpoint URL. */
+  resources?: string[];
   credentials?: SeedCredential[];
 }
 
@@ -87,6 +90,29 @@ function parseRoleCatalogue(raw: unknown, where: string): SeedAppRole[] {
   });
 }
 
+/**
+ * The application's protected-resource registry. A resource indicator is compared by exact string match
+ * at token time (RFC 8707 §2 calls for an absolute URI), so a relative or fragment-bearing value could
+ * never match anything a client sends — reject it here rather than seeding a resource that silently
+ * never validates.
+ */
+function parseResources(raw: unknown, where: string): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new SeedConfigError(`${where} resources must be an array of absolute resource URIs`);
+  return raw.map((r, ri) => {
+    if (typeof r !== 'string' || !r.trim()) throw new SeedConfigError(`${where} resources[${ri}] must be a non-empty string`);
+    const value = r.trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new SeedConfigError(`${where} resources[${ri}] ("${value}") must be an absolute URI`);
+    }
+    if (parsed.hash) throw new SeedConfigError(`${where} resources[${ri}] ("${value}") must not carry a fragment`);
+    return value;
+  });
+}
+
 function parseCredential(c: unknown, where: string, appAudience: string | undefined, env: Record<string, string | undefined>): SeedCredential {
   if (!isObject(c) || typeof c.id !== 'string' || !c.id) throw new SeedConfigError(`${where}.id is required`);
   if (!Array.isArray(c.grantTypes) || c.grantTypes.length === 0) throw new SeedConfigError(`${where} (${c.id}) needs grantTypes`);
@@ -134,10 +160,11 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
     if (typeof a.name !== 'string' || !a.name) throw new SeedConfigError(`${aw} (${a.id}) needs a name`);
     const audience = typeof a.audience === 'string' ? a.audience : undefined;
     const roles = parseRoleCatalogue(a.roles, `${aw} (${a.id})`);
+    const resources = parseResources(a.resources, `${aw} (${a.id})`);
     const credentials: SeedCredential[] = Array.isArray(a.credentials)
       ? a.credentials.map((c, ci) => parseCredential(c, `${aw}.credentials[${ci}]`, audience, env))
       : [];
-    return { id: a.id, name: a.name, audience, roles, credentials };
+    return { id: a.id, name: a.name, audience, roles, resources, credentials };
   }) : [];
 
   // Applications (and their catalogues) must be defined before an assignment can reference them.

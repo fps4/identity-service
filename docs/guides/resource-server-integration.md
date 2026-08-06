@@ -111,6 +111,22 @@ Don't re-implement JWKS handling per product. The integration surface is:
   products integrate.
 - The **`<Login/>` widget** for the frontend.
 
+## Fronting your own MCP endpoint (ADR-0009 Phase 2)
+
+If your product exposes an MCP server and wants identity-service as its authorization server, the MCP
+spec has the client send an RFC 8707 `resource` indicator naming your endpoint. Bind it in two places:
+
+1. **Register the endpoint on your application** — `resources: [https://<your>-mcp.fps4.nl/mcp]` in your
+   seed file, or `PUT /admin/v1/applications/{id}/resources`. Until it is listed, `/oauth2/authorize`
+   refuses the request `invalid_target`. That 400 lands *before* the browser opens, so the client appears
+   to do nothing at all — if an MCP login is silently a no-op, check this list first.
+2. **Accept that URL as an audience at your edge**, alongside your application's own `audience` — a token
+   bound to the resource carries the URL in `aud`, not your workspace name. The `roles` claim is
+   unchanged, so your capability map needs no edits.
+
+The list is scoped to your application: a credential under a *different* application cannot name your
+endpoint, so no other product can mint a token your resource server would accept.
+
 ## Operational notes
 
 - **Adding roles and access is operator config, not code.** Define your app's role **catalogue** on the

@@ -55,7 +55,9 @@ interface MockState {
     audience?: string;
     subject?: string;
     claims?: Record<string, unknown>;
+    applicationId?: string;
   }>;
+  applications: Array<{ _id: string; name: string; audience?: string; resources?: string[] }>;
   tokens: TokenDoc[];
   keyStore: Array<{
     kid: string;
@@ -83,6 +85,13 @@ function createMockDeps(state: MockState): OAuthServerDependencies {
         findById: (id: string) => ({
           lean: () => ({
             exec: async () => clone(state.clients.find((client) => client._id === id) ?? null)
+          })
+        })
+      },
+      Application: {
+        findById: (id: string) => ({
+          lean: () => ({
+            exec: async () => clone(state.applications.find((app) => app._id === id) ?? null)
           })
         })
       },
@@ -153,6 +162,7 @@ function createMockDeps(state: MockState): OAuthServerDependencies {
 function createInitialState(): MockState {
   return {
     clients: [],
+    applications: [],
     tokens: [],
     keyStore: []
   };
@@ -210,6 +220,34 @@ describe('OAuth server – client credentials grant', () => {
     await expect(oauthServer.issueClientCredentialsToken({
       clientId: 'admin-client', clientSecret: 'top-secret', scope: ['admin'], resource: 'https://not-a-resource.example/x'
     })).rejects.toMatchObject({ error: 'invalid_target' });
+  });
+
+  it("binds aud to a resource the credential's own application owns, and only that one (ADR-0020)", async () => {
+    state.applications.push(
+      { _id: 'skills-coach', name: 'Skills Coach', audience: 'skills-coach', resources: ['https://coach-mcp.fps4.nl/mcp'] },
+      { _id: 'other', name: 'Other', audience: 'other', resources: ['https://other-mcp.fps4.nl/mcp'] }
+    );
+    state.clients.push({
+      _id: 'coach-automation', name: 'coach automation', secretHash: hashSecret('top-secret'),
+      grantTypes: ['client_credentials'], scopes: [], redirectUris: [], isConfidential: true,
+      applicationId: 'skills-coach'
+    } as any);
+
+    const bound = await oauthServer.issueClientCredentialsToken({
+      clientId: 'coach-automation', clientSecret: 'top-secret', resource: 'https://coach-mcp.fps4.nl/mcp'
+    });
+    expect(decodeJwt(bound.accessToken).aud).toBe('https://coach-mcp.fps4.nl/mcp');
+
+    // Another application's resource stays out of reach — the registry is scoped to the credential's app.
+    await expect(oauthServer.issueClientCredentialsToken({
+      clientId: 'coach-automation', clientSecret: 'top-secret', resource: 'https://other-mcp.fps4.nl/mcp'
+    })).rejects.toMatchObject({ error: 'invalid_target' });
+
+    // Naming no resource still falls back to the application's own audience (ADR-0020, unchanged).
+    const unbound = await oauthServer.issueClientCredentialsToken({
+      clientId: 'coach-automation', clientSecret: 'top-secret'
+    });
+    expect(decodeJwt(unbound.accessToken).aud).toBe('skills-coach');
   });
 
   it('mints a product_runtime credential with per-client audience, subject and additive claims (US-0086)', () => {

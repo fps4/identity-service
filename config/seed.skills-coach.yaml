@@ -24,6 +24,12 @@ applications:
     roles:                               # the role catalogue (ADR-0019) → token `roles` (RQ-0005)
       - { key: learner, name: Learner, description: Practise drills and read their own progress }
       - { key: coach, name: Coach, description: Publish packs, read all submissions, write corrections }
+    resources:                           # the protected resources this product owns (ADR-0009 Phase 2)
+      # Skills Coach's own MCP endpoint. A credential below may pass this as the RFC 8707 `resource`, and
+      # the issued token's `aud` binds to it instead of `skills-coach`. Without this line the authorize
+      # request is refused `invalid_target` before a browser ever opens — which reads as "nothing
+      # happened", not as an auth error.
+      - https://coach-mcp.fps4.nl/mcp
     credentials:
       - id: skills-coach-web
         name: Skills Coach Web

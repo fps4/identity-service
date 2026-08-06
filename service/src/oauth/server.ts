@@ -64,22 +64,34 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   };
 
   /**
+   * The protected resources a token may be bound to (RFC 8707): this service's own MCP resource, plus
+   * whatever the *credential's own application* declares it owns (ADR-0020 `resources`). Scoping the
+   * registry to the application is what stops one product's credential minting a token audienced at
+   * another product's resource; before it existed, only this service's own MCP URL was ever accepted, so
+   * no other product could put its MCP endpoint behind this authorization server at all.
+   *
+   * Read from CONFIG at call time so a deployment's resource URL is not frozen at module load.
+   */
+  function assertAllowedResource(resource: string, application: { resources?: string[] } | null): void {
+    const allowedResources = [CONFIG.mcp.resourceUrl, ...(application?.resources ?? [])];
+    if (!allowedResources.includes(resource)) {
+      throw new InvalidTargetError(`Unknown resource: ${resource}`);
+    }
+  }
+
+  /**
    * The `aud` of a user token. An RFC 8707 resource indicator wins when the caller names one
    * (audience-binding, ADR-0009 Phase 2) — that is how an MCP client gets a token its resource server
    * will accept, since the MCP resource is not the application's own audience. Otherwise the
-   * credential override / application default applies (ADR-0020). Read from CONFIG at call time so a
-   * deployment's resource URL is not frozen at module load.
+   * credential override / application default applies (ADR-0020).
    */
   function resolveUserAudience(
     client: { audience?: string },
-    application: { audience?: string } | null,
+    application: { audience?: string; resources?: string[] } | null,
     resource?: string
   ): string {
     if (resource) {
-      const allowedResources = [CONFIG.mcp.resourceUrl];
-      if (!allowedResources.includes(resource)) {
-        throw new InvalidTargetError(`Unknown resource: ${resource}`);
-      }
+      assertAllowedResource(resource, application);
       return resource;
     }
     // A user token is only meaningful if it can be audience-bound to a consumer (RQ-0001 AC4).
@@ -161,19 +173,16 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // workspace (e.g. `maestro-workspace`) exactly like a user token, falling back to the service-wide
     // default for an unscoped client.
     //
-    // RFC 8707 resource indicator (ADR-0009 Phase 2): if the caller names a recognized protected
-    // resource, bind the token's `aud` to it instead — so the token is only accepted at that resource.
-    // An unrecognized resource is rejected rather than silently issuing a broadly-scoped token.
+    // RFC 8707 resource indicator (ADR-0009 Phase 2): if the caller names a protected resource its own
+    // application owns, bind the token's `aud` to it instead — so the token is only accepted at that
+    // resource. An unrecognized resource is rejected rather than silently issuing a broadly-scoped token.
     // Audience: a credential override wins, else the application default, else the service-wide default.
     const application = client.applicationId
       ? await models.Application.findById(client.applicationId).lean().exec() as ApplicationDocument | null
       : null;
     let audience = effectiveAudience(client, application) ?? CONFIG.auth.jwtAudience;
     if (input.resource) {
-      const allowedResources = [CONFIG.mcp.resourceUrl];
-      if (!allowedResources.includes(input.resource)) {
-        throw new InvalidTargetError(`Unknown resource: ${input.resource}`);
-      }
+      assertAllowedResource(input.resource, application);
       audience = input.resource;
     }
 

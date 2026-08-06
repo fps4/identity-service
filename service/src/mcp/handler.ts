@@ -137,6 +137,13 @@ export const TOOLS: ToolDef[] = [
     inputSchema: obj({ applicationId: str, roles: roleCatalogue }, ['applicationId', 'roles']),
     handler: (a) => adminService.setApplicationRoles(a.applicationId, a.roles)
   },
+  {
+    name: 'set_application_resources',
+    description: "Replace an application's protected-resource registry (ADR-0009 Phase 2) — the absolute RFC 8707 `resource` URIs, such as its MCP endpoint, that its credentials may bind a token's `aud` to. A resource not listed here is refused with invalid_target.",
+    areaScope: ADMIN_SCOPES.clients,
+    inputSchema: obj({ applicationId: str, resources: strArr }, ['applicationId', 'resources']),
+    handler: (a) => adminService.setApplicationResources(a.applicationId, a.resources)
+  },
   // Invites (RQ-0013) are runtime user-onboarding state — operational, not structural — so they
   // belong on the MCP surface alongside the other user tools (ADR-0011).
   {

@@ -73,12 +73,13 @@ grants + redirect URIs + scopes that authenticate *as* the application. Provisio
 like:
 
 ```js
-// 1. the application — owns the audience + role catalogue
+// 1. the application — owns the audience, role catalogue, and protected-resource registry
 db.applications.insertOne({
   _id: "telemetry",
   name: "Telemetry",
   audience: "telemetry-workspace",         // the default token `aud` (ADR-0020)
-  roles: [{ key: "reader" }]               // the app's role catalogue (ADR-0019); may be omitted
+  roles: [{ key: "reader" }],              // the app's role catalogue (ADR-0019); may be omitted
+  resources: ["https://telemetry-mcp.fps4.nl/mcp"]  // resources it owns (ADR-0009 Phase 2); may be omitted
 });
 
 // 2. a credential under it — a machine client
@@ -97,6 +98,13 @@ db.oauth_clients.insertOne({
 - The application's **role catalogue** — `roles: [{ key, name?, description? }]` — is the app-scoped roles a
   user may be assigned in it (ADR-0019). Omit for no app-roles, seed it, or edit at runtime
   (`GET/PUT /admin/v1/applications/{id}/roles`).
+- The application's **protected-resource registry** — `resources: [<absolute URI>]` — is the set of RFC 8707
+  `resource` values its credentials may bind a token's `aud` to (ADR-0009 Phase 2). This is what lets a
+  product **other than identity-service** put its own MCP endpoint behind this authorization server: list
+  the endpoint here, and a client passing `resource=<that URL>` gets a token audienced at it instead of at
+  the application's `audience`. An unlisted resource is refused `invalid_target` — at `/oauth2/authorize`,
+  so an MCP client sees the failure *before* a browser opens. Edit at runtime with
+  `GET/PUT /admin/v1/applications/{id}/resources` or the `set_application_resources` MCP tool.
 - A credential's `_id` (the `client_id`) auto-generates a UUID when omitted; it **requires** an
   `applicationId`. A **machine** (`client_credentials`) credential is confidential and carries a secret +
   scopes; a **user-login** credential (`password` or `authorization_code`) is **public** (PKCE), so
@@ -271,6 +279,8 @@ applications:
     roles:                              # ADR-0019: the app's role catalogue
       - { key: member }
       - { key: reviewer, name: Reviewer, description: May approve filings }
+    resources:                          # ADR-0009 Phase 2: protected resources this app owns
+      - https://demo-mcp.fps4.nl/mcp    # a client may pass this as RFC 8707 `resource`; `aud` binds to it
     credentials:                        # OAuth clients under the application (ADR-0020)
       - id: demo-web
         name: Demo Web
