@@ -389,6 +389,11 @@ and the [admin console](../../console/README.md) all sit on the same service lay
   machine token nor an operator-role user token, or one lacking the required scope → `403 forbidden`.
 - Every **mutation** is written to the append-only `audit_logs` collection (principal, action, method,
   path, target, status).
+- The whole plane is **rate-limited** — per client IP (`ADMIN_API_REQUESTS_PER_MINUTE`, default 300) and
+  deployment-wide (`ADMIN_API_REQUESTS_GLOBAL_PER_MINUTE`, default 3000). Over budget →
+  `429 slow_down` with a `Retry-After` header. The guard runs **before** the token check, so an
+  unauthenticated flood cannot spend unbounded RS256 verifications; it bounds cost, and the scope rules
+  above remain what decide permission. The same budget applies to the MCP HTTP endpoint.
 
 ### Endpoints
 

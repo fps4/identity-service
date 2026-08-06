@@ -50,6 +50,7 @@ What used to live on a per-tenant `oauth` block is now deployment configuration.
 | `oauth.limits.tokensPerMinute` | `OAUTH_MAX_TOKENS_PER_MINUTE` | Deployment-wide access-token rate limit (default 200/min). |
 | `oauth.limits.refreshTokens` | `OAUTH_MAX_REFRESH_TOKENS` | Deployment-wide refresh-token budget (default 10000). |
 | `oauth.limits.clientCap` | `OAUTH_MAX_CLIENTS` | Deployment-wide cap on registered clients (default 50). |
+| — (new) | `ADMIN_API_REQUESTS_PER_MINUTE` / `ADMIN_API_REQUESTS_GLOBAL_PER_MINUTE` | Abuse guard on the **management plane** (`/admin/v1` and the MCP HTTP endpoint): per client IP (default 300) and deployment-wide (default 3000). Over budget returns `429 slow_down` with `Retry-After`. It runs **before** the admin-token check, so it bounds the RS256 verification an unauthenticated flood would otherwise buy for free; it is a spend guard, not an authorization control. |
 
 The Google app credentials and the issuer are service-level, **never** per-consumer:
 
