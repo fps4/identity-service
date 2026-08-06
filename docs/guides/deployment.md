@@ -332,6 +332,13 @@ resource identifier), `MCP_REQUIRE_AUDIENCE` (default on — set `false` to soft
 `resource`). Remaining Phase 2 hardening (DPoP/mTLS sender-constraint, step-up, dynamic registration) is
 tracked in ADR-0009/RQ-0019; stdio-over-SSH stays as break-glass.
 
+`MCP_RESOURCE_URL` names **this service's own** MCP resource and nothing else. A different product
+fronting *its* MCP endpoint with this authorization server registers that endpoint in its **application's
+`resources` list** (`resources:` in its seed file, or `GET/PUT /admin/v1/applications/{id}/resources`) —
+see [deployment configuration](./tenant-config.md). An unregistered resource is refused `invalid_target`
+at `/oauth2/authorize`, i.e. **before** the browser opens, so a misconfigured client looks like it did
+nothing at all rather than like it failed to log in.
+
 ## Verify
 
 - `GET /health` returns `{ "status": "ok" }`.

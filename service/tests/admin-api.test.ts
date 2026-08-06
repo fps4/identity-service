@@ -312,6 +312,26 @@ describe('admin service', () => {
     await expect(admin.getApplicationRoles('ghost')).rejects.toMatchObject({ status: 404, code: 'application_not_found' });
   });
 
+  it("reads and replaces an application's protected-resource registry, rejecting unmatchable URIs (ADR-0009 Phase 2)", async () => {
+    const admin = makeAdmin(state);
+    const { applicationId } = await admin.createApplication({
+      id: 'app-res', name: 'App', audience: 'app-ws', resources: ['https://app-mcp.fps4.nl/mcp']
+    });
+    expect(await admin.getApplicationResources(applicationId)).toEqual(['https://app-mcp.fps4.nl/mcp']);
+
+    const updated = await admin.setApplicationResources(applicationId, [' https://app-mcp.fps4.nl/mcp ', 'https://app-mcp.fps4.nl/v2']);
+    expect(updated).toEqual(['https://app-mcp.fps4.nl/mcp', 'https://app-mcp.fps4.nl/v2']); // trimmed
+
+    // A resource is exact-string-matched at token time, so anything that could never match is refused.
+    await expect(admin.setApplicationResources(applicationId, ['/mcp']))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
+    await expect(admin.setApplicationResources(applicationId, ['https://app-mcp.fps4.nl/mcp#frag']))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
+    await expect(admin.setApplicationResources(applicationId, ['https://a.test/x', 'https://a.test/x']))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_input' });
+    await expect(admin.getApplicationResources('ghost')).rejects.toMatchObject({ status: 404, code: 'application_not_found' });
+  });
+
   it('assigns a user to an app with catalogue-checked roles, lists both directions, updates and revokes', async () => {
     const admin = makeAdmin(state);
     const { applicationId } = await admin.createApplication({

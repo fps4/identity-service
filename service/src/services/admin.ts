@@ -24,12 +24,16 @@ export interface AdminServiceDependencies {
   logger?: Logger;
 }
 
-/** An Application (ADR-0020) — a product: owns its name, default audience, and role catalogue. */
+/** An Application (ADR-0020) — a product: owns its name, default audience, role catalogue, and the
+ *  protected resources it exposes. */
 export interface CreateApplicationInput {
   id?: string;             // stable application id; omit to generate a UUID
   name: string;
   audience?: string;       // default token `aud` for tokens minted through this app's credentials
   roles?: AppRole[];       // the application's role catalogue
+  /** Protected resources this app owns — the RFC 8707 `resource` values its credentials may bind a
+   *  token to (ADR-0009 Phase 2), e.g. its MCP endpoint URL. */
+  resources?: string[];
 }
 
 /** A credential under an application (ADR-0020) — an OAuth client (web / machine-runtime / CI). */
@@ -94,6 +98,34 @@ function normalizeRoleCatalogue(roles?: AppRole[]): AppRole[] {
   });
 }
 
+/**
+ * Validate + normalize an application's protected-resource registry (ADR-0009 Phase 2). A resource
+ * indicator is matched as an exact string at token time, so anything that is not an absolute,
+ * fragment-free URI could never match what a client sends — refuse it here rather than store a resource
+ * that silently never validates.
+ */
+function normalizeResources(resources?: string[]): string[] {
+  if (resources === undefined) return [];
+  if (!Array.isArray(resources)) throw new AdminServiceError('resources must be an array of absolute resource URIs', 400, 'invalid_input');
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const r of resources) {
+    if (typeof r !== 'string' || !r.trim()) throw new AdminServiceError('each resource must be a non-empty string', 400, 'invalid_input');
+    const value = r.trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new AdminServiceError(`resource "${value}" must be an absolute URI`, 400, 'invalid_input');
+    }
+    if (parsed.hash) throw new AdminServiceError(`resource "${value}" must not carry a fragment`, 400, 'invalid_input');
+    if (seen.has(value)) throw new AdminServiceError(`duplicate resource "${value}"`, 400, 'invalid_input');
+    seen.add(value);
+    normalized.push(value);
+  }
+  return normalized;
+}
+
 /** Assert every requested role exists in the application's catalogue (ADR-0019/0020). */
 function assertRolesInCatalogue(roles: string[], catalogue: AppRole[], applicationId: string): void {
   const keys = new Set(catalogue.map((r) => r.key));
@@ -123,10 +155,11 @@ export function createAdminService(deps: AdminServiceDependencies) {
   async function createApplication(input: CreateApplicationInput): Promise<{ applicationId: string }> {
     if (!input.name?.trim()) throw new AdminServiceError('name is required', 400, 'invalid_input');
     const roles = normalizeRoleCatalogue(input.roles);
+    const resources = normalizeResources(input.resources);
     const m = await models();
     const applicationId = input.id?.trim() || randomUUID();
     try {
-      await m.Application.create({ _id: applicationId, name: input.name, audience: input.audience, roles });
+      await m.Application.create({ _id: applicationId, name: input.name, audience: input.audience, roles, resources });
     } catch (err) {
       if ((err as { code?: number }).code === 11000) throw new AdminServiceError(`Application '${applicationId}' already exists`, 409, 'application_exists');
       throw err;
@@ -165,6 +198,27 @@ export function createAdminService(deps: AdminServiceDependencies) {
     if (!updated) throw new AdminServiceError('Application not found', 404, 'application_not_found');
     deps.logger?.info?.({ applicationId, roles: catalogue.length }, 'admin set application role catalogue');
     return (updated as { roles?: AppRole[] }).roles ?? [];
+  }
+
+  async function getApplicationResources(applicationId: string): Promise<string[]> {
+    const app = await getApplication(applicationId);
+    return (app as { resources?: string[] }).resources ?? [];
+  }
+
+  /** Replace an application's protected-resource registry (ADR-0009 Phase 2). Tokens already bound to a
+   *  resource dropped here keep their `aud` until they expire — the registry gates *issuance*, and a
+   *  refresh re-mints against the same resource, so revoke the session to cut an in-flight chain off. */
+  async function setApplicationResources(applicationId: string, resources: string[]): Promise<string[]> {
+    const registry = normalizeResources(resources);
+    const m = await models();
+    const updated = await m.Application.findByIdAndUpdate(
+      applicationId,
+      { $set: { resources: registry, updatedAt: nowFn() } },
+      { new: true }
+    ).select('resources').lean().exec();
+    if (!updated) throw new AdminServiceError('Application not found', 404, 'application_not_found');
+    deps.logger?.info?.({ applicationId, resources: registry.length }, 'admin set application resource registry');
+    return (updated as { resources?: string[] }).resources ?? [];
   }
 
   // --- Credentials (OAuth clients under an application) ---
@@ -599,6 +653,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   return {
     listApplications, getApplication, createApplication, deleteApplication, getApplicationRoles, setApplicationRoles,
+    getApplicationResources, setApplicationResources,
     listClients, createClient, rotateClientSecret, deleteClient,
     listUsers, createUser, resetUserPassword, setUserStatus, unlockUser, deleteUser,
     linkUserIdentity, unlinkUserIdentity,

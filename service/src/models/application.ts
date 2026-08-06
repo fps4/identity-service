@@ -25,6 +25,14 @@ export interface ApplicationDocument extends Document<string> {
   // its own `audience` override (e.g. a product runtime aimed at maestro-workspace).
   audience?: string;
   roles: AppRole[]; // the application's role catalogue
+  /**
+   * The protected resources this application owns (ADR-0009 Phase 2) — canonical RFC 8707 resource
+   * identifiers such as an MCP endpoint URL. A token request naming one of these binds the token's `aud`
+   * to it instead of the application default; a resource NOT listed here (and not this service's own MCP
+   * resource) is refused with `invalid_target`, so an application can never mint a token audienced at a
+   * resource it does not own.
+   */
+  resources: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -40,6 +48,7 @@ const applicationSchema = new mongoose.Schema<ApplicationDocument>({
   name: { type: String, required: true },
   audience: { type: String },
   roles: { type: [appRoleSchema], default: [] },
+  resources: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

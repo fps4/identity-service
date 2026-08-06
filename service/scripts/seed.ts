@@ -47,10 +47,12 @@ async function main() {
   let appsUpserted = 0, clientsUpserted = 0, usersCreated = 0, usersSkipped = 0, assignmentsUpserted = 0;
 
   for (const app of config.applications) {
-    // The application owns its name, default audience, and role catalogue (ADR-0020).
+    // The application owns its name, default audience, role catalogue, and protected-resource registry
+    // (ADR-0020, ADR-0009 Phase 2). Like `roles`, `resources` is REPLACED wholesale on every run — a seed
+    // file naming an application must restate both in full or it silently empties them.
     await Application.updateOne(
       { _id: app.id },
-      { $set: { name: app.name, audience: app.audience, roles: app.roles ?? [], updatedAt: now } },
+      { $set: { name: app.name, audience: app.audience, roles: app.roles ?? [], resources: app.resources ?? [], updatedAt: now } },
       { upsert: true }
     ).exec();
     appsUpserted++;

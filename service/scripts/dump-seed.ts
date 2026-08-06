@@ -31,7 +31,7 @@ function parseFlags(): Flags {
 
 /** Minimal shapes the builder needs from the lean Mongo docs (kept loose so tests need no real models). */
 export interface DumpAppRole { key: string; name?: string; description?: string }
-export interface DumpApplication { _id: string; name?: string; audience?: string; roles?: DumpAppRole[] }
+export interface DumpApplication { _id: string; name?: string; audience?: string; roles?: DumpAppRole[]; resources?: string[] }
 export interface DumpCredential { _id: string; applicationId?: string; name?: string; grantTypes?: string[]; audience?: string; redirectUris?: string[]; scopes?: string[]; isConfidential?: boolean; subject?: string; claims?: Record<string, unknown> }
 export interface DumpUser { _id: string; email: string; status?: string }
 export interface DumpAssignment { userId: string; applicationId: string; roles?: string[] }
@@ -76,6 +76,9 @@ export function buildSeed(
     name: app.name,
     audience: app.audience,
     roles: app.roles && app.roles.length ? app.roles.map((r) => compact({ key: r.key, name: r.name, description: r.description })) : undefined,
+    // The protected-resource registry is replaced wholesale on every seed run, so a dump that omitted it
+    // would empty the live registry the moment the dumped file was re-applied.
+    resources: app.resources,
     credentials: (credsByApp.get(app._id) ?? []).map((c) => {
       if (c.isConfidential) {
         warnings.push(`credential '${c._id}' (app ${app._id}) is confidential but dumped without a secret — add secret: \${ENV} before a fresh-db rebuild`);

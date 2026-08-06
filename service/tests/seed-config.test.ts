@@ -135,6 +135,29 @@ describe('parseSeedConfig (RQ-0004)', () => {
     }, {})).toThrowError(/needs a non-empty key/);
   });
 
+  it("parses an application's protected-resource registry, defaulting it to [] (ADR-0009 Phase 2)", () => {
+    const cfg = parseSeedConfig({
+      applications: [
+        { id: 'coach', name: 'Coach', audience: 'skills-coach', resources: ['https://coach-mcp.fps4.nl/mcp', ' https://coach-mcp.fps4.nl/other '] },
+        { id: 'plain', name: 'Plain', audience: 'plain' }
+      ]
+    }, {});
+    expect(cfg.applications[0].resources).toEqual(['https://coach-mcp.fps4.nl/mcp', 'https://coach-mcp.fps4.nl/other']);
+    expect(cfg.applications[1].resources).toEqual([]);
+  });
+
+  it('rejects a resource that could never match an RFC 8707 indicator', () => {
+    const withResources = (resources: unknown) => () => parseSeedConfig({
+      applications: [{ id: 'coach', name: 'Coach', audience: 'skills-coach', resources }]
+    }, {});
+
+    expect(withResources('https://coach-mcp.fps4.nl/mcp')).toThrowError(/must be an array/); // a bare string
+    expect(withResources(['/mcp'])).toThrowError(/must be an absolute URI/);
+    expect(withResources(['https://coach-mcp.fps4.nl/mcp#frag'])).toThrowError(/must not carry a fragment/);
+    expect(withResources([''])).toThrowError(/must be a non-empty string/);
+    expect(withResources([{ url: 'https://coach-mcp.fps4.nl/mcp' }])).toThrowError(SeedConfigError);
+  });
+
   it('accepts an empty config with no applications or users', () => {
     const cfg = parseSeedConfig({});
     expect(cfg.applications).toEqual([]);
