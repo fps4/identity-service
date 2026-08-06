@@ -1,13 +1,29 @@
 name: Definition of Done
 
-# The quality gate maestro reads before opening the merge gate.
-# Runs on GitHub-hosted runners — independent of the deploy host. Build + test must be green.
+# The quality gate maestro reads before opening the merge gate. Build + test must be green.
+#
+# Runners: every job below runs on [self-hosted, ds1] — the same single host that serves deploy-ds1 and
+# seed-ds1 (moved off GitHub-hosted in #21). Note the trade-off this made: the merge gate is NOT
+# independent of the deploy host, so a busy or unhealthy ds1 stalls merges rather than just deploys.
+#
+# CodeQL is the deliberate carve-out — the one thing running against this repo that is NOT on ds1. It
+# runs GitHub-hosted (ubuntu-latest) via code scanning *default setup*, which is configured in repo
+# settings and generates its workflow server-side, so there is no file here to grep. Inspect it with:
+#   gh api repos/fps4/identity-service/code-scanning/default-setup
+# Kept hosted on purpose: two analyses (actions, javascript-typescript) run ~15m each and would contend
+# with production deploys on ds1. Revisit if ds1 grows capacity or CI moves off the deploy host.
 
 on:
   pull_request:
   push:
     branches:
       - main
+
+concurrency:
+  # Supersede in-flight runs per ref so PR pushes don't queue on the single ds1 box. main is exempt:
+  # maestro reads DoD to open the merge gate and deploy-ds1 chains off it via workflow_run.
+  group: dod-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   service:
