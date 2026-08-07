@@ -56,11 +56,14 @@ applications:
       # The service refuses a decision from a non-human principal regardless of role, so this is
       # defence in depth rather than the control itself. Both are cheap; the control that is only in
       # one place is the one that goes missing in a refactor.
+      #
+      # No `secret:` here, on purpose (ADR-0021): identity-service mints it and returns it once, and the
+      # value lives in the MSTR-SPECS repo's Actions secrets. `rotate_client_secret mstr-specs-agent`
+      # issues a usable one.
       - id: mstr-specs-agent
         name: mstr-specs — agent authoring
         grantTypes: [client_credentials]
         isConfidential: true
-        secret: ${MSTR_SPECS_AGENT_CLIENT_SECRET}
         subject: agent@specs.fps4.nl
         claims:
           roles: [author]

@@ -55,6 +55,13 @@ runtime client secrets (gateway/copilot/coach) and demo/learner user passwords �
 those products' own pipelines, not identity-service's Actions secrets. (Caveat: org-level secrets would
 not appear in a repo secret list, but `SEED_DEMO_PASSWORD` is genuinely absent — the run proves it.)
 
+> **Resolved 2026-08-07 by [ADR-0021](../design/decisions/0021-credentials-minted-not-seeded.md).** The
+> smell called out above was the right diagnosis. A credential's secret is now minted by identity-service
+> and stored in the **consuming** product's repo; seed files carry structure only. Every `${…}` reference
+> is gone except the two bootstrap ones (`IDENTITY_ADMIN_CLIENT_SECRET`, `SEED_CONSOLE_ADMIN_PASSWORD`),
+> so the all-or-nothing coupling that made this class of failure possible no longer exists — onboarding a
+> product now adds no secret to this repo at all.
+
 ## Symptom 2 — `deploy-ds1` product_runtime seed-integrity guard
 
 ```

@@ -8,18 +8,55 @@
  *   npm run seed -- --file=/abs/path   # explicit file
  *
  * MONGO_URI / MONGO_DB_NAME come from the environment (.env), same as the service. Re-running is
- * safe: tenants and clients are upserted; existing users are left untouched (insert-if-absent), so a
- * re-run never resets a password — use `manage-users set-password` to change one.
+ * safe: applications and credential STRUCTURE are upserted; existing users are left untouched
+ * (insert-if-absent), so a re-run never resets a password — use `manage-users set-password` to change
+ * one. Credential SECRETS follow the same insert-if-absent rule (ADR-0021, {@link credentialUpdate}):
+ * a re-seed never overwrites one, so it cannot revert a rotation.
  */
 import process from 'process';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { parse as parseYaml } from 'yaml';
 import { getMasterConnection, disconnect } from '../src/utils/db.js';
 import { makeModels } from '../src/models/index.js';
 import { hashSecret } from '../src/utils/hash.js';
-import { parseSeedConfig } from '../src/services/seed-config.js';
+import { parseSeedConfig, type SeedCredential } from '../src/services/seed-config.js';
 import { assertPasswordPolicy } from '../src/services/users.js';
+
+/**
+ * The Mongo update for one seeded credential, split into what a re-seed may reconcile and what it may
+ * only ever write once (ADR-0021).
+ *
+ * Structure — grants, redirect URIs, audience, claims — is declarative, so it goes in `$set` and is
+ * reconciled on every run. The secret hash is NOT. A confidential credential's secret is minted by
+ * identity-service and handed to its consumer once, so re-hashing a config value on every run would
+ * silently revert an operational rotation: the credential keeps working here and stops working for
+ * whoever holds the rotated value. It goes in `$setOnInsert`, which Mongo applies only when the upsert
+ * actually inserts — the same insert-if-absent rule users have always had.
+ *
+ * A confidential credential declared with no `secret:` is inserted with an unguessable random hash that
+ * nobody holds. That is deliberate, not a gap: the credential exists structurally and cannot
+ * authenticate until an operator calls `rotate_client_secret` and stores the returned value with the
+ * consumer. Structure arrives by PR; the secret never enters git or this repo's CI.
+ */
+export function credentialUpdate(c: SeedCredential, applicationId: string, now: Date): {
+  $set: Record<string, unknown>;
+  $setOnInsert?: Record<string, unknown>;
+} {
+  const $set: Record<string, unknown> = {
+    applicationId, name: c.name, grantTypes: c.grantTypes,
+    redirectUris: c.redirectUris, scopes: c.scopes, audience: c.audience,
+    isConfidential: c.isConfidential, updatedAt: now
+  };
+  // A client-credentials machine principal (US-0086): the runtime subject + additive claims.
+  if (c.subject !== undefined) $set.subject = c.subject;
+  if (c.claims !== undefined) $set.claims = c.claims;
+
+  if (c.secret) return { $set, $setOnInsert: { secretHash: hashSecret(c.secret) } };
+  if (c.isConfidential) return { $set, $setOnInsert: { secretHash: hashSecret(randomBytes(32).toString('base64url')) } };
+  return { $set };   // a public client authenticates with no secret at all (PKCE / password grant)
+}
 
 function resolveFile(): string {
   const arg = process.argv.slice(2).find((a) => a.startsWith('--file='));
@@ -57,18 +94,10 @@ async function main() {
     ).exec();
     appsUpserted++;
 
-    // Each credential (OAuth client) under the application.
+    // Each credential (OAuth client) under the application. Structure is reconciled every run; the
+    // secret hash is written once on insert and never again — see credentialUpdate.
     for (const c of app.credentials ?? []) {
-      const set: Record<string, unknown> = {
-        applicationId: app.id, name: c.name, grantTypes: c.grantTypes,
-        redirectUris: c.redirectUris, scopes: c.scopes, audience: c.audience,
-        isConfidential: c.isConfidential, updatedAt: now
-      };
-      // A client-credentials machine principal (US-0086): the runtime subject + additive claims.
-      if (c.subject !== undefined) set.subject = c.subject;
-      if (c.claims !== undefined) set.claims = c.claims;
-      if (c.secret) set.secretHash = hashSecret(c.secret);
-      await OAuthClient.updateOne({ _id: c.id }, { $set: set }, { upsert: true }).exec();
+      await OAuthClient.updateOne({ _id: c.id }, credentialUpdate(c, app.id, now), { upsert: true }).exec();
       clientsUpserted++;
     }
   }
@@ -109,6 +138,11 @@ async function main() {
   console.log(`seed: ${appsUpserted} applications, ${clientsUpserted} credentials upserted; ${usersCreated} users created, ${usersSkipped} existing skipped; ${assignmentsUpserted} assignments upserted`);
 }
 
-main()
-  .catch((err) => { console.error(err.message ?? err); process.exitCode = 1; })
-  .finally(() => disconnect());
+// Only hit the database when run as a script — importing the pure helpers (tests) must not connect.
+// Same guard as scripts/dump-seed.ts.
+const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (invokedDirectly) {
+  main()
+    .catch((err) => { console.error(err.message ?? err); process.exitCode = 1; })
+    .finally(() => disconnect());
+}

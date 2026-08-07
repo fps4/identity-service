@@ -8,17 +8,20 @@
 # (ADR-0019). Realm-wide settings (allowed origins, registration mode, IdP toggles) are deployment ENV —
 # see config/ds1/.env.base.
 #
-# STRUCTURAL-ONLY (ADR-0011, ADR-0017). Applications + credentials are declarative/GitOps (this file);
-# USERS + CREDENTIALS are operational and owned by the live DB — created via the admin plane, NOT seeded
-# here — EXCEPT the ONE bootstrap operator (below). This file references ONLY the secrets identity-service
-# ITSELF owns and that already exist as Actions secrets:
-#   ${MAESTRO_RUNTIME_CLIENT_SECRET}  identity-service's own product_runtime credential
-#   ${IDENTITY_ADMIN_CLIENT_SECRET}   the management-plane admin credential (MCP + break-glass)
+# STRUCTURAL-ONLY (ADR-0011, ADR-0017, ADR-0021). Applications + credential STRUCTURE are
+# declarative/GitOps (this file); USERS and credential SECRETS are operational and owned by the live DB —
+# created via the admin plane, NOT seeded here — EXCEPT the two BOOTSTRAP entries below. A product's
+# credential secret is minted by identity-service (`create_client` / `rotate_client_secret`) and stored in
+# THAT product's repo, never here. The only two ${...} references left are the chicken-and-egg pair that
+# has to exist before the admin plane can be called at all:
+#   ${IDENTITY_ADMIN_CLIENT_SECRET}   the management-plane admin credential (MCP + break-glass) — the
+#                                     credential you would otherwise need in order to mint credentials.
+#                                     It must equal what the deploy injects into the container.
 #   ${SEED_CONSOLE_ADMIN_PASSWORD}    the ONE bootstrap operator who then creates everyone else in the UI
 #
 # COMMITTED on purpose: every secret is an ${ENV_VAR} reference resolved at run time; this file holds NO
 # plaintext. Bootstrap an empty DB from service/ with:
-#   IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_CONSOLE_ADMIN_PASSWORD=… \
+#   IDENTITY_ADMIN_CLIENT_SECRET=… SEED_CONSOLE_ADMIN_PASSWORD=… \
 #     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
 # DR is a RESTORE from the nightly off-host backup (docker/backup.sh — ADR-0008). Idempotent.
 
@@ -77,8 +80,10 @@ applications:
         isConfidential: false
 
   # --- identity-service's OWN application: its machine credentials. The admin credential drives the
-  # management plane. It is identity-service's own secret, so it STAYS seeded (other products' runtimes
-  # self-register via ADR-0017). No user logs into this application, so it needs no role catalogue.
+  # management plane, and it is the ONE credential whose secret still comes from this file (ADR-0021):
+  # minting a credential requires an admin token, which requires this credential — so it cannot bootstrap
+  # itself. It is also identity-service's own secret rather than another product's, so nothing crosses a
+  # repo boundary. No user logs into this application, so it needs no role catalogue.
   # The `identity-service-ds1-runtime` credential that used to sit here minted the token for the outbound
   # maestro telemetry channel; both are gone — this service no longer reports to a downstream consumer. ---
   - id: identity-service

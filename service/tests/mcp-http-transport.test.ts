@@ -132,13 +132,16 @@ describe('MCP HTTP transport — JSON-RPC over POST', () => {
     expect(r.json.result.protocolVersion).toBe('2025-03-26');
   });
 
-  it('tools/list works for a granular admin scope and lists the operational tools', async () => {
+  it('tools/list works for a granular admin scope and lists the whole catalogue', async () => {
     const token = await sign({ cid: 'agent', scope: 'admin:users' });
     const r = await rpc(token, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
     expect(r.status).toBe(200);
     const names = r.json.result.tools.map((t: any) => t.name);
+    // The catalogue is scope-independent — per-tool scope is enforced at tools/call, so an admin:users
+    // token still SEES the admin:clients tools (registration included, ADR-0021) and is refused on use.
     expect(names).toContain('rotate_client_secret');
-    expect(names).not.toContain('create_client');
+    expect(names).toContain('create_client');
+    expect(names).not.toContain('delete_client');
   });
 
   it('a notification (no id) is accepted with 202 and no body', async () => {

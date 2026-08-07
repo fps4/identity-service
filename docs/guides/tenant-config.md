@@ -113,8 +113,38 @@ db.oauth_clients.insertOne({
 - The token `aud` is the **application's** `audience`; a credential may set an `audience` **override** (e.g.
   a product runtime reporting to `maestro-workspace`).
 
-Share the `client_id` and plain secret with the product team out-of-band; encourage storing secrets in
-the product's own secrets manager. Verify with `POST /oauth2/token`.
+### Onboarding a product, end to end (ADR-0021)
+
+The raw inserts above show the shape; in practice you never hash a secret by hand, because **you never
+choose one**. identity-service mints it. The whole flow:
+
+```
+# 1. register the product and its credential — over MCP, or POST /admin/v1/{applications,clients}
+create_application  { id: "telemetry", name: "Telemetry", audience: "telemetry-workspace",
+                      roles: [{ key: "reader" }], resources: ["https://telemetry-mcp.fps4.nl/mcp"] }
+create_client       { applicationId: "telemetry", id: "telemetry-runtime", name: "Telemetry Runtime",
+                      grantTypes: ["client_credentials"], isConfidential: true }
+                    → { clientId: "telemetry-runtime", secret: "<returned ONCE>" }
+
+# 2. store that secret in the CONSUMING repo, never in this one
+gh secret set TELEMETRY_RUNTIME_CLIENT_SECRET --repo fps4/telemetry
+
+# 3. record the STRUCTURE (no secret) in config/seed.<product>.yaml by PR, so a rebuilt
+#    deployment gets the credential back — inert until you rotate it a value
+```
+
+Three rules follow from ADR-0021 and are worth stating plainly:
+
+- **The secret is returned once and cannot be read back.** Lose it before step 2 and the fix is
+  `rotate_client_secret`, not recovery.
+- **Never write `secret:` into a seed file.** A seed run creates a credential but never overwrites an
+  existing one's secret, so a seeded value could only ever be a second copy that drifts — and a re-seed
+  used to silently revert rotations that way. Seed files carry structure only.
+- **A confidential credential seeded with no secret is inert.** It is inserted with a random hash nobody
+  holds; `rotate_client_secret <id>` issues the first usable value. So "the seed ran green" does not mean
+  "the consumer can authenticate" — step 2 is what makes it work.
+
+Verify with `POST /oauth2/token`.
 
 ## User login via Google SSO (RQ-0001)
 
@@ -294,7 +324,8 @@ applications:
         grantTypes: [client_credentials]
         scopes: [demo:read]
         isConfidential: true
-        secret: ${SEED_DEMO_RUNTIME_SECRET}
+        # NO `secret:` — identity-service mints it (ADR-0021). Seeding creates this credential inert;
+        # `rotate_client_secret demo-runtime` issues the value, which you store in the demo repo.
 
 users:
   - email: demo@fps4.nl
@@ -312,8 +343,10 @@ be a subset of that application's catalogue.
 `identity-console` / `platform_admin` assignment, so the console can never be accidentally locked out under
 global enforcement.
 
-Re-running upserts applications (and their catalogues) and their credentials, and **leaves existing users
-untouched** (use `npm run manage-users set-password` to change a password). The loader is operator-run
+Re-running upserts applications (and their catalogues) and their credentials' **structure**, and **leaves
+existing users untouched** (use `npm run manage-users set-password` to change a password). It also leaves
+existing credential **secrets** untouched — the hash is written only on insert (ADR-0021), so a re-seed can
+never revert a rotation. The loader is operator-run
 against the database — there is **no HTTP seeding endpoint**
 ([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It reads `MONGO_URI`, so run it where
 it can reach the target Mongo (locally against the published port, or inside the docker network). To migrate
@@ -325,7 +358,8 @@ fold today's separate clients into applications, see the
 ## Operational Tips
 
 - Keep client configuration and the deployment env in version control (e.g. the infra repo) to track history.
-- Rotate client secrets periodically — `POST /admin/v1/clients/{id}/rotate-secret` (or the seed) — and redistribute.
+- Rotate client secrets periodically — `POST /admin/v1/clients/{id}/rotate-secret` or the `rotate_client_secret`
+  MCP tool — and redistribute to the consuming repo. The seed is **not** a rotation path (ADR-0021).
 - Monitor structured logs for `issued client credentials token` events to validate adoption and spot unexpected grants.
 
 For full architecture context, review [architecture.md](../design/architecture.md). For endpoint contracts, see [api.md](../reference/api.md).

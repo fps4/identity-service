@@ -36,14 +36,25 @@ describe('MCP handler — protocol dispatch', () => {
     expect((res as any).result.protocolVersion).toBe(DEFAULT_PROTOCOL);
   });
 
-  it('tools/list returns the catalogue and omits structural provisioning tools (ADR-0011)', async () => {
+  it('tools/list carries registration but not deletion (ADR-0011 as amended by ADR-0021)', async () => {
     const res = await handleRpc({ id: 2, method: 'tools/list' }, admin);
     const names = (res as any).result.tools.map((t: any) => t.name);
     expect(names).toEqual(TOOLS.map((t) => t.name));
+    // Registration is on the agent surface: identity-service is where the secret is minted, so this is
+    // the only place a credential can be created without some other store already owning its secret.
+    expect(names).toContain('create_application');
+    expect(names).toContain('create_client');
     expect(names).toContain('rotate_client_secret');
-    expect(names).not.toContain('create_client');
-    expect(names).not.toContain('onboard_tenant');
+    // Removal stays HTTP-only for break-glass — least-privilege still applies to destructive structure.
     expect(names).not.toContain('delete_client');
+    expect(names).not.toContain('delete_application');
+    expect(names).not.toContain('onboard_tenant');
+  });
+
+  it('every registration tool is gated on the clients scope', async () => {
+    for (const name of ['create_application', 'create_client']) {
+      expect(TOOLS.find((t) => t.name === name)?.areaScope).toBe('admin:clients');
+    }
   });
 
   it('ping returns an empty result', async () => {
