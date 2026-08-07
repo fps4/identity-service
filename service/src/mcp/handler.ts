@@ -7,9 +7,11 @@
  * JSON-RPC message, hand it to {@link handleRpc} with the verified principal, and write back the response
  * it returns (or nothing, for a notification). No tool logic is duplicated per transport.
  *
- * Scope (ADR-0011): the MCP is the *agent* face on the IMPERATIVE side — read + operational only. It does
- * NOT provision structure (no `onboard_tenant`/`create_client`/`delete_client`); those stay on the HTTP
- * admin API for break-glass. Users/credentials/keys/invites are runtime state owned by the DB and stay.
+ * Scope (ADR-0011, amended by ADR-0021): the MCP is the *agent* face on the IMPERATIVE side. It carries
+ * read + operational tools AND the two registration tools — `create_application` / `create_client` —
+ * because identity-service is where a credential's secret is MINTED. Destructive structural tools
+ * (`delete_client`, `delete_application`) stay HTTP-only for break-glass: least-privilege still applies
+ * to removal, which registration does not need. Users/credentials/keys/invites are DB-owned runtime state.
  */
 import { adminService } from '../container.js';
 import { principalHasScope, ADMIN_SCOPES, type AdminPrincipal } from '../core/admin-auth.js';
@@ -48,9 +50,28 @@ const strArr = { type: 'array', items: { type: 'string' } };
 const roleCatalogue = { type: 'array', items: { type: 'object', properties: { key: str, name: str, description: str }, required: ['key'] } };
 
 export const TOOLS: ToolDef[] = [
-  // Structural provisioning (create_client / delete_client) is intentionally NOT exposed here — OAuth
-  // clients are declarative, seeded from git config (ADR-0011, ADR-0018). They remain on the HTTP admin
-  // API for break-glass. The MCP keeps only read + operational tools below.
+  // REGISTRATION (ADR-0021). A credential's secret is minted here and returned ONCE, so registering one
+  // has to happen on a write surface — a seed file can only ever carry a secret that some *other* store
+  // already owns, which is the coupling ADR-0021 removes. Deletion stays HTTP-only: least-privilege
+  // still argues against handing an agent a way to remove a live credential.
+  {
+    name: 'create_application',
+    description: 'Register a product as an application (ADR-0020): its audience, role catalogue, and protected-resource registry. Structure only — add its credentials with create_client.',
+    areaScope: ADMIN_SCOPES.clients,
+    inputSchema: obj({ id: str, name: str, audience: str, roles: roleCatalogue, resources: strArr }, ['name']),
+    handler: (a) => adminService.createApplication(a)
+  },
+  {
+    name: 'create_client',
+    description: 'Register a credential under an application. identity-service MINTS the secret and returns it ONCE — only the hash is stored, and it cannot be read back. Copy it straight into the CONSUMING repo\'s secret store; never put it in a seed file.',
+    areaScope: ADMIN_SCOPES.clients,
+    inputSchema: obj({
+      applicationId: str, id: str, name: str, grantTypes: strArr, redirectUris: strArr,
+      scopes: strArr, audience: str, subject: str,
+      isConfidential: { type: 'boolean' }, claims: { type: 'object' }
+    }, ['applicationId', 'name', 'grantTypes']),
+    handler: (a) => adminService.createClient(a)
+  },
   {
     name: 'rotate_client_secret',
     description: 'Rotate an existing client secret (operational credential rotation). Returns the new secret ONCE.',

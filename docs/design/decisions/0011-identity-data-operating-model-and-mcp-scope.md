@@ -16,6 +16,13 @@ related:
 > holds, but the **OAuth client is now the only structural per-consumer object** — there is no tenant to
 > provision, and the `list_tenants` MCP tool / `/admin/v1` tenant routes are gone.
 
+> **Amended by [ADR-0021](0021-credentials-minted-not-seeded.md) (2026-08-07):** the seam runs *through*
+> the OAuth credential, not around it. Its structure stays declarative as §1 says, but its **secret** is
+> operational — minted by identity-service, returned once, stored in the consuming product's repo, and
+> never overwritten by a re-seed. Consequently §3 no longer holds in full: `create_application` and
+> `create_client` ARE on the MCP surface, because minting is what registration now *is*. Deletion stays
+> HTTP-only. Read §1's table as covering the credential's definition, not its secret.
+
 
 ## Context
 

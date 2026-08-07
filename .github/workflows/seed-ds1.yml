@@ -66,36 +66,18 @@ jobs:
       - name: Build the seeder image
         run: docker build -f docker/seed.Dockerfile -t ids-seeder:${{ github.sha }} .
 
+      # Only the two BOOTSTRAP secrets remain (ADR-0021). A product credential's secret is now MINTED by
+      # identity-service and stored in that product's own repo, so no seed file references one and none
+      # needs to exist here. The list this replaced held per-product client secrets and per-tenant user
+      # passwords — both now DB-owned. Onboarding a product must not add a secret back to this repo.
       - name: Assemble seed secrets (runner-local env file)
         env:
-          SEED_DEMO_PASSWORD: ${{ secrets.SEED_DEMO_PASSWORD }}
-          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
-          SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD: ${{ secrets.SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD }}
-          SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD: ${{ secrets.SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD }}
-          MAESTRO_GATEWAY_DS1_SECRET: ${{ secrets.MAESTRO_GATEWAY_DS1_SECRET }}
-          MAESTRO_COPILOT_DS1_SECRET: ${{ secrets.MAESTRO_COPILOT_DS1_SECRET }}
-          MAESTRO_COACH_DS1_SECRET: ${{ secrets.MAESTRO_COACH_DS1_SECRET }}
-          SEED_MAESTRO_PO_PASSWORD: ${{ secrets.SEED_MAESTRO_PO_PASSWORD }}
-          SEED_MAESTRO_SA_PASSWORD: ${{ secrets.SEED_MAESTRO_SA_PASSWORD }}
-          SEED_MAESTRO_ADMIN_PASSWORD: ${{ secrets.SEED_MAESTRO_ADMIN_PASSWORD }}
-          SEED_COACH_ADMIN_PASSWORD: ${{ secrets.SEED_COACH_ADMIN_PASSWORD }}
-          SEED_COACH_LEARNER_PASSWORD: ${{ secrets.SEED_COACH_LEARNER_PASSWORD }}
-          SEED_COACH_OFFICER_PASSWORD: ${{ secrets.SEED_COACH_OFFICER_PASSWORD }}
           IDENTITY_ADMIN_CLIENT_SECRET: ${{ secrets.IDENTITY_ADMIN_CLIENT_SECRET }}
-          SKILLS_COACH_COACH_CLIENT_SECRET: ${{ secrets.SKILLS_COACH_COACH_CLIENT_SECRET }}
-          MSTR_SPECS_AGENT_CLIENT_SECRET: ${{ secrets.MSTR_SPECS_AGENT_CLIENT_SECRET }}
           SEED_CONSOLE_ADMIN_PASSWORD: ${{ secrets.SEED_CONSOLE_ADMIN_PASSWORD }}
         run: |
           umask 077
           : > seed.secrets.env
-          for v in \
-            SEED_DEMO_PASSWORD SEED_ADMIN_PASSWORD \
-            SEED_SOVEREIGN_COPILOT_DEMO_PASSWORD SEED_SOVEREIGN_COPILOT_ADMIN_PASSWORD \
-            MAESTRO_GATEWAY_DS1_SECRET MAESTRO_COPILOT_DS1_SECRET MAESTRO_COACH_DS1_SECRET \
-            SEED_MAESTRO_PO_PASSWORD SEED_MAESTRO_SA_PASSWORD SEED_MAESTRO_ADMIN_PASSWORD \
-            SEED_COACH_ADMIN_PASSWORD SEED_COACH_LEARNER_PASSWORD SEED_COACH_OFFICER_PASSWORD \
-            IDENTITY_ADMIN_CLIENT_SECRET SEED_CONSOLE_ADMIN_PASSWORD \
-            SKILLS_COACH_COACH_CLIENT_SECRET MSTR_SPECS_AGENT_CLIENT_SECRET; do
+          for v in IDENTITY_ADMIN_CLIENT_SECRET SEED_CONSOLE_ADMIN_PASSWORD; do
             val="${!v}"
             [ -n "$val" ] && printf '%s=%s\n' "$v" "$val" >> seed.secrets.env
           done

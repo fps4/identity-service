@@ -1,8 +1,9 @@
 # Focused STRUCTURAL seed for the Skills Coach (ADR-0011, ADR-0019, ADR-0020).
 #
-# Per ADR-0011, applications + credentials are declarative/GitOps (this file); users are operational and
-# owned by the live DB (ADR-0008), managed via the admin plane. So this file lists NO users and
-# references NO ${SEED_*} secrets — it is dispatchable on its own.
+# Per ADR-0011, applications + credential STRUCTURE are declarative/GitOps (this file); users are
+# operational and owned by the live DB (ADR-0008), managed via the admin plane. Per ADR-0021 so are
+# credential SECRETS — identity-service mints them. So this file lists no users, carries no `secret:`,
+# and references no ${...} at all: it is dispatchable with no secrets configured anywhere.
 #
 # Replaces the former `coach` application, which had drifted from the product on every field that
 # matters. What the deployment actually expects, from skills-coach `config/ds1/.env.base`:
@@ -47,11 +48,15 @@ applications:
       # `claims.roles` is how a client-credentials token carries authority at all (US-0086). Skills
       # Coach maps roles to capabilities in its own code and reads nothing else — a token without
       # `roles` falls back to its documented baseline, `learner`, and every coach call is refused.
+      #
+      # No `secret:` here, on purpose (ADR-0021). identity-service mints this credential's secret and
+      # hands it over once; the value belongs in the SKILLS-COACH repo's Actions secrets, not in this
+      # one's. A seed run only ever creates the credential — it never overwrites an existing secret, so
+      # it cannot revert a rotation. Get a usable value with `rotate_client_secret skills-coach-coach`.
       - id: skills-coach-coach
         name: Skills Coach — coach automation
         grantTypes: [client_credentials]
         isConfidential: true
-        secret: ${SKILLS_COACH_COACH_CLIENT_SECRET}
         subject: coach@skills-coach.fps4.nl
         claims:
           roles: [coach]
