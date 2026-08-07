@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { parse as parseYaml } from 'yaml';
 import { credentialUpdate } from '../scripts/seed.js';
@@ -67,13 +67,26 @@ describe('seed credential upsert (ADR-0021)', () => {
 // The committed seed files themselves, not just the loader. A `secret: ${…}` reintroduced by a future PR
 // would compile, pass every other test, and quietly restore the coupling ADR-0021 removed: the value's
 // system of record back in this repo's CI, and a deploy that fails closed when it is unset.
-describe('committed seed files reference no product secrets (ADR-0021)', () => {
-  const dir = fileURLToPath(new URL('../../config/', import.meta.url));
+//
+// These read `config/`, which lives OUTSIDE `service/` — and the production image is built with
+// `service/` as its whole context while running `npm test` in the Dockerfile, so the seed files genuinely
+// do not exist there. Skipped in that environment and enforced where it counts: the DoD job, which runs
+// against a full repo checkout. Same seam, and same reasoning, as tests/deploy-env-passthrough.ts.
+const dir = fileURLToPath(new URL('../../config/', import.meta.url));
+const hasRepoTree = existsSync(dir);
+
+// Read the directory at module scope, NOT inside the describe: `describe.skipIf` still evaluates the
+// factory to register its tests, so a scandir in there throws during collection and fails the file
+// before the skip can apply.
+// seed.example.yaml is documentation of the schema, not a file the workflow ever applies.
+const files = hasRepoTree
+  ? readdirSync(dir).filter((f) => /^seed\..*\.yaml$|^seed\.yaml$/.test(f) && f !== 'seed.example.yaml')
+  : ['(skipped — no repo tree)'];
+
+describe.skipIf(!hasRepoTree)('committed seed files reference no product secrets (ADR-0021)', () => {
   // Only the bootstrap pair may remain — minting a credential needs an admin credential to exist first,
   // and the first operator needs a password before anyone can log in to create the rest.
   const BOOTSTRAP = new Set(['IDENTITY_ADMIN_CLIENT_SECRET', 'SEED_CONSOLE_ADMIN_PASSWORD']);
-  // seed.example.yaml is documentation of the schema, not a file the workflow ever applies.
-  const files = readdirSync(dir).filter((f) => /^seed\..*\.yaml$|^seed\.yaml$/.test(f) && f !== 'seed.example.yaml');
 
   it('finds the seed files it is meant to be checking', () => {
     expect(files).toContain('seed.yaml');
