@@ -12,65 +12,8 @@ import { generateInviteCode, inviteCodeDigest, deriveInviteStatus } from '../src
 import { sha256Hex } from '../src/utils/hash.js';
 import { CONFIG } from '../src/config.js';
 
-// --- A compact in-memory mongoose-ish collection covering what the invite paths use -----------
-
-const cmp = (doc: any, key: string, cond: any): boolean => {
-  if (cond !== null && typeof cond === 'object') {
-    if ('$gt' in cond) return doc[key] != null && doc[key] > cond.$gt;
-    if ('$gte' in cond) return doc[key] != null && doc[key] >= cond.$gte;
-  }
-  if (cond === null) return doc[key] == null; // Mongo: `field: null` matches absent OR null
-  return doc[key] === cond;
-};
-const match = (doc: any, filter: Record<string, any>): boolean =>
-  Object.entries(filter ?? {}).every(([k, v]) => cmp(doc, k, v));
-
-const applyUpdate = (doc: any, update: any) => {
-  Object.assign(doc, update.$set ?? {});
-  for (const [k, delta] of Object.entries(update.$inc ?? {})) doc[k] = (doc[k] ?? 0) + (delta as number);
-};
-
-function fakeCollection(items: any[]) {
-  const chain = <T>(v: T) => ({
-    exec: async () => v,
-    lean: function () { return this; },
-    sort: function () { return this; },
-    select: function () { return this; }
-  });
-  return {
-    _items: items,
-    find: (filter: any = {}) => chain(items.filter((d) => match(d, filter))),
-    findById: (id: string) => chain(items.find((d) => d._id === id) ?? null),
-    findOne: (filter: any) => chain(items.find((d) => match(d, filter)) ?? null),
-    countDocuments: (filter: any = {}) => ({ exec: async () => items.filter((d) => match(d, filter)).length }),
-    create: async (doc: any) => {
-      if (doc._id != null && items.some((d) => d._id === doc._id)) {
-        throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
-      }
-      items.push({ ...doc });
-      return doc;
-    },
-    findByIdAndUpdate: (id: string, update: any) => {
-      const doc = items.find((d) => d._id === id);
-      if (doc) applyUpdate(doc, update);
-      return chain(doc ?? null);
-    },
-    // The atomic redemption gate: filter + mutate in one step, exactly what the service leans on.
-    findOneAndUpdate: (filter: any, update: any) => {
-      const doc = items.find((d) => match(d, filter));
-      if (doc) applyUpdate(doc, update);
-      return chain(doc ?? null);
-    },
-    updateOne: (filter: any, update: any) => ({
-      exec: async () => {
-        const doc = items.find((d) => match(d, filter));
-        if (!doc) return { matchedCount: 0 };
-        applyUpdate(doc, update);
-        return { matchedCount: 1 };
-      }
-    })
-  };
-}
+import { Transaction, type Store } from '../src/db/index.js';
+import { testStore, type TestStore } from './helpers/store.js';
 
 const NOW = new Date('2026-07-03T12:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
@@ -79,27 +22,27 @@ const HOUR = 60 * 60 * 1000;
 // roles are validated against.
 const APP = {
   _id: 'app-web', name: 'App Web', audience: 'app-workspace',
-  roles: [{ key: 'tenant_admin' }, { key: 'member' }]
+  roles: [{ key: 'tenant_admin' }, { key: 'member' }], resources: []
 };
 
-function makeState() {
-  return {
-    User: fakeCollection([]),
-    Invite: fakeCollection([]),
-    Assignment: fakeCollection([]),
-    AuditLog: fakeCollection([]),
-    Application: fakeCollection([{ ...APP }]),
-    OAuthClient: fakeCollection([]),
-    OAuthToken: fakeCollection([]),
-    KeyStore: fakeCollection([])
-  };
+// A table of the test's own on DynamoDB Local, with the application in it.
+async function makeState(): Promise<TestStore> {
+  const db = await testStore();
+  await db.store.applications.create({ ...APP });
+  return db;
 }
 
-const deps = (state: ReturnType<typeof makeState>) => ({
-  getMasterConnection: async () => ({}) as any,
-  makeModels: () => state as any,
-  now: () => NOW
-});
+const deps = (store: Store) => ({ store, now: () => NOW });
+
+/** Every invite in the table, oldest first. */
+const invites = (store: Store) => store.invites.list().then((rows) => rows.reverse());
+
+/** Take one use, as a registration's transaction would. */
+async function redeemOnce(store: Store, inviteId: string): Promise<void> {
+  const tx = new Transaction();
+  store.invites.redeem(tx, inviteId, NOW);
+  await store.commit(tx);
+}
 
 describe('invite code primitives', () => {
   it('mints XXXX-XXXX-XXXX codes from the unambiguous alphabet', () => {
@@ -123,31 +66,35 @@ describe('invite code primitives', () => {
 });
 
 describe('admin service — invites (RQ-0013)', () => {
-  let state: ReturnType<typeof makeState>;
+  let db: TestStore;
+  let state: Store;
   let admin: ReturnType<typeof createAdminService>;
   let savedRoles: string[];
-  beforeEach(() => {
+  beforeEach(async () => {
     // Role vocabulary is deployment config now (AUTH_ALLOWED_ROLES), not a tenant field.
     savedRoles = CONFIG.auth.allowedRoles;
     (CONFIG.auth as any).allowedRoles = ['tenant_admin', 'member'];
-    state = makeState();
+    db = await makeState();
+    state = db.store;
     admin = createAdminService(deps(state));
   });
-  afterEach(() => { (CONFIG.auth as any).allowedRoles = savedRoles; });
+  afterEach(async () => { (CONFIG.auth as any).allowedRoles = savedRoles; await db.drop(); });
 
   it('creates an invite, returns the code once, and stores only its digest', async () => {
     const { inviteId, code, expiresAt } = await admin.createInvite({ applicationId: 'app-web' });
     expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(expiresAt).toEqual(new Date(NOW.getTime() + 7 * 24 * HOUR)); // 7-day default
-    const stored = state.Invite._items.find((i) => i._id === inviteId);
+    const stored = (await state.invites.get(inviteId))!;
     expect(stored.codeDigest).toBe(inviteCodeDigest(code));
     expect(JSON.stringify(stored)).not.toContain(code.replace(/-/g, ''));
     expect(stored).toMatchObject({ maxUses: 1, usesRemaining: 1, roles: [] });
+    // The digest resolves the invite — what a redemption looks up.
+    expect(await state.invites.getByDigest(inviteCodeDigest(code))).toMatchObject({ _id: inviteId });
   });
 
   it('normalizes a bound email, stores the applicationId, and validates roles against the app catalogue (ADR-0020)', async () => {
     const { inviteId } = await admin.createInvite({ applicationId: 'app-web', email: ' New@Example.COM ', roles: ['member'] });
-    expect(state.Invite._items.find((i) => i._id === inviteId)).toMatchObject({ applicationId: 'app-web', email: 'new@example.com', roles: ['member'] });
+    expect(await state.invites.get(inviteId)).toMatchObject({ applicationId: 'app-web', email: 'new@example.com', roles: ['member'] });
     // A role outside the application's catalogue is rejected loud at creation, not at the invitee's redemption.
     await expect(admin.createInvite({ applicationId: 'app-web', roles: ['superuser'] }))
       .rejects.toMatchObject({ status: 400, code: 'invalid_role' });
@@ -165,7 +112,7 @@ describe('admin service — invites (RQ-0013)', () => {
   it('lists invites with derived status and usedCount, never the code digest', async () => {
     const { inviteId } = await admin.createInvite({ applicationId: 'app-web', maxUses: 2, note: 'March cohort' });
     await admin.createInvite({ applicationId: 'app-web', expiresInHours: -1 }).catch(() => {}); // rejected, not stored
-    state.Invite._items.find((i) => i._id === inviteId).usesRemaining = 1; // one redemption happened
+    await redeemOnce(state, inviteId); // one redemption happened
 
     const listed = await admin.listInvites();
     expect(listed).toHaveLength(1);
@@ -182,18 +129,20 @@ describe('admin service — invites (RQ-0013)', () => {
 });
 
 describe('registration policy gate + redemption (RQ-0013)', () => {
-  let state: ReturnType<typeof makeState>;
+  let db: TestStore;
+  let state: Store;
   let admin: ReturnType<typeof createAdminService>;
   let users: ReturnType<typeof createUserService>;
 
   // Registration policy is deployment config now (AUTH_REGISTRATION_MODE), not a tenant field.
   let savedMode: 'open' | 'invite' | 'closed';
   beforeEach(() => { savedMode = CONFIG.auth.registrationMode; });
-  afterEach(() => { (CONFIG.auth as any).registrationMode = savedMode; });
+  afterEach(async () => { (CONFIG.auth as any).registrationMode = savedMode; await db?.drop(); });
 
-  const setup = (registration: 'open' | 'invite' | 'closed' = 'open') => {
+  const setup = async (registration: 'open' | 'invite' | 'closed' = 'open') => {
     (CONFIG.auth as any).registrationMode = registration;
-    state = makeState();
+    db = await makeState();
+    state = db.store;
     admin = createAdminService(deps(state));
     users = createUserService(deps(state));
   };
@@ -201,25 +150,26 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
     users.registerUser({ email, password: 'long-enough-pw', inviteCode });
 
   it('an open deployment (or one with no policy) registers exactly as before, code or not', async () => {
-    setup();
+    await setup();
     await expect(register('a@x.test')).resolves.toMatchObject({ email: 'a@x.test' });
     await expect(register('b@x.test', 'IGNORED-CODE')).resolves.toMatchObject({ email: 'b@x.test' });
-    expect(state.Invite._items).toHaveLength(0); // open never consults invites
+    expect(await invites(state)).toHaveLength(0); // open never consults invites
   });
 
   it('a closed deployment refuses self-registration outright', async () => {
-    setup('closed');
+    await setup('closed');
     await expect(register('a@x.test')).rejects.toMatchObject({ status: 403, code: 'registration_closed' });
   });
 
   it('an invite deployment requires a code, and rejects garbage/expired/revoked codes generically', async () => {
-    setup('invite');
+    await setup('invite');
     await expect(register('a@x.test')).rejects.toMatchObject({ status: 403, code: 'invite_required' });
     await expect(register('a@x.test', 'NOPE-NOPE-NOPE')).rejects.toMatchObject({ status: 403, code: 'invalid_invite' });
 
+    // An invite good for an hour, presented two hours later.
     const expired = await admin.createInvite({ applicationId: 'app-web', expiresInHours: 1 });
-    state.Invite._items.find((i) => i._id === expired.inviteId).expiresAt = new Date(NOW.getTime() - HOUR);
-    await expect(register('a@x.test', expired.code)).rejects.toMatchObject({ code: 'invalid_invite' });
+    const later = createUserService({ store: state, now: () => new Date(NOW.getTime() + 2 * HOUR) });
+    await expect(later.registerUser({ email: 'a@x.test', password: 'long-enough-pw', inviteCode: expired.code })).rejects.toMatchObject({ code: 'invalid_invite' });
 
     const revoked = await admin.createInvite({ applicationId: 'app-web' });
     await admin.revokeInvite(revoked.inviteId);
@@ -227,18 +177,19 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
   });
 
   it('redeems a valid code: user created, roles stamped, a use consumed, redemption audited', async () => {
-    setup('invite');
+    await setup('invite');
     const { inviteId, code } = await admin.createInvite({ applicationId: 'app-web', roles: ['member'] });
 
     const user = await register('new@x.test', code.toLowerCase().replace(/-/g, '')); // humane entry forms work
     // The user itself no longer carries roles (ADR-0019) — they live on the assignment created on redemption.
-    expect(state.User._items[0]).toMatchObject({ email: 'new@x.test', emailVerified: false });
-    expect(state.User._items[0]).not.toHaveProperty('roles');
-    expect(state.Assignment._items[0]).toMatchObject({
-      userId: user.id, applicationId: 'app-web', roles: ['member'], status: 'active'
+    const stored = (await state.users.get(user.id))!;
+    expect(stored).toMatchObject({ email: 'new@x.test', emailVerified: false });
+    expect(stored).not.toHaveProperty('roles');
+    expect(await state.assignments.get(user.id, 'app-web')).toMatchObject({
+      userId: user.id, applicationId: 'app-web', roles: ['member'], status: 'active', createdBy: `invite:${inviteId}`
     });
-    expect(state.Invite._items[0].usesRemaining).toBe(0);
-    expect(state.AuditLog._items[0]).toMatchObject({
+    expect((await state.invites.get(inviteId))!.usesRemaining).toBe(0);
+    expect((await state.audit.latest(10))[0]).toMatchObject({
       action: 'invite.redeem', targetType: 'invite', targetId: inviteId,
       meta: { userId: user.id, email: 'new@x.test', applicationId: 'app-web' }
     });
@@ -248,39 +199,51 @@ describe('registration policy gate + redemption (RQ-0013)', () => {
   });
 
   it('a multi-use cohort code admits exactly maxUses people', async () => {
-    setup('invite');
+    await setup('invite');
     const { code } = await admin.createInvite({ applicationId: 'app-web', maxUses: 2 });
     await register('one@x.test', code);
     await register('two@x.test', code);
     await expect(register('three@x.test', code)).rejects.toMatchObject({ code: 'invalid_invite' });
-    expect(state.User._items).toHaveLength(2);
+    expect(await state.users.count()).toBe(2);
   });
 
   it('an email-bound invite only admits (and then vouches) its address; a mismatch refunds the use', async () => {
-    setup('invite');
-    const { code } = await admin.createInvite({ applicationId: 'app-web', email: 'invited@x.test' });
+    await setup('invite');
+    const { inviteId, code } = await admin.createInvite({ applicationId: 'app-web', email: 'invited@x.test' });
 
     await expect(register('intruder@x.test', code)).rejects.toMatchObject({ code: 'invalid_invite' });
-    expect(state.Invite._items[0].usesRemaining).toBe(1); // refunded — the mismatch burned nothing
+    expect((await state.invites.get(inviteId))!.usesRemaining).toBe(1); // the mismatch burned nothing
 
     await register('Invited@X.test', code);
-    expect(state.User._items[0]).toMatchObject({ email: 'invited@x.test', emailVerified: true }); // ADR-0013: operator vouched
+    expect(await state.users.getByEmail('invited@x.test')).toMatchObject({ email: 'invited@x.test', emailVerified: true }); // ADR-0013: operator vouched
   });
 
-  it('email_taken after a valid code refunds the use (a rejected registration never burns one)', async () => {
-    setup('invite');
-    state.User._items.push({ _id: 'u0', email: 'taken@x.test', createdAt: new Date(0) });
-    const { code } = await admin.createInvite({ applicationId: 'app-web' });
+  it('email_taken after a valid code burns no use (a rejected registration is one transaction that never happened)', async () => {
+    await setup('invite');
+    const tx = new Transaction();
+    state.users.put(tx, { _id: 'u0', email: 'taken@x.test', identities: [], emailVerified: false, status: 'active', failedAttempts: 0, createdAt: new Date(0), updatedAt: new Date(0) });
+    await state.commit(tx);
+    const { inviteId, code } = await admin.createInvite({ applicationId: 'app-web' });
     await expect(register('taken@x.test', code)).rejects.toMatchObject({ status: 409, code: 'email_taken' });
-    expect(state.Invite._items[0].usesRemaining).toBe(1);
+    expect((await state.invites.get(inviteId))!.usesRemaining).toBe(1);
     await expect(register('fresh@x.test', code)).resolves.toBeTruthy(); // still redeemable
   });
 
+  it('two registrations racing the last use: one is admitted, the other refused, the use taken once', async () => {
+    await setup('invite');
+    const { inviteId, code } = await admin.createInvite({ applicationId: 'app-web' });
+    const outcomes = await Promise.allSettled([register('first@x.test', code), register('second@x.test', code)]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((o) => o.status === 'rejected')).toHaveLength(1);
+    expect((await state.invites.get(inviteId))!.usesRemaining).toBe(0);
+    expect(await state.users.count()).toBe(1);
+  });
+
   it('input validation fires before any invite is consulted (no use burned on a weak password)', async () => {
-    setup('invite');
-    const { code } = await admin.createInvite({ applicationId: 'app-web' });
+    await setup('invite');
+    const { inviteId, code } = await admin.createInvite({ applicationId: 'app-web' });
     await expect(users.registerUser({ email: 'a@x.test', password: 'short', inviteCode: code }))
       .rejects.toMatchObject({ code: 'weak_password' });
-    expect(state.Invite._items[0].usesRemaining).toBe(1);
+    expect((await state.invites.get(inviteId))!.usesRemaining).toBe(1);
   });
 });

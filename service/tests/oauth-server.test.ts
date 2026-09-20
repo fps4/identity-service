@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Store } from '../src/db/index.js';
 import { createOAuthServer } from '../src/oauth/server.js';
 import { hashSecret } from '../src/utils/hash.js';
 import {
@@ -31,154 +32,33 @@ vi.mock('../src/utils/key-store.js', () => ({
   rotateSigningKey: vi.fn()
 }));
 
-type TokenDoc = {
-  _id: string;
-  clientId: string;
-  subject?: string;
-  sessionId?: string;
-  type: 'access' | 'refresh';
-  scope: string[];
-  issuedAt: Date;
-  expiresAt: Date;
-  status: 'active' | 'revoked' | 'expired';
-};
+import { testStore, type TestStore } from './helpers/store.js';
+import { fixtures } from './helpers/fixtures.js';
 
-interface MockState {
-  clients: Array<{
-    _id: string;
-    name: string;
-    secretHash: string;
-    grantTypes: string[];
-    redirectUris?: string[];
-    scopes: string[];
-    isConfidential: boolean;
-    audience?: string;
-    subject?: string;
-    claims?: Record<string, unknown>;
-    applicationId?: string;
-  }>;
-  applications: Array<{ _id: string; name: string; audience?: string; resources?: string[] }>;
-  tokens: TokenDoc[];
-  keyStore: Array<{
-    kid: string;
-    privateKey: string;
-    publicKey: string;
-    status: 'active' | 'inactive' | 'retired';
-    algorithm: 'RS256';
-    createdAt?: Date;
-    rotatedAt?: Date | null;
-  }>;
-}
-
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
-
-function createMockDeps(state: MockState): OAuthServerDependencies {
+function createMockDeps(db: TestStore): OAuthServerDependencies {
   return {
-    getMasterConnection: async () => ({
-      startSession: () => ({
-        withTransaction: async (fn: () => Promise<void>) => { await fn(); },
-        endSession: () => {}
-      })
-    }) as any,
-    makeModels: () => ({
-      OAuthClient: {
-        findById: (id: string) => ({
-          lean: () => ({
-            exec: async () => clone(state.clients.find((client) => client._id === id) ?? null)
-          })
-        })
-      },
-      Application: {
-        findById: (id: string) => ({
-          lean: () => ({
-            exec: async () => clone(state.applications.find((app) => app._id === id) ?? null)
-          })
-        })
-      },
-      OAuthToken: {
-        countDocuments: (query: any) => ({
-          // Deployment-wide access-token count (ADR-0018: no tenant filter).
-          exec: async () => state.tokens.filter((token) => {
-            const typeMatches = query.type ? token.type === query.type : true;
-            const issuedAfter = query.issuedAt?.$gte ? token.issuedAt >= query.issuedAt.$gte : true;
-            return typeMatches && issuedAfter;
-          }).length
-        }),
-        create: async (payload: any) => {
-          const docs = Array.isArray(payload) ? payload : [payload];
-          docs.forEach((doc) => state.tokens.push({ ...doc }));
-          return Array.isArray(payload) ? docs : docs[0];
-        }
-      },
-      KeyStore: {
-        findOne: (query: any) => ({
-          sort: () => ({
-            lean: () => ({
-              exec: async () => {
-                const candidates = state.keyStore
-                  .filter((key) => (query.status ? key.status === query.status : true))
-                  .sort((a, b) => ((b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0)));
-                return candidates.length ? { ...candidates[0] } : null;
-              }
-            })
-          })
-        }),
-        find: (query: any) => ({
-          lean: () => ({
-            exec: async () => state.keyStore
-              .filter((key) => (query.status?.$in ? query.status.$in.includes(key.status) : true))
-              .map((key) => ({ ...key }))
-          })
-        }),
-        create: async (payload: any) => {
-          const docs = Array.isArray(payload) ? payload : [payload];
-          docs.forEach((doc) => state.keyStore.push({
-            ...doc,
-            createdAt: doc.createdAt ?? new Date(),
-            rotatedAt: doc.rotatedAt ?? null
-          }));
-          return Array.isArray(payload) ? docs : docs[0];
-        },
-        updateMany: async (filter: any, update: any) => {
-          state.keyStore.forEach((key) => {
-            const matches = Object.entries(filter).every(([prop, value]) => (key as any)[prop] === value);
-            if (matches) {
-              Object.assign(key, update.$set ?? {});
-            }
-          });
-        }
-      },
-      Session: {
-        findById: () => ({ exec: async () => null })
-      }
-    }),
+    store: db.store,
     logger: {
       info: () => {},
       error: () => {}
-    }
-  };
-}
-
-function createInitialState(): MockState {
-  return {
-    clients: [],
-    applications: [],
-    tokens: [],
-    keyStore: []
+    } as any
   };
 }
 
 describe('OAuth server – client credentials grant', () => {
-  let state: MockState;
+  let db: TestStore;
+  let state: Store;
   let oauthServer: ReturnType<typeof createOAuthServer>;
 
-  beforeEach(() => {
-    state = createInitialState();
-    oauthServer = createOAuthServer(createMockDeps(state));
+  beforeEach(async () => {
+    db = await testStore();
+    state = db.store;
+    oauthServer = createOAuthServer(createMockDeps(db));
   });
+  afterEach(() => db.drop());
 
   it('issues an access token when the client is properly configured', async () => {
-    state.clients.push({
+    await fixtures.client(state, {
       _id: 'client-1',
       name: 'CI client',
       secretHash: hashSecret('top-secret'),
@@ -197,18 +77,20 @@ describe('OAuth server – client credentials grant', () => {
     expect(result.tokenType).toBe('Bearer');
     expect(result.expiresIn).toBeGreaterThan(0);
     expect(result.scope).toEqual(['telemetry:read']);
-    expect(state.tokens).toHaveLength(1);
+    expect(await state.tokens.countIssuedSince('access', new Date(0))).toBe(1);
 
     const claims = decodeJwt(result.accessToken);
     expect(claims.cid).toBe('client-1');
     expect(claims.scope).toBe('telemetry:read');
+    // The token's metadata is stored by its jti, with the expiry the table's TTL reads.
+    expect(await state.tokens.get(claims.jti as string)).toMatchObject({ clientId: 'client-1', type: 'access', status: 'active', scope: ['telemetry:read'] });
   });
 
   it('binds aud to a recognized resource and rejects an unknown one (RFC 8707, ADR-0009 Phase 2)', async () => {
-    state.clients.push({
+    await fixtures.client(state, {
       _id: 'admin-client', name: 'admin', secretHash: hashSecret('top-secret'),
       grantTypes: ['client_credentials'], scopes: ['admin'], redirectUris: [], isConfidential: true
-    } as any);
+    });
 
     // A recognized resource binds the token's aud to it (not the service-wide default).
     const bound = await oauthServer.issueClientCredentialsToken({
@@ -223,15 +105,13 @@ describe('OAuth server – client credentials grant', () => {
   });
 
   it("binds aud to a resource the credential's own application owns, and only that one (ADR-0020)", async () => {
-    state.applications.push(
-      { _id: 'skills-coach', name: 'Skills Coach', audience: 'skills-coach', resources: ['https://coach-mcp.fps4.nl/mcp'] },
-      { _id: 'other', name: 'Other', audience: 'other', resources: ['https://other-mcp.fps4.nl/mcp'] }
-    );
-    state.clients.push({
+    await fixtures.application(state, { _id: 'skills-coach', name: 'Skills Coach', audience: 'skills-coach', resources: ['https://coach-mcp.fps4.nl/mcp'] });
+    await fixtures.application(state, { _id: 'other', name: 'Other', audience: 'other', resources: ['https://other-mcp.fps4.nl/mcp'] });
+    await fixtures.client(state, {
       _id: 'coach-automation', name: 'coach automation', secretHash: hashSecret('top-secret'),
       grantTypes: ['client_credentials'], scopes: [], redirectUris: [], isConfidential: true,
       applicationId: 'skills-coach'
-    } as any);
+    });
 
     const bound = await oauthServer.issueClientCredentialsToken({
       clientId: 'coach-automation', clientSecret: 'top-secret', resource: 'https://coach-mcp.fps4.nl/mcp'
@@ -250,8 +130,8 @@ describe('OAuth server – client credentials grant', () => {
     expect(decodeJwt(unbound.accessToken).aud).toBe('skills-coach');
   });
 
-  it('mints a product_runtime credential with per-client audience, subject and additive claims (US-0086)', () => {
-    state.clients.push({
+  it('mints a product_runtime credential with per-client audience, subject and additive claims (US-0086)', async () => {
+    await fixtures.client(state, {
       _id: 'gateway-ds1',
       name: 'sovereign-llm-gateway@ds1 runtime',
       secretHash: hashSecret('rt-secret'),
@@ -264,7 +144,7 @@ describe('OAuth server – client credentials grant', () => {
       audience: 'maestro-workspace',
       subject: 'runtime@sovereign-llm-gateway.fps4.nl',
       claims: { role: 'product_runtime', email: 'runtime@sovereign-llm-gateway.fps4.nl' }
-    } as any);
+    });
 
     return oauthServer.issueClientCredentialsToken({
       clientId: 'gateway-ds1',
@@ -280,8 +160,8 @@ describe('OAuth server – client credentials grant', () => {
     });
   });
 
-  it('never lets a stored claim override a registered/identity claim (US-0086)', () => {
-    state.clients.push({
+  it('never lets a stored claim override a registered/identity claim (US-0086)', async () => {
+    await fixtures.client(state, {
       _id: 'sneaky',
       name: 'sneaky client',
       secretHash: hashSecret('s'),
@@ -293,7 +173,7 @@ describe('OAuth server – client credentials grant', () => {
       subject: 'runtime@x',
       // Reserved claims smuggled into the additive map must lose to the controlled/signed values.
       claims: { aud: 'someone-else', sub: 'impersonated', iss: 'evil' }
-    } as any);
+    });
 
     return oauthServer.issueClientCredentialsToken({
       clientId: 'sneaky',
@@ -307,7 +187,7 @@ describe('OAuth server – client credentials grant', () => {
   });
 
   it('rejects tokens when the requested scope is not allowed for the client', async () => {
-    state.clients.push({
+    await fixtures.client(state, {
       _id: 'client-3',
       name: 'Scope Client',
       secretHash: hashSecret('secret'),
@@ -337,7 +217,7 @@ describe('OAuth server – client credentials grant', () => {
 
     it('enforces the deployment-wide access-token rate limit', async () => {
       const issuedAt = new Date();
-      state.clients.push({
+      await fixtures.client(state, {
         _id: 'client-4',
         name: 'Rate Client',
         secretHash: hashSecret('secret'),
@@ -347,7 +227,7 @@ describe('OAuth server – client credentials grant', () => {
       });
 
       // One access token already issued this minute — at the (overridden) limit of 1.
-      state.tokens.push({
+      await fixtures.token(state, {
         _id: 'token-existing',
         clientId: 'client-4',
         type: 'access',

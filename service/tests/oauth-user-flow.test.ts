@@ -22,95 +22,37 @@ vi.mock('../src/utils/key-store.js', () => ({
   rotateSigningKey: vi.fn()
 }));
 
-// --- A minimal in-memory mongoose-ish model layer ---------------------------------------------
+// --- A table of the test's own on DynamoDB Local -----------------------------------------------
 
-const attachSave = <T extends object>(doc: T): T & { save: () => Promise<void> } => {
-  if (typeof (doc as any).save !== 'function') {
-    Object.defineProperty(doc, 'save', { value: async () => {}, enumerable: false, configurable: true });
-  }
-  return doc as any;
-};
+import { Transaction, type Store } from '../src/db/index.js';
+import { testStore, type TestStore } from './helpers/store.js';
+import { fixtures } from './helpers/fixtures.js';
 
-const matches = (item: any, query: any): boolean =>
-  Object.entries(query).every(([key, value]) => item[key] === value);
+// The user the stub IdP asserts. A federated login resolves the person by `(provider, subject)`; the
+// happy path seeds them linked and entitled, as an operator (or an invite) would have.
+const REVIEWER = { _id: 'u-reviewer', email: 'reviewer@fps4.test', sub: 'google-sub-123' };
 
-// User queries reach into the identities[] array and use $or (resolveUserBySubject) — richer than the
-// flat `matches` above, so the User mock gets its own matcher.
-function userMatches(u: any, query: any): boolean {
-  return Object.entries(query).every(([key, value]) => {
-    if (key === '$or') return (value as any[]).some((sub) => userMatches(u, sub));
-    if (key === 'identities.provider') return (u.identities ?? []).some((i: any) => i.provider === value);
-    if (key === 'identities.subject') return (u.identities ?? []).some((i: any) => i.subject === value);
-    return u[key] === value;
+async function seedReviewer(store: Store, roles: string[] = [], overrides: Record<string, any> = {}) {
+  await fixtures.user(store, {
+    _id: REVIEWER._id, email: REVIEWER.email, status: 'active',
+    identities: [{ provider: 'google', subject: REVIEWER.sub, emailVerified: true, linkedAt: new Date(0) }],
+    ...overrides
   });
+  await seedAssignment(store, roles, { userId: REVIEWER._id });
 }
 
-interface Store {
-  clients: any[];
-  applications: any[];
-  authorizations: any[];
-  tokens: any[];
-  sessions: any[];
-  users: any[];
-  assignments: any[];
-}
-
-function makeStore(): Store {
-  return { clients: [], applications: [], authorizations: [], tokens: [], sessions: [], users: [], assignments: [] };
-}
-
-// The ADR-0020 entitlement gate: an assignment matches on applicationId + status, honouring `userId` when
-// the seeded record pins one and treating it as a wildcard (any user of the app) when omitted. A federated
-// login JIT-provisions a user with a random `_id`, so wildcard seeding lets these flows issue a token.
-const assignmentMatches = (a: any, q: any): boolean =>
-  a.applicationId === q.applicationId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
-
-// Seed a single active entitlement to the maestro application with the given app-scoped roles.
-function seedAssignment(store: Store, roles: string[] = [], overrides: Record<string, any> = {}) {
-  store.assignments = [{ _id: 'assign-1', applicationId: 'app-maestro', roles, status: 'active', ...overrides }];
+// Seed a single active entitlement to the maestro application with the given app-scoped roles (ADR-0019).
+function seedAssignment(store: Store, roles: string[] = [], overrides: { userId: string; status?: 'active' | 'suspended' }) {
+  return fixtures.assignment(store, { applicationId: 'app-maestro', roles, status: 'active', ...overrides });
 }
 
 function makeDeps(store: Store, googleIdp: GoogleIdp, now: () => Date): OAuthServerDependencies {
-  return {
-    getMasterConnection: async () => ({}) as any,
-    googleIdp,
-    now,
-    makeModels: () => ({
-      OAuthClient: {
-        findById: (id: string) => ({ lean: () => ({ exec: async () => store.clients.find((c) => c._id === id) ?? null }) })
-      },
-      Application: {
-        findById: (id: string) => ({ lean: () => ({ exec: async () => store.applications.find((a) => a._id === id) ?? null }) })
-      },
-      OAuthAuthorization: {
-        create: async (doc: any) => { store.authorizations.push(doc); return doc; },
-        findOne: (query: any) => ({ exec: async () => { const found = store.authorizations.find((a) => matches(a, query)); return found ? attachSave(found) : null; } })
-      },
-      OAuthToken: {
-        create: async (doc: any) => { store.tokens.push(doc); return doc; },
-        findOne: (query: any) => ({ exec: async () => { const found = store.tokens.find((t) => matches(t, query)); return found ? attachSave(found) : null; } })
-      },
-      Session: {
-        create: async (doc: any) => { store.sessions.push(doc); return doc; },
-        findById: (id: string) => ({ exec: async () => { const found = store.sessions.find((s) => s._id === id); return found ? attachSave(found) : null; } }),
-        updateOne: (filter: any, update: any) => ({ exec: async () => { const found = store.sessions.find((s) => matches(s, filter)); if (found) Object.assign(found, update.$set ?? {}); } })
-      },
-      User: {
-        findOne: (query: any) => ({
-          exec: async () => { const u = store.users.find((x) => userMatches(x, query)); return u ? attachSave(u) : null; },
-          lean: () => ({ exec: async () => store.users.find((x) => userMatches(x, query)) ?? null })
-        }),
-        create: async (doc: any) => { const d = { ...doc, identities: doc.identities ?? [] }; store.users.push(d); return attachSave(d); }
-      },
-      Assignment: {
-        findOne: (query: any) => ({ lean: () => ({ exec: async () => store.assignments.find((a) => assignmentMatches(a, query)) ?? null }) }),
-        create: async (doc: any) => { store.assignments.push(doc); return doc; }
-      },
-      KeyStore: {} as any
-    }) as any,
-    logger: { info: () => {}, error: () => {} } as any
-  };
+  return { store, googleIdp, now, logger: { info: () => {}, error: () => {} } as any };
 }
+
+const countTokens = (store: Store) => store.tokens.countIssuedSince('access', new Date(0));
+const stateOf = (redirectTo: string) => new URL(redirectTo).searchParams.get('state')!;
+const codeOf = (redirectTo: string) => new URL(redirectTo).searchParams.get('code');
 
 // --- A stub Google IdP: deterministic, no network ---------------------------------------------
 
@@ -125,15 +67,15 @@ function makeStubIdp(overrides: Partial<GoogleIdp> = {}): GoogleIdp {
 
 const pkceChallenge = (verifier: string) => createHash('sha256').update(verifier).digest('base64url');
 
-function seedClient(store: Store) {
+async function seedClient(store: Store) {
   // The application (ADR-0020) owns the default audience; the credential just points at it.
-  store.applications.push({
+  await fixtures.application(store, {
     _id: 'app-maestro',
     name: 'Maestro',
     audience: 'maestro-workspace',
     roles: []
   });
-  store.clients.push({
+  await fixtures.client(store, {
     _id: 'client-maestro',
     name: 'maestro web',
     applicationId: 'app-maestro',
@@ -145,17 +87,18 @@ function seedClient(store: Store) {
   });
 }
 
-// Drive authorize -> callback -> token and return the issued token response.
-async function runHappyPath(server: ReturnType<typeof createOAuthServer>, store: Store, verifier: string) {
-  await server.startAuthorization({
+// Drive authorize -> callback -> token and return the issued token response. The browser's leg is read
+// from the redirects, as the consumer would: the Google `state` from the first, our `code` from the second.
+async function runHappyPath(server: ReturnType<typeof createOAuthServer>, verifier: string) {
+  const started = await server.startAuthorization({
     clientId: 'client-maestro',
     redirectUri: 'https://maestro.test/callback',
     codeChallenge: pkceChallenge(verifier),
     state: 'consumer-state-xyz'
   });
-  const authRecord = store.authorizations[store.authorizations.length - 1];
-  await server.handleGoogleCallback({ code: 'google-code', state: authRecord.googleState });
-  const code = authRecord.code as string; // capture before it is consumed
+  if (started.mode !== 'redirect') throw new Error('expected the Google leg');
+  const back = await server.handleGoogleCallback({ code: 'google-code', state: stateOf(started.redirectTo) });
+  const code = codeOf(back.redirectTo) as string; // capture before it is consumed
   const token = await server.issueAuthorizationCodeToken({
     code,
     codeVerifier: verifier,
@@ -166,20 +109,23 @@ async function runHappyPath(server: ReturnType<typeof createOAuthServer>, store:
 }
 
 describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
+  let db: TestStore;
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
   const fixedNow = new Date('2026-06-01T12:00:00.000Z');
   const verifier = 'test-code-verifier-0123456789-abcdefghijklmnop';
 
-  beforeEach(() => {
-    store = makeStore();
-    seedClient(store);
-    seedAssignment(store); // an active entitlement so the happy path can issue a token (ADR-0019)
+  beforeEach(async () => {
+    db = await testStore();
+    store = db.store;
+    await seedClient(store);
+    await seedReviewer(store); // linked and entitled, so the happy path can issue a token (ADR-0019)
     server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
   });
+  afterEach(() => db.drop());
 
   it('issues a user JWT that passes maestro-style verification (email, sub, iss, aud, exp via JWKS)', async () => {
-    const { token } = await runHappyPath(server, store, verifier);
+    const { token } = await runHappyPath(server, verifier);
 
     expect(token.tokenType).toBe('Bearer');
     expect(token.expiresIn).toBe(CONFIG.oauth.accessTokenTtlSec);
@@ -202,7 +148,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   });
 
   it('binds aud to the initiating client (a token is not valid for another workspace)', async () => {
-    const { token } = await runHappyPath(server, store, verifier);
+    const { token } = await runHappyPath(server, verifier);
     const publicKey = await importSPKI(signingPublicPem, 'RS256');
     await expect(
       jwtVerify(token.accessToken, publicKey, { audience: 'some-other-workspace', currentDate: fixedNow })
@@ -210,13 +156,16 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   });
 
   it('persists an active session and a hashed refresh token', async () => {
-    await runHappyPath(server, store, verifier);
-    expect(store.sessions).toHaveLength(1);
-    expect(store.sessions[0].status).toBe('active');
-    const refresh = store.tokens.find((t) => t.type === 'refresh');
-    expect(refresh).toBeTruthy();
+    const { token } = await runHappyPath(server, verifier);
+    const { sha256Hex } = await import('../src/utils/hash.js');
+    const refresh = (await store.tokens.getRefreshByHash(sha256Hex(token.refreshToken)))!;
+    expect(refresh).toMatchObject({ type: 'refresh', status: 'active', clientId: 'client-maestro', subject: REVIEWER.sub });
     expect(refresh.hashedToken).toBeTruthy();
-    expect(refresh.hashedToken).not.toContain(' '); // hashed, never the raw value
+    expect(refresh.hashedToken).not.toBe(token.refreshToken); // hashed, never the raw value
+    const session = (await store.sessions.get(refresh.sessionId!))!;
+    expect(session.status).toBe('active');
+    expect(session.expiresAt).toEqual(refresh.expiresAt); // the refresh token never outlives the session
+    expect(await store.tokens.countActiveRefresh()).toBe(1);
   });
 
   it('rejects an unregistered redirect_uri at authorize time', async () => {
@@ -228,7 +177,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   });
 
   it('rejects an application without an audience configured', async () => {
-    store.applications[0].audience = undefined;
+    await store.applications.update('app-maestro', { audience: undefined });
     await expect(server.startAuthorization({
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback',
@@ -247,32 +196,31 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
     });
     server = createOAuthServer(makeDeps(store, failingIdp, () => fixedNow));
 
-    await server.startAuthorization({
+    const started = await server.startAuthorization({
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback',
       codeChallenge: pkceChallenge(verifier),
       state: 'consumer-state'
     });
-    const authRecord = store.authorizations[store.authorizations.length - 1];
-    const result = await server.handleGoogleCallback({ code: 'google-code', state: authRecord.googleState });
+    const state = stateOf((started as { redirectTo: string }).redirectTo);
+    const result = await server.handleGoogleCallback({ code: 'google-code', state });
 
     expect(result.redirectTo).toContain('error=access_denied');
-    expect(authRecord.code).toBeUndefined();       // no auth code minted
-    expect(store.tokens).toHaveLength(0);           // no token issued
+    expect((await store.authorizations.getByState(state))!.code).toBeUndefined(); // no auth code minted
+    expect(await countTokens(store)).toBe(0);                                       // no token issued
   });
 
   it('rejects the token exchange when the PKCE verifier is wrong', async () => {
-    await server.startAuthorization({
+    const started = await server.startAuthorization({
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback',
       codeChallenge: pkceChallenge(verifier),
       state: 's'
     });
-    const authRecord = store.authorizations[store.authorizations.length - 1];
-    await server.handleGoogleCallback({ code: 'google-code', state: authRecord.googleState });
+    const back = await server.handleGoogleCallback({ code: 'google-code', state: stateOf((started as { redirectTo: string }).redirectTo) });
 
     await expect(server.issueAuthorizationCodeToken({
-      code: authRecord.code,
+      code: codeOf(back.redirectTo)!,
       codeVerifier: 'the-wrong-verifier',
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback'
@@ -280,7 +228,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   });
 
   it('makes the authorization code single-use', async () => {
-    const { code } = await runHappyPath(server, store, verifier);
+    const { code } = await runHappyPath(server, verifier);
     // Replaying the same (now consumed) code must not mint a second token.
     await expect(server.issueAuthorizationCodeToken({
       code,
@@ -291,7 +239,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   });
 
   it('rotates the refresh token and invalidates the old one', async () => {
-    const { token: first } = await runHappyPath(server, store, verifier);
+    const { token: first } = await runHappyPath(server, verifier);
     const rotated = await server.refreshUserToken({ refreshToken: first.refreshToken, clientId: 'client-maestro' });
 
     expect(rotated.refreshToken).not.toBe(first.refreshToken);
@@ -303,17 +251,22 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   });
 
   it('refresh cannot outlive a revoked session (AC6)', async () => {
-    const { token } = await runHappyPath(server, store, verifier);
+    const { token } = await runHappyPath(server, verifier);
     // Revoke the session directly — simulating an admin/logout revocation.
-    store.sessions[0].status = 'revoked';
+    const { sha256Hex } = await import('../src/utils/hash.js');
+    const refresh = (await store.tokens.getRefreshByHash(sha256Hex(token.refreshToken)))!;
+    await store.sessions.update(refresh.sessionId!, { status: 'revoked' });
     await expect(server.refreshUserToken({ refreshToken: token.refreshToken, clientId: 'client-maestro' }))
       .rejects.toBeInstanceOf(InvalidGrantError);
   });
 
   it('revoking a refresh token cascades to its session', async () => {
-    const { token } = await runHappyPath(server, store, verifier);
+    const { token } = await runHappyPath(server, verifier);
+    const { sha256Hex } = await import('../src/utils/hash.js');
+    const refresh = (await store.tokens.getRefreshByHash(sha256Hex(token.refreshToken)))!;
     await server.revokeUserToken({ token: token.refreshToken });
-    expect(store.sessions[0].status).toBe('revoked');
+    expect((await store.sessions.get(refresh.sessionId!))!.status).toBe('revoked');
+    expect((await store.tokens.get(refresh._id))!.status).toBe('revoked');
     await expect(server.refreshUserToken({ refreshToken: token.refreshToken, clientId: 'client-maestro' }))
       .rejects.toBeInstanceOf(InvalidGrantError);
   });
@@ -321,14 +274,20 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
   // --- ADR-0019 entitlement gate on the authorization-code + refresh grants ---
 
   it('denies the token exchange for a user with no active assignment to the application', async () => {
-    store.assignments.length = 0; // authenticated by Google, but not entitled to this app
-    await expect(runHappyPath(server, store, verifier)).rejects.toBeInstanceOf(AccessDeniedError);
-    expect(store.tokens).toHaveLength(0);
+    // Authenticated by Google, but not entitled to this app.
+    const tx = new Transaction();
+    store.assignments.delete(tx, REVIEWER._id, 'app-maestro');
+    await store.commit(tx);
+    await expect(runHappyPath(server, verifier)).rejects.toBeInstanceOf(AccessDeniedError);
+    expect(await countTokens(store)).toBe(0);
   });
 
   it('kills refresh once the application assignment is revoked mid-session (ADR-0019)', async () => {
-    const { token } = await runHappyPath(server, store, verifier);
-    store.assignments.length = 0; // an operator revoked the entitlement after login
+    const { token } = await runHappyPath(server, verifier);
+    // An operator revoked the entitlement after login.
+    const tx = new Transaction();
+    store.assignments.delete(tx, REVIEWER._id, 'app-maestro');
+    await store.commit(tx);
     await expect(server.refreshUserToken({ refreshToken: token.refreshToken, clientId: 'client-maestro' }))
       .rejects.toBeInstanceOf(InvalidGrantError);
   });
@@ -337,6 +296,7 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
 // --- Federated user identity: provisioning, roles/status, linking (RQ-0011) -------------------
 
 describe('OAuth server – federated user identity (RQ-0011)', () => {
+  let db: TestStore;
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
   const fixedNow = new Date('2026-06-01T12:00:00.000Z');
@@ -348,15 +308,14 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
 
   // Drive authorize -> callback and return the minted single-use code (token exchange left to the test).
   async function runToCode(): Promise<string> {
-    await server.startAuthorization({
+    const started = await server.startAuthorization({
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback',
       codeChallenge: pkceChallenge(verifier),
       state: 's'
     });
-    const authRecord = store.authorizations[store.authorizations.length - 1];
-    await server.handleGoogleCallback({ code: 'google-code', state: authRecord.googleState });
-    return authRecord.code as string;
+    const back = await server.handleGoogleCallback({ code: 'google-code', state: stateOf((started as { redirectTo: string }).redirectTo) });
+    return codeOf(back.redirectTo) as string;
   }
 
   const exchange = (code: string) => server.issueAuthorizationCodeToken({
@@ -369,65 +328,73 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
     return payload.roles;
   }
 
-  beforeEach(() => {
-    store = makeStore();
-    seedClient(store);
-    seedAssignment(store); // an active entitlement so issuance is not gated off by default (ADR-0019)
+  beforeEach(async () => {
+    db = await testStore();
+    store = db.store;
+    await seedClient(store);
     build(makeStubIdp()); // verified email by default
   });
+  afterEach(() => db.drop());
 
-  it('JIT-provisions a federated user on first Google login (keyed by google sub, no password)', async () => {
-    await exchange(await runToCode());
-    expect(store.users).toHaveLength(1);
-    const user = store.users[0];
+  it('JIT-provisions a federated user on first Google login (keyed by google sub, no password); the gate then wants an assignment', async () => {
+    // A first sighting is provisioned, and refused a token until an operator assigns them (ADR-0019).
+    await expect(exchange(await runToCode())).rejects.toBeInstanceOf(AccessDeniedError);
+    expect(await store.users.count()).toBe(1);
+    const user = (await store.users.getByIdentity('google', 'google-sub-123'))!;
     expect(user.email).toBe('reviewer@fps4.test');
     expect(user.passwordHash).toBeUndefined();
     expect(user.identities).toHaveLength(1);
     expect(user.identities[0]).toMatchObject({ provider: 'google', subject: 'google-sub-123', emailVerified: true });
+    expect(user.identities[0].linkedAt).toEqual(fixedNow);
     expect(user.lastLoginAt).toEqual(fixedNow);
+    expect(await store.users.getByEmail('reviewer@fps4.test')).toMatchObject({ _id: user._id });
+    // Assigned, the next login issues the token.
+    await seedAssignment(store, ['member'], { userId: user._id });
+    const token = await exchange(await runToCode());
+    expect(await rolesInToken(token.accessToken)).toEqual(['member']);
   });
 
   it('a second login for the same identity does not create a duplicate user', async () => {
-    await exchange(await runToCode());
-    await exchange(await runToCode());
-    expect(store.users).toHaveLength(1);
+    await exchange(await runToCode()).catch(() => {});
+    await exchange(await runToCode()).catch(() => {});
+    expect(await store.users.count()).toBe(1);
   });
 
   it('stamps the app-scoped assignment roles into the token (RQ-0005 now works for Google users)', async () => {
     // Pre-seed the same federated identity, entitled to the app with an app-scoped role.
-    store.users.push({
+    await fixtures.user(store, {
       _id: 'u-existing', email: 'reviewer@fps4.test', status: 'active',
-      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true, linkedAt: new Date(0) }]
     });
-    seedAssignment(store, ['workspace_admin'], { userId: 'u-existing' });
+    await seedAssignment(store, ['workspace_admin'], { userId: 'u-existing' });
     const token = await exchange(await runToCode());
     expect(await rolesInToken(token.accessToken)).toEqual(['workspace_admin']);
-    expect(store.users).toHaveLength(1); // matched the existing identity, no new row
+    expect(await store.users.count()).toBe(1); // matched the existing identity, no new row
   });
 
   it('denies a disabled user on the Google path (closing the status bypass)', async () => {
-    store.users.push({
+    await fixtures.user(store, {
       _id: 'u-disabled', email: 'reviewer@fps4.test', status: 'disabled',
-      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true, linkedAt: new Date(0) }]
     });
     const code = await runToCode();
     await expect(exchange(code)).rejects.toBeInstanceOf(InvalidGrantError);
-    expect(store.tokens).toHaveLength(0);
+    expect(await countTokens(store)).toBe(0);
   });
 
   it('links the identity onto an existing account when the email is verified and matches', async () => {
     // A local password user already exists with this email, entitled to the app.
-    store.users.push({
+    await fixtures.user(store, {
       _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
       status: 'active', identities: []
     });
-    seedAssignment(store, ['member'], { userId: 'local-1' });
+    await seedAssignment(store, ['member'], { userId: 'local-1' });
     const token = await exchange(await runToCode());
-    expect(store.users).toHaveLength(1);                 // linked, not duplicated
-    const user = store.users[0];
-    expect(user._id).toBe('local-1');
+    expect(await store.users.count()).toBe(1);           // linked, not duplicated
+    const user = (await store.users.get('local-1'))!;
     expect(user.identities).toHaveLength(1);
     expect(user.identities[0]).toMatchObject({ provider: 'google', subject: 'google-sub-123' });
+    expect(await store.users.getByIdentity('google', 'google-sub-123')).toMatchObject({ _id: 'local-1' });
     // Token sub is still the Google subject (contract unchanged), roles come from the assignment.
     const publicKey = await importSPKI(signingPublicPem, 'RS256');
     const { payload } = await jwtVerify(token.accessToken, publicKey, { currentDate: fixedNow });
@@ -437,44 +404,41 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
 
   it('refuses to merge onto an existing account when the Google email is unverified', async () => {
     build(makeStubIdp({ verifyIdToken: async () => ({ email: 'reviewer@fps4.test', sub: 'google-sub-123', emailVerified: false }) }));
-    store.users.push({
+    await fixtures.user(store, {
       _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
       status: 'active', identities: []
     });
     const code = await runToCode();
     await expect(exchange(code)).rejects.toBeInstanceOf(AccessDeniedError);
-    expect(store.users[0].identities).toHaveLength(0);   // no link
-    expect(store.tokens).toHaveLength(0);                // no token
+    expect((await store.users.get('local-1'))!.identities).toHaveLength(0);   // no link
+    expect(await countTokens(store)).toBe(0);                                  // no token
   });
 
-  it('is idempotent under the concurrent-first-login race (unique index rejects the duplicate insert)', async () => {
-    // Simulate: another concurrent login already inserted the user; our create loses the race with 11000.
+  it('is idempotent under the concurrent-first-login race (the identity\'s unique item rejects the second insert)', async () => {
+    // Simulate: another login for the same identity commits between this one's reads and its commit; the
+    // identity is claimed, this commit fails its condition, and the person is re-read — the winner.
     const raced = {
-      _id: 'u-raced', email: 'reviewer@fps4.test', status: 'active',
-      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      _id: 'u-raced', email: 'reviewer@fps4.test', status: 'active' as const,
+      identities: [{ provider: 'google' as const, subject: 'google-sub-123', emailVerified: true, linkedAt: new Date(0) }]
     };
-    seedAssignment(store, ['fast']); // the winner's entitlement carries the app-scoped role
-    const deps = makeDeps(store, makeStubIdp(), () => fixedNow);
-    const baseModels = deps.makeModels;
-    deps.makeModels = (conn: any) => {
-      const m = baseModels(conn);
-      const originalFindOne = m.User.findOne;
-      m.User.create = async () => { store.users.push(raced); const e: any = new Error('dup'); e.code = 11000; throw e; };
-      m.User.findOne = originalFindOne;
-      return m;
+    const original = store.commit;
+    store.commit = async (tx: Transaction) => {
+      store.commit = original;
+      await fixtures.user(store, raced);
+      await seedAssignment(store, ['fast'], { userId: 'u-raced' }); // the winner's entitlement carries the app-scoped role
+      return original(tx);
     };
-    server = createOAuthServer(deps);
 
     const token = await exchange(await runToCode());
-    expect(store.users).toHaveLength(1);
+    expect(await store.users.count()).toBe(1);
     expect(await rolesInToken(token.accessToken)).toEqual(['fast']); // re-read the winner
   });
 
   it('a federated-only user (no password) cannot use the password grant', async () => {
-    store.clients[0].grantTypes = ['authorization_code', 'password'];
-    store.users.push({
+    await store.clients.update('client-maestro', { grantTypes: ['authorization_code', 'password'] });
+    await fixtures.user(store, {
       _id: 'u-fed', email: 'fed@fps4.test', status: 'active',
-      identities: [{ provider: 'google', subject: 'google-sub-999', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-999', emailVerified: true, linkedAt: new Date(0) }]
     });
     await expect(server.issuePasswordToken({ username: 'fed@fps4.test', password: 'anything', clientId: 'client-maestro' }))
       .rejects.toBeInstanceOf(InvalidGrantError);
@@ -484,6 +448,7 @@ describe('OAuth server – federated user identity (RQ-0011)', () => {
 // --- Registration policy gates federated JIT provisioning (RQ-0013, ADR-0013) -----------------
 
 describe('OAuth server – invite-only deployments gate federated sign-up (RQ-0013)', () => {
+  let db: TestStore;
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
   let savedMode: 'open' | 'invite' | 'closed';
@@ -491,14 +456,15 @@ describe('OAuth server – invite-only deployments gate federated sign-up (RQ-00
   const verifier = 'test-code-verifier-0123456789-abcdefghijklmnop';
 
   const startAndCallback = async () => {
-    await server.startAuthorization({
+    const started = await server.startAuthorization({
       clientId: 'client-maestro',
       redirectUri: 'https://maestro.test/callback',
       codeChallenge: pkceChallenge(verifier),
       state: 's'
     });
-    const authRecord = store.authorizations[store.authorizations.length - 1];
-    const result = await server.handleGoogleCallback({ code: 'google-code', state: authRecord.googleState });
+    const state = stateOf((started as { redirectTo: string }).redirectTo);
+    const result = await server.handleGoogleCallback({ code: 'google-code', state });
+    const authRecord = (await store.authorizations.getByState(state))!;
     return { authRecord, result };
   };
 
@@ -507,45 +473,48 @@ describe('OAuth server – invite-only deployments gate federated sign-up (RQ-00
   });
 
   // Registration policy is deployment config now (AUTH_REGISTRATION_MODE), not a tenant field.
-  beforeEach(() => {
+  beforeEach(async () => {
     savedMode = CONFIG.auth.registrationMode;
     (CONFIG.auth as any).registrationMode = 'invite';
-    store = makeStore();
-    seedClient(store);
-    seedAssignment(store); // the invitee/existing user is entitled to the app (ADR-0019)
+    db = await testStore();
+    store = db.store;
+    await seedClient(store);
     server = createOAuthServer(makeDeps(store, makeStubIdp(), () => fixedNow));
   });
-  afterEach(() => { (CONFIG.auth as any).registrationMode = savedMode; });
+  afterEach(async () => { (CONFIG.auth as any).registrationMode = savedMode; await db.drop(); });
 
   it('redirects a NEW Google identity back with access_denied at the callback (no code, no user)', async () => {
     const { authRecord, result } = await startAndCallback();
     expect(result.redirectTo).toContain('error=access_denied');
     expect(authRecord.code).toBeUndefined();
-    expect(store.users).toHaveLength(0);
-    expect(store.tokens).toHaveLength(0);
+    expect(await store.users.count()).toBe(0);
+    expect(await countTokens(store)).toBe(0);
   });
 
   it('lets an EXISTING linked user log in unchanged on an invite-only deployment', async () => {
-    store.users.push({
+    await fixtures.user(store, {
       _id: 'u-existing', email: 'reviewer@fps4.test', status: 'active',
-      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true }]
+      identities: [{ provider: 'google', subject: 'google-sub-123', emailVerified: true, linkedAt: new Date(0) }]
     });
+    await seedAssignment(store, [], { userId: 'u-existing' }); // entitled to the app (ADR-0019)
     const { authRecord } = await startAndCallback();
     const token = await exchange(authRecord.code as string);
     expect(token.accessToken).toBeTruthy();
-    expect(store.users).toHaveLength(1);
+    expect(await store.users.count()).toBe(1);
   });
 
   it('still links Google onto an existing local account via verified email (the invitee path)', async () => {
     // The invitee registered locally with their code; first Google login must link, not be denied.
-    store.users.push({
+    await fixtures.user(store, {
       _id: 'local-1', email: 'reviewer@fps4.test', passwordHash: 'scrypt$...',
       status: 'active', identities: []
     });
+    await seedAssignment(store, [], { userId: 'local-1' });
     const { authRecord } = await startAndCallback();
     await exchange(authRecord.code as string);
-    expect(store.users[0].identities).toHaveLength(1);
-    expect(store.users[0].identities[0]).toMatchObject({ provider: 'google', subject: 'google-sub-123' });
+    const linked = (await store.users.get('local-1'))!;
+    expect(linked.identities).toHaveLength(1);
+    expect(linked.identities[0]).toMatchObject({ provider: 'google', subject: 'google-sub-123' });
   });
 
   it('the token exchange re-enforces the gate even if the policy flips mid-flow (authoritative check)', async () => {
@@ -553,15 +522,15 @@ describe('OAuth server – invite-only deployments gate federated sign-up (RQ-00
     const { authRecord } = await startAndCallback();
     (CONFIG.auth as any).registrationMode = 'closed';     // ...but the deployment closes before the exchange
     await expect(exchange(authRecord.code as string)).rejects.toBeInstanceOf(AccessDeniedError);
-    expect(store.users).toHaveLength(0);
-    expect(store.tokens).toHaveLength(0);
+    expect(await store.users.count()).toBe(0);
+    expect(await countTokens(store)).toBe(0);
   });
 
   it('a closed deployment behaves like invite for a new federated identity', async () => {
     (CONFIG.auth as any).registrationMode = 'closed';
     const { result } = await startAndCallback();
     expect(result.redirectTo).toContain('error=access_denied');
-    expect(store.users).toHaveLength(0);
+    expect(await store.users.count()).toBe(0);
   });
 });
 
