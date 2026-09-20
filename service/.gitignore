@@ -1,0 +1,3 @@
+
+# Lambda bundles (npm run bundle) — what the Terraform module deploys; built, never committed
+bundle/
