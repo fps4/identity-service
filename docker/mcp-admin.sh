@@ -3,9 +3,9 @@
 # Launch the identity-service MCP management server (ADR-0007) for an MCP client such as Claude Code,
 # minting a FRESH admin-scoped token on each start so nothing long-lived is stored anywhere.
 #
-# Why this shape: the MCP server talks to MongoDB DIRECTLY (it is not an HTTP client of /admin/v1 like
+# Why this shape: the MCP server talks to the table DIRECTLY (it is not an HTTP client of /admin/v1 like
 # the console) and verifies the admin token against the service's own JWKS. The simplest way to give it
-# Mongo + the signing-key passphrase + the issuer is to run it INSIDE the already-running
+# the table + the signing-key passphrase + the issuer is to run it INSIDE the already-running
 # `identity-service` container, which already has all of that in its environment. No DB tunnel, no Node
 # install on the host.
 #
@@ -81,7 +81,7 @@ TOKEN="$(docker exec \
 
 # 2. Run the MCP server inside the container with that token. -i keeps stdin open for JSON-RPC;
 #    LOG_DESTINATION=stderr keeps the app's pino logs off fd 1, so stdout carries the JSON-RPC stream
-#    alone — exactly what an MCP client expects. Without it the startup lines (Mongo connect, "server
+#    alone — exactly what an MCP client expects. Without it the startup lines (reaching the table, "server
 #    ready") are written into the protocol stream ahead of the initialize response.
 exec docker exec -i \
   -e IDENTITY_SERVICE_ADMIN_TOKEN="$TOKEN" \
