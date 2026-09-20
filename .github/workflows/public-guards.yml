@@ -1,0 +1,26 @@
+name: public-guards
+
+# Guards for a public repository: no tenant paths, no AWS account ids, no stray .env files, no
+# self-hosted runner, no Terraform state, and none of the strings in the FORBIDDEN_PATTERNS secret (a
+# real tenant's and application's names, kept outside the tree). The same script as fps4/maestro's;
+# see its docs/build-standards.md §1 and docs/tenancy-and-config.md.
+#
+# Runs on a GitHub-hosted runner: it is a shell script over git, nothing to build. The secret may be
+# absent (it is on a fork's pull request): printf then writes an empty file and the script skips it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Public-repository guards
+        env:
+          FORBIDDEN_PATTERNS_FILE: ${{ runner.temp }}/forbidden.txt
+        run: |
+          printf '%s\n' "${{ secrets.FORBIDDEN_PATTERNS }}" > "$FORBIDDEN_PATTERNS_FILE"
+          scripts/check-public.sh

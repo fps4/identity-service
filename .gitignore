@@ -74,9 +74,6 @@ web_modules/
 !.env.example
 # Host-only secret for the MCP admin launcher (docker/mcp-admin.sh) — never commit
 .mcp-admin.env
-# ds1 CI-driven deploy: the non-secret base is committed; the assembled config/ds1/.env (base +
-# Actions secrets) is written runner-local at deploy time and stays ignored by the `.env` rule above.
-!config/ds1/.env.base
 
 # Seed config (ADR-0006 / RQ-0006): config/seed.yaml is COMMITTED — it holds only ${ENV} secret
 # references (no plaintext), so it is the durable, recoverable identity definition. Ad-hoc local

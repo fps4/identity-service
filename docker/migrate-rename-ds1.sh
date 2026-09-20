@@ -14,7 +14,7 @@
 # Run it ON THE ds1 HOST (where `docker` reaches the daemon), as part of the FIRST deploy under the new
 # names. Sequence:
 #   1. (old stack still up)  ./migrate-rename-ds1.sh dump
-#   2. deploy the new stack  (CI deploy-ds1.yml on main, or the manual compose up) — brings up
+#   2. bring up the new stack (compose up) — brings up
 #                            `identity-service-mongo` with an empty volume
 #   3. (new stack up)        ./migrate-rename-ds1.sh restore
 #   4. verify, then later    ./migrate-rename-ds1.sh decommission

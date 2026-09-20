@@ -15,8 +15,8 @@
  *   4. Re-key `assignments` and `invites` from `clientId` → `applicationId` (merging roles if two
  *      credentials of one application shared a user).
  *   5. Operator safeguard (UNCONDITIONAL): ensure an `identity-console` application with `platform_admin`
- *      in its catalogue and admin@identity-service.fps4.nl assigned to it. The workflow verify fails
- *      otherwise.
+ *      in its catalogue and admin@identity-service.fps4.nl assigned to it. Verify after the run that
+ *      the assignment exists.
  *
  *   MONGO_URI=… MONGO_DB_NAME=… [APP_GROUPING="skills-coach-ds1=coach"] npx tsx scripts/migrate-application-aggregate.ts [--dry-run]
  */

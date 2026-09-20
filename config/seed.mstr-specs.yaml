@@ -2,7 +2,7 @@
 #
 # Per ADR-0011, applications + credentials are declarative/GitOps (this file); users are operational
 # and owned by the live DB (ADR-0008), managed via the admin plane. So this file lists NO users, and
-# the one secret it references is supplied by the seed workflow — it is dispatchable on its own.
+# the one secret it references is supplied from the environment — it is applicable on its own.
 #
 # What the deployment expects, from mstr-specs `config/ds1/.env.base`:
 #   - `AUTH_AUDIENCE=mstr-specs`
@@ -11,8 +11,8 @@
 #     `mstr-specs` itself, so a token bound to the MCP resource (RFC 8707) verifies without the URL
 #     being configured twice and drifting.
 #
-# Apply via the seed-ds1 workflow:  gh workflow run seed-ds1.yml -f seed_file=config/seed.mstr-specs.yaml
-# Or on the ds1 host from service/:  SEED_FILE=../config/seed.mstr-specs.yaml \
+# Apply from service/ against the deployment's Mongo (the seed-ds1 workflow is retired — maestro ADR-0017):
+#   SEED_FILE=../config/seed.mstr-specs.yaml \
 #   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
 
 applications:

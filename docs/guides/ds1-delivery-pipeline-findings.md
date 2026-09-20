@@ -1,8 +1,8 @@
 ---
 title: ds1 delivery pipeline — deploy-ds1 & seed-ds1 failure findings
-summary: Why deploy-ds1 and seed-ds1 have been red since 2026-06-30 — the monolithic seed's all-or-nothing secret coupling and the post-deploy product_runtime guard — plus recommendations for the deploy-ds1 rework.
-status: current
-last_updated: 2026-07-04
+summary: Historical — why deploy-ds1 and seed-ds1 were red from 2026-06-30 (the monolithic seed's all-or-nothing secret coupling and the post-deploy product_runtime guard) plus the rework recommendations. Both workflows are retired (maestro ADR-0017); deployment is a Terraform module applied by the tenant's pipeline.
+status: superseded
+last_updated: 2026-09-20
 owners: [architect]
 related:
   - docs/guides/deployment.md
@@ -12,10 +12,16 @@ related:
 
 # ds1 delivery pipeline — failure findings
 
-Findings from investigating why the ds1 delivery workflows fail, captured for the planned **deploy-ds1
-rework**. The workflows live in [`.github/workflows/deploy-ds1.yml`](../../.github/workflows/deploy-ds1.yml)
-and [`.github/workflows/seed-ds1.yml`](../../.github/workflows/seed-ds1.yml); the fleet/ops side is
-maestro's (see the [observability guide](./deployment.md)).
+> **Historical.** The `deploy-ds1` and `seed-ds1` workflows are retired: a self-hosted runner on a
+> public repository runs a fork's code (maestro ADR-0017), and deployment is a Terraform module applied
+> by the tenant's own pipeline (ADR-0016) — see [deployment](./deployment.md). The findings below
+> describe the workflows as they were (they remain in git history) and still explain the seed's
+> secret-coupling problem, which ADR-0017 (invites) resolved.
+
+Findings from investigating why the ds1 delivery workflows failed, captured for the then-planned
+**deploy-ds1 rework**. The workflows lived in `.github/workflows/deploy-ds1.yml` and
+`.github/workflows/seed-ds1.yml`; the fleet/ops side is maestro's (see the
+[deployment guide](./deployment.md)).
 
 ## Summary
 

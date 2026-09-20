@@ -1,7 +1,8 @@
-# One-off SEEDER image for the seed-ds1 workflow (RQ-0004 follow-up; ADR-0007 named a workflow_dispatch
-# seed path now that the data is the system of record). The production service image is dist-only and
-# cannot run the seeder (no tsx/scripts/config), so this image carries the source + dev deps + the seed
-# YAML and runs `npm run seed` against the live Mongo on the compose network.
+# One-off SEEDER image for a seed or migration run against a compose stack (RQ-0004 follow-up; it served
+# the seed-ds1 and migrate-*-ds1 workflows, retired with the ds1 deploy — maestro ADR-0017). The
+# production service image is dist-only and cannot run the seeder (no tsx/scripts/config), so this image
+# carries the source + dev deps + the seed YAML and runs `npm run seed` against the Mongo on the compose
+# network.
 #
 # Build context is the REPO ROOT (it needs both service/ and config/); the root .dockerignore keeps the
 # context small. Run it with SEED_FILE=/config/<file>, MONGO_URI, MONGO_DB_NAME and the ${SEED_*} secrets.

@@ -2,16 +2,16 @@ name: Definition of Done
 
 # The quality gate maestro reads before opening the merge gate. Build + test must be green.
 #
-# Runners: every job below runs on [self-hosted, ds1] — the same single host that serves deploy-ds1 and
-# seed-ds1 (moved off GitHub-hosted in #21). Note the trade-off this made: the merge gate is NOT
-# independent of the deploy host, so a busy or unhealthy ds1 stalls merges rather than just deploys.
+# Runners: every job below runs on GitHub-hosted ubuntu-latest (fps4/maestro ADR-0017: a self-hosted
+# runner on a public repository runs strangers' code — a fork's pull request executes on it). The jobs
+# were on the org's ds1 runner (#21) and never depended on anything of it; the same steps run here
+# unchanged. Nothing deploys from this gate: deployment is a Terraform module applied by a tenant's own
+# pipeline (maestro ADR-0016/0017), and the ds1 deploy and seed workflows that used to chain off it are
+# gone.
 #
-# CodeQL is the deliberate carve-out — the one thing running against this repo that is NOT on ds1. It
-# runs GitHub-hosted (ubuntu-latest) via code scanning *default setup*, which is configured in repo
+# CodeQL runs alongside, also GitHub-hosted, via code scanning *default setup*: it is configured in repo
 # settings and generates its workflow server-side, so there is no file here to grep. Inspect it with:
 #   gh api repos/fps4/identity-service/code-scanning/default-setup
-# Kept hosted on purpose: two analyses (actions, javascript-typescript) run ~15m each and would contend
-# with production deploys on ds1. Revisit if ds1 grows capacity or CI moves off the deploy host.
 
 on:
   pull_request:
@@ -20,15 +20,15 @@ on:
       - main
 
 concurrency:
-  # Supersede in-flight runs per ref so PR pushes don't queue on the single ds1 box. main is exempt:
-  # maestro reads DoD to open the merge gate and deploy-ds1 chains off it via workflow_run.
+  # Supersede in-flight runs per ref so a PR's pushes don't queue behind each other. main is exempt:
+  # maestro reads DoD on main to open the merge gate, so every push there gets its own verdict.
   group: dod-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   service:
     name: service (build + test)
-    runs-on: [self-hosted, ds1]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: service
@@ -43,7 +43,7 @@ jobs:
 
   sdk:
     name: sdk (build)
-    runs-on: [self-hosted, ds1]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdk
@@ -57,7 +57,7 @@ jobs:
 
   react:
     name: react (build + test)
-    runs-on: [self-hosted, ds1]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: react
@@ -72,12 +72,13 @@ jobs:
 
   console:
     name: console (build + test)
-    runs-on: [self-hosted, ds1]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: console
     # Build + vitest unit/component tests (RQ-0008). The Playwright smoke (npm run test:e2e) is local —
-    # it needs a browser the ds1 runner does not provision; wire it in once the runner has one.
+    # it is not wired into the gate yet (it needs a browser install step); nothing about the runner
+    # stops it any more.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -92,7 +93,7 @@ jobs:
     # on HIGH,CRITICAL with --ignore-unfixed (only actionable advisories gate, so transitive unfixed noise
     # never red-walls a PR). Never disabled. A product that ships an image SHOULD also add a `scan-type:
     # image` scan of the built tag (cf. ../maestro dod.yml) to catch pinned transitives this fs scan can't.
-    runs-on: [self-hosted, ds1]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: cache the trivy vuln DB # warm-start so a registry blip/rate-limit doesn't flake the gate

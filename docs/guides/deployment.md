@@ -1,8 +1,8 @@
 ---
 title: Deployment
-summary: How identity-service is deployed to ds1 — secrets, the CI deploy, nightly backups & recovery, and provisioning the management-plane admin client + MCP server.
+summary: How identity-service is deployed — a Terraform module applied by the tenant's pipeline (maestro ADR-0016/0017; nothing here deploys), what a deployment needs, the compose stack for a laptop, nightly backups & recovery, and provisioning the management-plane admin client + MCP server.
 status: current
-last_updated: 2026-06-23
+last_updated: 2026-09-20
 owners: [architect]
 related:
   - docs/design/architecture.md
@@ -15,8 +15,26 @@ related:
 # Deployment
 
 How identity-service is deployed. The service is a **stateless container** driven entirely by environment
-variables, with **MongoDB** as its only persistent dependency. It can run anywhere Docker runs; the
-default pattern is a **manual deploy over SSH to a Docker host**.
+variables, with **MongoDB** as its only persistent dependency. It can run anywhere Docker runs, which is
+what the `docker/` compose stack is for on a laptop; a deployment is the Terraform module below.
+
+## Deployment: a Terraform module, applied by the tenant's pipeline
+
+Deployment is serverless AWS as a Terraform module this repository will ship (`terraform/`): the service
+as Lambda behind an HTTP API Gateway, the console through OpenNext, Atlas Flex as the database, the
+backup job as a scheduled Lambda ([`../maestro/docs/components/identity-service.md`](../../../maestro/docs/components/identity-service.md)).
+A tenant's private configuration repository (`fps4/maestro-config-<tenant>` —
+[`../maestro/docs/tenancy-and-config.md`](../../../maestro/docs/tenancy-and-config.md)) composes the module
+with its own values and **applies it from its own pipeline** — maestro's ADR-0016 (Terraform) and ADR-0017
+(the tenant repository runs the pipeline: its runner, its targets, its state). The module is M1 of
+maestro's roadmap.
+
+**Nothing in this repository deploys anywhere.** Its CI runs on GitHub-hosted runners and ends at the
+Definition of Done; a self-hosted runner on a public repository would run a fork's code (ADR-0017). The
+earlier ds1 deploy (`deploy-ds1`), seed (`seed-ds1`), snapshot (`dump-ds1`) and one-shot migration
+(`migrate-*-ds1`) workflows, and the committed `config/ds1/.env.base` they assembled a deploy env from,
+are gone: the deploy is the module, the realm's values are the tenant's, and a seed or a migration is
+run from `service/` against the deployment's database by whoever holds its credentials (below).
 
 ## Prerequisites on the host
 
@@ -45,13 +63,14 @@ Secrets live in a **gitignored `docker/.env`** and are **never committed**:
 Build context (`../service`) and `${VAR}` interpolation resolve **locally** before the build is sent to
 the remote daemon, so the gitignored `docker/.env` never leaves the operator's machine.
 
-## Deploy
+## The compose stack
 
-Run Compose against a remote Docker daemon over SSH by pointing `DOCKER_HOST` at the target host:
+The compose stack is the development loop, not a deployment target (maestro ADR-0002). It also runs
+against a remote Docker daemon over SSH, by pointing `DOCKER_HOST` at the host:
 
 ```bash
-# Deploy from a workstation against the remote daemon over SSH
-export DOCKER_HOST=ssh://<deploy-host>
+# Run from a workstation against a remote daemon over SSH
+export DOCKER_HOST=ssh://<docker-host>
 
 # Dev overlay
 docker compose --env-file docker/.env \
@@ -61,24 +80,10 @@ docker compose -f docker/compose.yaml -f docker/compose.dev.yaml ps
 # Production overlay: swap compose.dev.yaml → compose.prod.yaml
 ```
 
-The image build runs `npm run build && npm test`, so a type error or a red test **fails the deploy**.
+The image build runs `npm run build && npm test`, so a type error or a red test **fails the build**.
 
-## CI-driven deploys (ds1)
-
-The default ds1 deploy is **automatic** (`.github/workflows/deploy-ds1.yml`), mirroring the other fps4
-stacks: a green **Definition of Done** on `main` chains into `deploy-ds1`, which runs on the shared
-`[self-hosted, ds1]` runner and drives the host Docker daemon over the mounted socket — `compose build`
-+ `up -d`, then gates on the service's `/health` healthcheck via `docker inspect` (the runner has no
-host-port access). `workflow_dispatch` runs it on demand.
-
-- **Config:** the non-secret base is committed at `config/ds1/.env.base`; the workflow assembles
-  `config/ds1/.env` (base + Actions secrets) runner-local and deletes it afterwards.
-- **Secrets** (repo Actions secrets, appended only when set — the ds1 SMOKE posture runs without them):
-  `OAUTH_KEY_PASSPHRASE`, and `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI`.
-- **Seeding stays manual** (RQ-0004): the pipeline ships the service; provisioning clients/users
-  (`npm run seed`) remains an operator step — see *Seed & recovery* below.
-
-The SSH / `DOCKER_HOST` runbook above still works for a laptop-driven deploy or a host without the runner.
+Seeding is an operator step whatever runs the service (RQ-0004): provisioning clients/users is
+`npm run seed` against the database — see *Seed & recovery* below.
 
 ## System of record, seeding & recovery — ADR-0007 / ADR-0008
 
@@ -90,8 +95,9 @@ git, and no `age` master key.
   stands up a brand-new **empty** deployment; the deploy keeps the mongo data volume, so steady-state data
   is never wiped. Day-2 changes go through the **management plane** (`/admin/v1` + MCP + console — ADR-0007),
   not a re-seed.
-- **Bootstrap seed** (rare — empty DB only): supply the `${ENV}` values from the environment (CI/Actions
-  secrets or an operator shell), from `service/`, against ds1's Mongo on its published port `27019`:
+- **Bootstrap seed** (rare — empty DB only): supply the `${ENV}` values from the environment (an operator
+  shell, or the tenant pipeline's secrets), from `service/`, against the deployment's Mongo — the compose
+  stack publishes it on port `27019`:
 
   ```bash
   IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… \
@@ -143,7 +149,7 @@ pass; the old volume is kept as a rollback until you remove it. Run it **on the 
 ```bash
 # 1. With the OLD stack still running, dump the old DB:
 docker/migrate-rename-ds1.sh dump
-# 2. Deploy the NEW stack (CI deploy-ds1.yml on main, or manual compose up) — brings up identity-service-mongo.
+# 2. Bring up the NEW stack (compose up) — brings up identity-service-mongo.
 # 3. Restore into the new mongo with the ns remap, then verify counts:
 docker/migrate-rename-ds1.sh restore
 docker/migrate-rename-ds1.sh verify
@@ -163,10 +169,11 @@ consumer's own choice of name).
 [ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) makes entitlement a **global**
 gate — a user with no assignment can obtain no token — and removes the flat `user.roles`. Because
 enforcement is global, existing users would be locked out on cutover unless their current access is
-preserved, so a migration **backfills assignments from token history**. It runs against ds1 **after** the
-enforcing image deploys and is idempotent (`--dry-run` first):
+preserved, so a migration **backfills assignments from token history**. It runs against the deployment's
+database **after** the enforcing image deploys and is idempotent (`--dry-run` first):
 
-`scripts/migrate-app-assignments.ts` (driven by the `migrate-assignments-ds1` GitHub workflow):
+`scripts/migrate-app-assignments.ts` (from `service/`; the `migrate-assignments-ds1` workflow that ran
+it on ds1 is retired):
 
 1. **Build role catalogues** — for each client, seed its `roles` catalogue from the union of the old flat
    `user.roles` across users who hold tokens for it, plus any seed-declared roles.
@@ -192,7 +199,8 @@ Because folding today's separate clients into applications is a judgment call (a
 maestro's, not its product's), the migration **proposes** a grouping and an operator **confirms** it before
 it runs. It is idempotent (`--dry-run` writes nothing).
 
-`scripts/migrate-application-aggregate.ts` (driven by the `migrate-applications-ds1` GitHub workflow):
+`scripts/migrate-application-aggregate.ts` (from `service/`; the `migrate-applications-ds1` workflow that
+ran it on ds1 is retired):
 
 1. **Propose applications** — group credentials on a product key derived from client id / `subject` domain
    (e.g. `coach-web` + `skills-coach-ds1` → application `coach`) and **print the mapping** for operator
@@ -204,7 +212,8 @@ it runs. It is idempotent (`--dry-run` writes nothing).
 4. **Re-key** `assignments` and `invites` from `clientId` to `applicationId`.
 5. **Operator safeguard (unconditional)** — ensure an `identity-console` **application** with `platform_admin`
    in its catalogue, the identity-console credential under it, and `admin@identity-service.fps4.nl` holding an
-   active assignment to that application. The workflow's verify step fails if that assignment is missing.
+   active assignment to that application. Verify after the run that the assignment exists; the migration
+   is not done until it does.
 
 ```bash
 # dry-run first — PROPOSES the grouping and writes nothing; confirm it, then apply:
@@ -222,15 +231,17 @@ token carrying the `admin` scope. That principal is seeded as a dedicated client
 The **one** secret value lives in **two** places (it must be identical in both — same pattern as
 `MAESTRO_RUNTIME_CLIENT_SECRET`):
 
-- the **`IDENTITY_ADMIN_CLIENT_SECRET` GitHub Actions secret** → the deploy injects it into the
-  `identity-service` container env (`deploy-ds1.yml`), so the in-container launcher can **mint** a token;
+- the **`IDENTITY_ADMIN_CLIENT_SECRET` environment variable** of the running service (the tenant's
+  pipeline supplies it as a secret of the deployment; the compose stack reads it from `docker/.env`), so
+  the in-container launcher can **mint** a token;
 - the **seeded client in the live DB** → so the stored secret **hash** matches what the mint presents.
 
 Provision it:
 
-1. **Set the GitHub secret** (used by the pipeline): `gh secret set IDENTITY_ADMIN_CLIENT_SECRET`.
-2. **Seed the client with the same value** so it exists in Mongo with that secret hashed (against ds1's
-   Mongo on its published port `27019`; SOPS dropped per ADR-0008 — pass the value via the env):
+1. **Set it in the deployment's environment** (a secret of the tenant's pipeline, never committed).
+2. **Seed the client with the same value** so it exists in Mongo with that secret hashed (against the
+   deployment's Mongo — the compose stack publishes it on port `27019`; SOPS dropped per ADR-0008 — pass
+   the value via the env):
 
    ```bash
    # from service/ (the seed upserts the identity-admin-mcp client):
@@ -251,7 +262,7 @@ Provision it:
 
 The MCP server talks to MongoDB directly and verifies the admin token against the service's own JWKS, so
 it runs **inside the `identity-service` container** (which already has Mongo, the key passphrase, and the
-issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, injected by the deploy).
+issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, from the deployment's environment).
 [`docker/mcp-admin.sh`](../../docker/mcp-admin.sh) mints a fresh token on each start and execs
 `node dist/mcp/server.js` in that container — nothing long-lived is stored:
 
