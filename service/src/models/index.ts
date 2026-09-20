@@ -9,9 +9,9 @@ import { getAssignmentModel, Assignment, type AssignmentDocument } from './assig
 import { getApplicationModel, Application, type ApplicationDocument } from './application.js';
 import { getKeyStoreModel, KeyStore, type KeyStoreDocument } from './key-store.js';
 import { getAuditLogModel, AuditLog, type AuditLogDocument } from './audit-log.js';
-import { getPrincipalModel, Principal, type PrincipalDocument } from './principal.js';
-import { getOutboxModel, Outbox, type OutboxDocument } from './outbox.js';
-import { getCounterModel, Counter, type CounterDocument } from './counter.js';
+import { getPrincipalModel, type PrincipalDocument } from './principal.js';
+import { getOutboxModel, type OutboxDocument } from './outbox.js';
+import { getCounterModel, type CounterDocument } from './counter.js';
 
 export const makeModels = (connection: Connection) => ({
   Session: getSessionModel(connection) as Model<SessionDocument>,
