@@ -1,0 +1,83 @@
+name: terraform
+
+# The deployment's gate (maestro ADR-0016/0017): the module is formatted, valid and passes its tests
+# against a mocked provider; the demo example validates; the Lambda bundles build, boot and carry an
+# SBOM. Nothing here touches an account — a public repository deploys nowhere. What AWS makes of the
+# module is proven by the first tenant's pipeline.
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "service/scripts/**"
+      - "service/lambda/**"
+      - "service/package.json"
+      - "service/package-lock.json"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "service/scripts/**"
+      - "service/lambda/**"
+      - "service/package.json"
+      - "service/package-lock.json"
+      - ".github/workflows/terraform.yml"
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  terraform:
+    name: module (fmt, validate, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # The module's floor is 1.6; its tests need 1.11 (override_during).
+          terraform_version: "1.13.5"
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive -diff
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - run: terraform test
+      - name: demo example validates
+        working-directory: terraform/examples/demo
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  bundle:
+    name: bundles (build, boot, SBOM)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # The Lambda runtime the bundles target.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: service/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck:lambda
+      - run: npm run bundle
+      - name: the service bundle boots
+        run: npm run bundle:smoke
+      - run: npm run sbom
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identity-service-lambda-bundles
+          path: |
+            service/bundle/service.zip
+            service/bundle/backup.zip
+            service/bundle/service.cdx.json
+            service/bundle/backup.cdx.json
+          if-no-files-found: error

@@ -154,3 +154,7 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Terraform working directories and provider locks (the module pins nothing; the root does)
+.terraform/
+.terraform.lock.hcl
