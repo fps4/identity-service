@@ -13,7 +13,7 @@
 #
 # Needs NO secrets to apply — it defines a credential and no users, so it is safe to run any time:
 #   SEED_FILE=../config/seed.mcp-operator.yaml \
-#   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+#   TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
 #
 # Authority comes from the OPERATOR, never from this credential: the person signing in needs an active
 # `platform_admin` assignment on identity-console (ADMIN_OPERATOR_ROLES → the `admin` superscope, per

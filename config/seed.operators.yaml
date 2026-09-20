@@ -10,10 +10,10 @@
 # (existing password left untouched — use `npm run manage-users set-password`), and ALWAYS upserts the
 # platform_admin assignment (ADR-0019/0020) so the operator can log in. Other data is NOT touched.
 #
-# Run on the ds1 host, from service/ (mongo publishes :27019 on the host):
+# Run on the host, from service/ (the compose stack's DynamoDB Local publishes :8000):
 #   SEED_FILE=../config/seed.operators.yaml \
 #   SEED_CONSOLE_ADMIN_PASSWORD="$(gh secret … or the known value)" \
-#   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+#   TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
 
 applications:
   - id: identity-console

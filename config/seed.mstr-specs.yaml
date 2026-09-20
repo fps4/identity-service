@@ -11,9 +11,9 @@
 #     `mstr-specs` itself, so a token bound to the MCP resource (RFC 8707) verifies without the URL
 #     being configured twice and drifting.
 #
-# Apply from service/ against the deployment's Mongo (the seed-ds1 workflow is retired — maestro ADR-0017):
+# Apply from service/ against the deployment's table (the seed-ds1 workflow is retired — maestro ADR-0017):
 #   SEED_FILE=../config/seed.mstr-specs.yaml \
-#   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+#   TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
 
 applications:
   - id: mstr-specs

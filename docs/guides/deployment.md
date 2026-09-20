@@ -1,11 +1,12 @@
 ---
 title: Deployment
-summary: How identity-service is deployed — the Terraform module in terraform/ (service on Lambda behind an HTTP API, a backup Lambda to S3), applied by the tenant's pipeline (maestro ADR-0016/0017; nothing here deploys); what a deployment needs, the compose stack for a laptop, seeding, backups & recovery, and provisioning the management-plane admin client + MCP server.
+summary: How identity-service is deployed — the Terraform module in terraform/ (one DynamoDB table, the service on Lambda behind an HTTP API, a relay and a backup Lambda), applied by the tenant's pipeline (maestro ADR-0016/0017; nothing here deploys); what a deployment needs, the compose stack for a laptop, seeding, backups & recovery, and provisioning the management-plane admin client + MCP server.
 status: current
 last_updated: 2026-09-20
 owners: [architect]
 related:
   - docs/design/architecture.md
+  - docs/design/decisions/0023-the-store-is-dynamodb.md
   - docs/guides/tenant-config.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
@@ -15,35 +16,39 @@ related:
 # Deployment
 
 How identity-service is deployed. The service is **stateless**, driven entirely by environment variables,
-with **MongoDB** as its only persistent dependency. A deployment is the Terraform module below; the
-`docker/` compose stack runs the same container on a laptop and is the development loop, not a
-deployment target (maestro ADR-0002).
+with **one DynamoDB table** as its only persistent dependency
+([ADR-0023](../design/decisions/0023-the-store-is-dynamodb.md), maestro ADR-0018). A deployment is the
+Terraform module below; the `docker/` compose stack runs the same container on a laptop against DynamoDB
+Local and is the development loop, not a deployment target (maestro ADR-0002).
 
 ## The Terraform module, applied by the tenant's pipeline
 
-[`terraform/`](../../terraform/) deploys the service as a Lambda function (Node 22, arm64) behind the
-[Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) layer and an HTTP API Gateway
-with one `$default` route, and the backup as a scheduled Lambda writing to an S3 bucket; the database
-is the tenant's Atlas cluster (ADR-0005), named by `MONGO_URI`. The README's
+[`terraform/`](../../terraform/) makes the realm's DynamoDB table and deploys the service as a Lambda
+function (Node 22, arm64) behind the [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter)
+layer and an HTTP API Gateway with one `$default` route, the relay and the backup as scheduled Lambdas,
+and the backup bucket; each function's role is granted the table, and no database credential exists. The README's
 [Deployments](../../README.md#deployments) section is the reference: the inputs table, a root that
 composes the module, the issuer, secrets, seeding, backups and the console's status. The short form:
 
 - **The code** is `npm run bundle` in `service/` (Node 22): `bundle/service.zip` (the server plus
   `run.sh` for the adapter's zip mode) and `bundle/backup.zip`; `npm run sbom` adds a CycloneDX SBOM per
   bundle. The tenant's pipeline builds them at the tag it deploys.
-- **`environment`** is every non-secret variable in [`service/.env.example`](../../service/.env.example);
-  **`secrets`** maps `MONGO_URI`, `AUTH_JWT_SECRET`, `OAUTH_KEY_PASSPHRASE`,
+- **`environment`** is every non-secret variable in [`service/.env.example`](../../service/.env.example)
+  (the module sets `TABLE_NAME` itself); **`secrets`** maps `OAUTH_KEY_PASSPHRASE`, `AUTH_JWT_SECRET`,
   `IDENTITY_ADMIN_CLIENT_SECRET` and, when Google federates, `GOOGLE_CLIENT_SECRET` to Secrets Manager
   ARNs. Their values land on the function and in the state — the state bucket protects them (ADR-0017);
   reading them at boot through the Secrets Lambda extension is the follow-up.
+- **The table** is the module's (`terraform/table.tf`): on-demand, point-in-time recovery, TTL, encrypted,
+  `prevent_destroy`. Its shape is declared once more in [`service/src/db/table.ts`](../../service/src/db/table.ts),
+  which the service checks its table against at boot; the two must match.
 - **The issuer** (`AUTH_JWT_ISSUER`, the `iss` of every token) is set by the module and output as
   `issuer`: `https://<domain>` with a `domain` + `certificate_arn`, else the API's default endpoint.
   Use a domain: the default endpoint changes if the API is ever recreated, and every consumer's
   verifier with it. `GOOGLE_REDIRECT_URI` is `<issuer>/oauth2/callback` and `MCP_RESOURCE_URL` defaults
   to `<issuer>/mcp`.
-- **The signing keys** are generated on first use and stored in the database's `key_store`, encrypted
-  under `OAUTH_KEY_PASSPHRASE` (`src/utils/key-store.ts`) — nothing on disk, so the function's role is
-  logs only. Set the passphrase before the first request and never change it without re-encrypting.
+- **The signing keys** are generated on first use and stored in the table (`key_store` items), encrypted
+  under `OAUTH_KEY_PASSPHRASE` (`src/utils/key-store.ts`) — nothing on disk. Set the passphrase before
+  the first request and never change it without re-encrypting.
 - **The web adapter layer** is an input (`web_adapter_layer_arn`): its ARN carries AWS's account id,
   which a public repository may not hold.
 - **The console** is not in the module — the README says why and what follows.
@@ -57,14 +62,14 @@ against a mocked provider and builds, boots and SBOMs the bundles; a self-hosted
 repository would run a fork's code (ADR-0017). The earlier ds1 deploy (`deploy-ds1`), seed
 (`seed-ds1`), snapshot (`dump-ds1`) and one-shot migration (`migrate-*-ds1`) workflows, and the
 committed `config/ds1/.env.base` they assembled a deploy env from, are gone: the deploy is the module,
-the realm's values are the tenant's, and a seed or a migration is run from `service/` against the
-deployment's database by whoever holds its credentials (below).
+the realm's values are the tenant's, and a seed is run from `service/` against the deployment's table by
+whoever holds a role that may write it (below).
 
 ## What a deployment needs
 
-- A reachable **MongoDB** — the tenant's Atlas cluster, `MONGO_URI` as a secret (a connection string
-  without a path or query; the service appends `/<MONGO_DB_NAME>`). On a laptop the compose stack
-  provisions one.
+- The **table** — `TABLE_NAME`, the module's own; the function reaches it by its role, and nothing else
+  is configured (no endpoint, no credential). On a laptop the compose stack runs DynamoDB Local and
+  makes the table from the schema in code; `DYNAMODB_ENDPOINT` names it.
 - A **public HTTPS issuer**: the module's domain (or its default endpoint). HTTPS is required for any
   consumer's verifier configuration (issuer + JWKS URL), and for Google's OAuth redirect URI when the
   deployment federates.
@@ -94,31 +99,34 @@ docker compose -f docker/compose.yaml -f docker/compose.dev.yaml ps
 # Production overlay: swap compose.dev.yaml → compose.prod.yaml
 ```
 
-The image build runs `npm run build && npm test`, so a type error or a red test **fails the build**.
+The stack is DynamoDB Local (its data on a named volume), a one-shot `table-init` that makes the table
+from [`service/src/db/table.ts`](../../service/src/db/table.ts), the service and the console. The image
+build runs `npm run build`; the tests run in the DoD gate against DynamoDB Local (an image build has no
+network to it). DynamoDB Local is published on `${DYNAMODB_PORT:-8000}` for a seed run from the host.
 
 Seeding is an operator step whatever runs the service (RQ-0004): provisioning clients/users is
-`npm run seed` against the database — see *Seed & recovery* below.
+`npm run seed` against the table — see *Seed & recovery* below.
 
 ## System of record, seeding & recovery — ADR-0007 / ADR-0008
 
-The **live MongoDB is the system of record** for the auth data (clients, users, secrets).
+The **live table is the system of record** for the auth data (clients, users, secrets).
 SOPS/seed-as-code is **dropped** (ADR-0008, superseding ADR-0006): there is no encrypted secret file in
 git, and no `age` master key.
 
 - **Bootstrap definition** — `config/seed.yaml` (committed; only `${ENV}` references, no plaintext). It
-  stands up a brand-new **empty** deployment; the deploy keeps the mongo data volume, so steady-state data
-  is never wiped. Day-2 changes go through the **management plane** (`/admin/v1` + MCP + console — ADR-0007),
-  not a re-seed.
-- **Bootstrap seed** (rare — empty DB only): supply the `${ENV}` values from the environment (an operator
-  shell, or the tenant pipeline's secrets), from `service/`, against the deployment's Mongo — a tenant's
-  seed file lives in its `maestro-config-<tenant>` repository and its pipeline runs this as a step after
-  apply, from the checked-out component at its tag, on a runner whose egress address is on the Atlas
-  cluster's access list; the compose stack publishes its Mongo on port `27019`:
+  stands up a brand-new **empty** deployment; the table is never recreated by a deploy (`prevent_destroy`),
+  so steady-state data is never wiped. Day-2 changes go through the **management plane** (`/admin/v1` +
+  MCP + console — ADR-0007), not a re-seed.
+- **Bootstrap seed** (rare — an empty table only): supply the `${ENV}` values from the environment (an
+  operator shell, or the tenant pipeline's secrets), from `service/`, against the deployment's table — a
+  tenant's seed file lives in its `maestro-config-<tenant>` repository and its pipeline runs this as a
+  step after apply, from the checked-out component at its tag, with the deploy role's credentials and
+  the module's `table_name` output. Against the compose stack, DynamoDB Local on port `8000`:
 
   ```bash
   IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… \
     SEED_FILE=../../maestro-config-<tenant>/identity/seed.yaml \
-    MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+    TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
   ```
 
   Idempotent: clients are upserted; **existing users are left untouched** — change a password with
@@ -133,119 +141,29 @@ git, and no `age` master key.
   assignment to the **`identity-console` application** granting `platform_admin`, so with global entitlement
   enforcement the console is never accidentally lockable.
 
-### Nightly backups & point-in-time recovery — ADR-0008
+### Nightly backups & point-in-time recovery — ADR-0008, ADR-0023
 
 The **primary recovery path is a restore from a nightly backup** (it recovers the full runtime state —
-issued tokens, authorizations, lockouts, signing-key history, audit log — which a re-seed cannot).
+issued tokens, authorizations, lockouts, signing-key history, audit log, the record's outbox and registry
+— which a re-seed cannot); the table's **point-in-time recovery**, which the module turns on, is the
+second line (any second of the last 35 days, restored by AWS to a new table).
 
 **In a deployment** the module's backup Lambda ([`service/lambda/backup.ts`](../../service/lambda/backup.ts))
-runs at 02:30 UTC and writes every collection to the backup bucket as gzipped canonical Extended JSON
-lines — `<prefix>/<yyyy-mm-dd>/<collection>.jsonl.gz` plus a `manifest.json` — into a versioned,
+runs at 02:30 UTC and pages the whole table to the backup bucket as gzipped canonical JSON lines, one
+file per item kind — `<prefix>/<yyyy-mm-dd>/<kind>.jsonl.gz` plus a `manifest.json` — into a versioned,
 SSE-encrypted, never-public bucket that a lifecycle rule expires after `backup_retention_days` (35).
-With `backup_passphrase_secret_arn` each object is also AES-256-GCM encrypted under that passphrase
+A line is the item as the table holds it, keys and all, so a restore is a `PutItem` per line. With
+`backup_passphrase_secret_arn` each object is also AES-256-GCM encrypted under that passphrase
 (`.jsonl.gz.enc`; `npm run backup:decrypt` undoes it). Two alarms: the backup errored; the backup did
-not run. Restore with `mongoimport`, collection by collection (`--drop`), and with the **same
-`OAUTH_KEY_PASSPHRASE`** the backed-up `key_store` was encrypted under — the README's
-[Backups and restore](../../README.md#backups-and-restore) has the commands.
+not run. Restore with `npm run backup:restore -- <kind>.jsonl …` under credentials that may write the
+table, and with the **same `OAUTH_KEY_PASSPHRASE`** the backed-up `key_store` items were encrypted under
+— the README's [Backups and restore](../../README.md#backups-and-restore) has the commands.
 
-**On a laptop** `docker/backup.sh` dumps the DB via the mongo container (`mongodump --archive --gzip`,
-plaintext, ADR-0008 — the path's access control is the protection) and prunes by retention; schedule it
-from the host crontab (nightly at 02:30, 30-day retention):
-
-```cron
-30 2 * * *  /home/<user>/identity-service/docker/backup.sh backup >> ~/is-backup.log 2>&1
-```
-
-`BACKUP_DIR` defaults to `/mnt/backup/identity-service`. **Restore** a snapshot (DROPS existing
-collections; confirm when prompted):
-
-```bash
-docker/backup.sh restore /mnt/backup/identity-service/identity-service-20260623-023000.archive.gz
-```
-
-## Rename cutover: component-auth → identity-service (one-time) — ADR-0007
-
-The rename changes the compose **project** name (so the data volume moves from `component-auth_mongo_data`
-to `identity-service_mongo_data`) **and** `MONGO_DB_NAME` (`component-auth` → `identity-service`). Together
-those would orphan the live ds1 data on the first new-name deploy. `docker/migrate-rename-ds1.sh` does a
-logical dump→restore with a namespace remap, covering **both** the volume move and the DB rename in one
-pass; the old volume is kept as a rollback until you remove it. Run it **on the ds1 host**:
-
-```bash
-# 1. With the OLD stack still running, dump the old DB:
-docker/migrate-rename-ds1.sh dump
-# 2. Bring up the NEW stack (compose up) — brings up identity-service-mongo.
-# 3. Restore into the new mongo with the ns remap, then verify counts:
-docker/migrate-rename-ds1.sh restore
-docker/migrate-rename-ds1.sh verify
-# 4. After verifying /health + a token issuance, drop the old rollback volume:
-docker/migrate-rename-ds1.sh decommission
-```
-
-**Note on the public issuer:** `AUTH_JWT_ISSUER` stays `https://auth.fps4.nl` (a URL, unchanged by the
-rename), so consumer verifiers (maestro) are **unaffected** — no `iss` migration is needed. The renamed
-default `identity-service` is only the dev/test fallback. **Consumer-side breaking changes** that *do*
-need coordination: the published SDK package name (`@fps4/component-auth` → `@fps4/identity-service-sdk`)
-and the documented consumer env-var convention (`COMPONENT_AUTH_*` → `IDENTITY_SERVICE_*`, which is each
-consumer's own choice of name).
-
-## App-entitlement migration: backfill assignments (ADR-0019)
-
-[ADR-0019](../design/decisions/0019-application-assignments-and-app-roles.md) makes entitlement a **global**
-gate — a user with no assignment can obtain no token — and removes the flat `user.roles`. Because
-enforcement is global, existing users would be locked out on cutover unless their current access is
-preserved, so a migration **backfills assignments from token history**. It runs against the deployment's
-database **after** the enforcing image deploys and is idempotent (`--dry-run` first):
-
-`scripts/migrate-app-assignments.ts` (from `service/`; the `migrate-assignments-ds1` workflow that ran
-it on ds1 is retired):
-
-1. **Build role catalogues** — for each client, seed its `roles` catalogue from the union of the old flat
-   `user.roles` across users who hold tokens for it, plus any seed-declared roles.
-2. **Backfill assignments** — for each distinct `(user, clientId)` pair observed in `oauth_tokens` (user
-   grants only), create an `active` assignment whose roles are that user's old flat roles intersected with
-   the client's catalogue, so every currently-working login keeps working.
-3. **Seed the operator assignment** — ensure the bootstrap operator holds `platform_admin` on
-   `identity-console` (folding ADR-0010).
-4. **Drop `user.roles`** from every user document once assignments are populated.
-
-```bash
-# dry-run first (reports the backfill it would write), then apply:
-npm run migrate-app-assignments -- --dry-run
-npm run migrate-app-assignments
-```
-
-## Application-aggregate migration: group clients into applications (ADR-0020)
-
-[ADR-0020](../design/decisions/0020-application-aggregate.md) makes the **Application** the first-class unit:
-the role catalogue + audience move off each OAuth client and up to an application, clients become
-**credentials** under an `applicationId`, and assignments/invites re-key from `clientId` to `applicationId`.
-Because folding today's separate clients into applications is a judgment call (a product runtime's `aud` is
-maestro's, not its product's), the migration **proposes** a grouping and an operator **confirms** it before
-it runs. It is idempotent (`--dry-run` writes nothing).
-
-`scripts/migrate-application-aggregate.ts` (from `service/`; the `migrate-applications-ds1` workflow that
-ran it on ds1 is retired):
-
-1. **Propose applications** — group credentials on a product key derived from client id / `subject` domain
-   (e.g. `coach-web` + `skills-coach-ds1` → application `coach`) and **print the mapping** for operator
-   confirmation. Override the proposal with `APP_GROUPING` when the inferred grouping is wrong.
-2. **Create applications** — move each group's role catalogue (the union) and a default `audience` (the
-   user-login credential's audience) onto the application.
-3. **Set `applicationId`** on every credential, keeping a per-credential `audience` **override** where it
-   differs from the app default (product runtimes → `maestro-workspace`).
-4. **Re-key** `assignments` and `invites` from `clientId` to `applicationId`.
-5. **Operator safeguard (unconditional)** — ensure an `identity-console` **application** with `platform_admin`
-   in its catalogue, the identity-console credential under it, and `admin@identity-service.fps4.nl` holding an
-   active assignment to that application. Verify after the run that the assignment exists; the migration
-   is not done until it does.
-
-```bash
-# dry-run first — PROPOSES the grouping and writes nothing; confirm it, then apply:
-npm run migrate-application-aggregate -- --dry-run
-# override the inferred grouping if needed, then apply:
-APP_GROUPING=… npm run migrate-application-aggregate
-```
+**On a laptop** the compose stack's data is DynamoDB Local's file on the `dynamodb_data` volume; a copy of
+the volume is a snapshot, and a fresh stack with an empty volume is a re-seed (RQ-0004). The retired ds1
+stack's `backup.sh` (a `mongodump` of a container that no longer exists), the rename cutover and the two
+one-shot data migrations of ADR-0019/0020 went with the MongoDB they operated on (ADR-0023); their
+history is in git.
 
 ## Management-plane admin client & MCP server — ADR-0007
 
@@ -264,14 +182,14 @@ The **one** secret value lives in **two** places (it must be identical in both �
 Provision it:
 
 1. **Set it in the deployment's environment** (a secret of the tenant's pipeline, never committed).
-2. **Seed the client with the same value** so it exists in Mongo with that secret hashed (against the
-   deployment's Mongo — the compose stack publishes it on port `27019`; SOPS dropped per ADR-0008 — pass
-   the value via the env):
+2. **Seed the client with the same value** so it exists in the table with that secret hashed (against the
+   deployment's table with a role that may write it, or the compose stack's DynamoDB Local on port `8000`;
+   SOPS dropped per ADR-0008 — pass the value via the env):
 
    ```bash
    # from service/ (the seed upserts the identity-admin-mcp client):
    IDENTITY_ADMIN_CLIENT_SECRET=<the same value> SEED_FILE=../config/seed.yaml \
-     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+     TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
    ```
 
 3. **Mint a token** (any caller — the console, `curl`, a test):
@@ -285,9 +203,9 @@ Provision it:
 
 ### Driving the MCP server from an MCP client (e.g. Claude Code)
 
-The MCP server talks to MongoDB directly and verifies the admin token against the service's own JWKS, so
-it runs **inside the `identity-service` container** (which already has Mongo, the key passphrase, and the
-issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, from the deployment's environment).
+The MCP server talks to the table directly and verifies the admin token against the service's own JWKS, so
+it runs **inside the `identity-service` container** (which already has the table, the key passphrase, and
+the issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, from the deployment's environment).
 [`docker/mcp-admin.sh`](../../docker/mcp-admin.sh) mints a fresh token on each start and execs
 `node dist/mcp/server.js` in that container — nothing long-lived is stored:
 

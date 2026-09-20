@@ -6,11 +6,13 @@ user pool (ADR-0018).
 ## Setup
 
 ```bash
+docker run -d -p 8000:8000 amazon/dynamodb-local:3.3.1 -jar DynamoDBLocal.jar -sharedDb -inMemory   # the table on a laptop
 cd service
 npm install
-cp .env.example .env   # update secrets & Mongo connection
+cp .env.example .env   # update secrets; TABLE_NAME / DYNAMODB_ENDPOINT point at DynamoDB Local
+npm run db:create      # the table, from src/db/table.ts
 npm run build
-npm test
+npm test               # against DynamoDB Local, each file on a table of its own
 npm start
 ```
 
@@ -18,8 +20,9 @@ npm start
 
 | Variable | Description |
 | --- | --- |
-| `MONGO_URI` | Connection string to the MongoDB host (no database appended). |
-| `MONGO_DB_NAME` | Database that stores users, clients, and sessions. |
+| `TABLE_NAME` | The DynamoDB table (ADR-0023). A deployment's is the Terraform module's; on a laptop, the one `npm run db:create` makes. |
+| `DYNAMODB_ENDPOINT` | DynamoDB Local's URL on a laptop (`http://localhost:8000`). Unset in a deployment, where the function's role reaches AWS. |
+| `AWS_REGION` | The deployment's region (set by Lambda); any value for DynamoDB Local. |
 | `AUTH_JWT_SECRET` | Legacy secret used to sign session JWTs (HS256); kept for compatibility. |
 | `AUTH_JWT_ISSUER` | JWT/OAuth issuer claim. |
 | `AUTH_JWT_AUDIENCE` | JWT/OAuth audience claim. |
@@ -57,19 +60,31 @@ the same names the spine's handlers and maestro-specs read, so one tenant module
 - `npm run dev` – Watch mode with `tsx`.
 - `npm run build` – Type-check and emit JavaScript to `dist/`.
 - `npm start` – Run compiled server (`dist/server.js`).
+- `npm run db:create` – Make the table on DynamoDB Local from `src/db/table.ts` (never against a deployment).
+- `npm run seed`, `npm run dump-seed`, `npm run manage-users` – the operator CLIs (`scripts/`).
+- `npm run bundle`, `npm run bundle:smoke`, `npm run sbom` – the Lambda bundles the Terraform module deploys.
+- `npm run backup:decrypt`, `npm run backup:restore` – a restore from the backup Lambda's objects.
 
-## Mongo Collections
+## The table
 
-- `applications` – the first-class product objects (ADR-0020): `name`, default `audience`, and role catalogue; users are assigned to these.
-- `users` – local-credential + federated user accounts (globally-unique email; no `roles` field — ADR-0019).
-- `assignments` – user↔application entitlements, keyed on `applicationId`: app-scoped roles + status, gating token issuance (ADR-0019/0020).
-- `sessions` – session records, keyed by UUID.
-- `oauth_clients` – OAuth-client **credentials** under an application (`applicationId`; confidential & public), with an optional `audience` override — no role catalogue (ADR-0020).
-- `oauth_tokens` – access/refresh token metadata.
-- `key_store` – RSA signing key material.
-- `principals` – the maestro principal registry (ADR-0022): `_id` is the maestro principal id (`prn-h-…` / `prn-a-…` / `prn-w-…`), with `kind`, `status` and what it binds to. Rows are retired, never deleted. `users.principalId` / `oauth_clients.principalId` point here.
-- `outbox` – maestro spine envelopes the registry emits (`PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`, `SeatOccupancyChanged`) in the same transaction as the change, plus the relay's `delivered` / `delivered_at` / `attempts`.
-- `counters` – the outbox's per-workspace `seq` and per-principal `subject_seq`.
+One DynamoDB table ([ADR-0023](../docs/design/decisions/0023-the-store-is-dynamodb.md)), keyed `pk`/`sk`;
+every item carries `kind`. The realm's own items live under `realm#<kind>` / `<id>`, maestro's record under
+`ws#<workspace_id>#<kind>` / `<id>`, and a `unique` item under `realm#unique#<what>` / `<value>` names the
+owner of a value that must be one of a kind (an email, a code digest, a login handle).
+
+- `application` – the first-class product objects (ADR-0020): `name`, default `audience`, and role catalogue; users are assigned to these.
+- `user` – local-credential + federated user accounts (unique email through `unique#email`; each linked identity through `unique#identity`; no `roles` field — ADR-0019).
+- `assignment` – user↔application entitlements, keyed `<userId>#<applicationId>`: app-scoped roles + status, gating token issuance (ADR-0019/0020); an application's members through `gsi1`.
+- `session` – session records, keyed by UUID; swept by the TTL.
+- `oauth_client` – OAuth-client **credentials** under an application (`applicationId`; confidential & public), with an optional `audience` override — no role catalogue (ADR-0020); listed per application through `gsi1`.
+- `oauth_token` – access/refresh token metadata; a refresh token found by its hash through `gsi1`, counted by type and issue time through `gsi2`; swept by the TTL a day after expiry.
+- `oauth_authorization` – an in-flight login; its `state`, `loginToken` and `code` resolve through `unique` items; swept by the TTL.
+- `invite` – registration invites (RQ-0013); the code digest through `unique#invite_code`.
+- `key_store` – RSA signing key material, keyed by `kid`.
+- `audit_log` – the management plane's append-only trail (ADR-0007), keyed by a UUIDv7 so the latest is a reverse key query.
+- `principal` – the maestro principal registry (ADR-0022): the maestro principal id (`prn-h-…` / `prn-a-…` / `prn-w-…`), with its kind (`principal_kind` in the item), `status` and what it binds to (unique through `unique#principal_subject`). Rows are retired, never deleted. `user.principalId` / `oauth_client.principalId` point here.
+- `outbox` – maestro spine envelopes the registry emits (`PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`, `SeatOccupancyChanged`) in the same transaction as the change, keyed by `seq`, plus the relay's `delivered` / `delivered_at` / `attempts`; while undelivered, on the sparse `pending` index.
+- `counter` – the outbox's per-workspace `seq` (`outbox`) and per-principal `subject_seq` (`subject#<prn>`), advanced in the emitting transaction on the condition that they did not move.
 
 See `../docs/guides/tenant-config.md` for deployment configuration and registering applications & credentials.
 
@@ -83,4 +98,4 @@ user in the file); a re-run emits only what changed.
 
 ## Docker
 
-Use `docker compose -f docker/compose.yaml -f docker/compose.dev.yaml up --build` from the repository root to run MongoDB and the service together for local development.
+Use `docker compose -f docker/compose.yaml -f docker/compose.dev.yaml up --build` from the repository root to run DynamoDB Local, make the table, and run the service together for local development.

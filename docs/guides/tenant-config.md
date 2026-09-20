@@ -17,7 +17,7 @@ related:
 
 Since [ADR-0018](../design/decisions/0018-collapse-tenant-into-deployment.md), **one deployment = one
 realm = one shared user pool**. There is no `Tenant` entity, no `tenantId`, and no `tenants` collection.
-A deployment (`ds1`, …) has its own MongoDB, active signing key, issuer origin, and Google app; **users
+A deployment (`ds1`, …) has its own DynamoDB table, active signing key, issuer origin, and Google app; **users
 are deployment-scoped** (unique by `email`, shared across every application → instance-wide SSO). Since
 [ADR-0020](../design/decisions/0020-application-aggregate.md) the first-class per-consumer object is the
 **Application** (a product): it owns a `name`, a **default `audience`**, and a **role catalogue**, and it is
@@ -348,12 +348,10 @@ existing users untouched** (use `npm run manage-users set-password` to change a 
 existing credential **secrets** untouched — the hash is written only on insert (ADR-0021), so a re-seed can
 never revert a rotation. The loader is operator-run
 against the database — there is **no HTTP seeding endpoint**
-([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It reads `MONGO_URI`, so run it where
-it can reach the target Mongo (locally against the published port, or inside the docker network). To migrate
-an existing deployment onto the assignment model, see the
-[app-entitlement migration](./deployment.md#app-entitlement-migration-backfill-assignments-adr-0019); to
-fold today's separate clients into applications, see the
-[application-aggregate migration](./deployment.md#application-aggregate-migration-group-clients-into-applications-adr-0020).
+([ADR-0003](../design/decisions/0003-seed-config-not-admin-api.md)). It reads `TABLE_NAME` (and
+`DYNAMODB_ENDPOINT` for DynamoDB Local), so run it where the table is reachable: with AWS credentials that
+may write the deployment's table, or against the compose stack's DynamoDB Local on the published port
+(ADR-0023).
 
 ## Operational Tips
 

@@ -2,7 +2,7 @@
 
 Terms where identity-service's business language and code diverge, or that a consumer must get right.
 
-- **Deployment / realm** — one running instance of identity-service (`ds1`, …): its own MongoDB, active
+- **Deployment / realm** — one running instance of identity-service (`ds1`, …): its own DynamoDB table, active
   signing key, issuer origin, Google app, and a single shared user pool. The deployment *is* the tenancy
   boundary — there is **no** `Tenant` entity or `tenants` collection (removed in
   [ADR-0018](docs/design/decisions/0018-collapse-tenant-into-deployment.md)). Realm-wide config is
