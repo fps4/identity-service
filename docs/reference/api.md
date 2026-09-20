@@ -2,7 +2,7 @@
 title: identity-service API
 summary: The identity-service endpoint contract — OAuth 2.0 token issuance, legacy sessions, JWKS, and the authenticated /admin/v1 management plane.
 status: current
-last_updated: 2026-07-09
+last_updated: 2026-09-20
 owners: [architect]
 related:
   - docs/design/architecture.md
@@ -10,6 +10,7 @@ related:
   - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
   - docs/design/decisions/0020-application-aggregate.md
+  - docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md
   - docs/product/RQ-0001-workspace-user-identity-google-sso.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
 ---
@@ -75,6 +76,16 @@ Response (`200`):
 }
 ```
 
+The `access_token` is an RS256 JWT carrying `cid` (the client id), `scope`, `sub` (the credential's
+`subject`, else the client id), `iss`, `aud`, `exp`/`iat`, any additive `claims` the credential declares
+([product-runtime-credential.md](./product-runtime-credential.md)) and, for a machine credential, the
+credential's **maestro principal** ([ADR-0022](../design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)):
+
+| Claim | Value |
+|---|---|
+| `prn` | the credential's maestro principal id — `prn-a-…` for an agent, `prn-w-…` for a workload; minted here, stable for the credential's life, the only identifier of it that reaches maestro's record |
+| `principal_kind` | the credential's declared `claims.principal_kind` (`agent`) passed through unchanged; `workload` when it declares none. The `prn` prefix is the authoritative kind |
+
 ### `grant_type=authorization_code` (user login — PKCE)
 
 Completes the Google login started at [`GET /oauth2/authorize`](#get-oauth2authorize). The client is
@@ -122,6 +133,17 @@ application*, sourced from the assignment's `roles` (a subset of the application
 that ignores it is unaffected) and the assignment is re-read on every issuance (including `refresh_token`),
 so a role change — or a revoked/suspended assignment (which then denies refresh) — applies on the next
 refresh.
+
+The token also carries the person's **maestro principal**
+([ADR-0022](../design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)), additive likewise:
+
+| Claim | Value |
+|---|---|
+| `prn` | the user's maestro principal id — `prn-h-…`, minted by identity-service when the user was created (backfilled on first use for older accounts) and stable for life, whichever IdP asserted the `sub`. This is the id maestro's record names; a consumer that keeps a principal registry should key it on `prn`, not on `(iss, sub)` |
+| `principal_kind` | always `human` on a user token |
+
+Oversight level is **never** a token claim — a consumer reads it from seat occupancy at the act, so a
+demotion takes effect on the next act rather than the next token refresh.
 
 ### `grant_type=password` (local login — RQ-0002)
 
@@ -230,10 +252,13 @@ application; an **email-bound** invite additionally requires the matching addres
 ### Response (`201`)
 
 ```json
-{ "id": "f3ede70f-...", "email": "reviewer@example.com" }
+{ "id": "f3ede70f-...", "email": "reviewer@example.com", "principalId": "prn-h-7q3k9mwx2bcd" }
 ```
 
-`id` is the stable subject id (the token `sub` at login).
+`id` is the stable subject id (the token `sub` at login); `principalId` is the person's maestro principal
+id (the token `prn`, [ADR-0022](../design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)).
+Registering is the person's own act on maestro's record: it emits `PrincipalRegistered` and, for an
+invite's roles, one `SeatOccupancyChanged` per role.
 
 ### Errors
 

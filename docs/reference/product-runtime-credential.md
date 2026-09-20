@@ -34,11 +34,17 @@ For a deployment registered as the client below, `POST /oauth2/token` with
 | `email` | client `claims.email`               | `runtime@sovereign-llm-gateway.fps4.nl`  |
 | `iss`   | service `AUTH_JWT_ISSUER`           | `https://auth.fps4.nl`                   |
 | `exp`   | `accessTokenTtlSec`                 | short-lived                              |
+| `prn`   | the credential's maestro principal id (ADR-0022) | `prn-w-7q3k9mwx2bcd` (a workload), `prn-a-…` (an agent) |
+| `principal_kind` | client `claims.principal_kind`, else `workload` | `agent`                        |
 
 maestro resolves the deployment by `email`/`sub` against its register and checks `aud` +
 `role` (the register is authoritative; `role` is defence-in-depth). Registered claims
 (`iss`/`aud`/`exp`/`sub`) are always set by the signer — a value smuggled into `claims` can never
-override them.
+override them. `prn` is likewise the signer's ([ADR-0022](../design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)):
+the credential's maestro principal id, minted by identity-service, which is what maestro's record names
+when this runtime acts. A credential that declares `claims.principal_kind: agent` is registered as an
+agent (`prn-a-…`) and can never be `accountable` on maestro's record; one that declares nothing is a
+workload (`prn-w-…`).
 
 ## Registering a runtime client (self-registration — ADR-0017)
 
