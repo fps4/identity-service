@@ -6,7 +6,7 @@
 # product is one APPLICATION that owns its audience + role catalogue and contains typed CREDENTIALS (a web
 # login client, a machine/runtime client, …). Users are assigned to an application with app-scoped roles
 # (ADR-0019). Realm-wide settings (allowed origins, registration mode, IdP toggles) are deployment ENV —
-# see config/ds1/.env.base.
+# service/.env.example documents every knob; a tenant's values live in its own configuration repository.
 #
 # STRUCTURAL-ONLY (ADR-0011, ADR-0017, ADR-0021). Applications + credential STRUCTURE are
 # declarative/GitOps (this file); USERS and credential SECRETS are operational and owned by the live DB —

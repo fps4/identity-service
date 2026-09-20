@@ -6,6 +6,8 @@
 # Auth: the automatic GITHUB_TOKEN (with `packages: write` below) publishes @fps4 packages to THIS
 # repo's org — the reliable path for GitHub Packages' npm registry (which rejects fine-grained PATs).
 # The committed sdk/.npmrc maps @fps4 -> GitHub Packages and reads NODE_AUTH_TOKEN.
+#
+# Runs on a GitHub-hosted runner (fps4/maestro ADR-0017: a public repository runs no self-hosted runner).
 name: publish-sdk
 
 on:
@@ -30,7 +32,7 @@ concurrency:
 jobs:
   publish:
     name: publish @fps4/identity-service-sdk
-    runs-on: [self-hosted, ds1]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: sdk

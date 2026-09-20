@@ -40,7 +40,7 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 | `sdk/` | Headless TypeScript client: `requestClientCredentialsToken` + the Google login helpers (`beginGoogleLogin` / `completeGoogleLogin` / `refreshUserToken` / `revokeUserToken`) + `registerWithPassword` / `loginWithPassword`. No UI; safe server-side. |
 | `react/` | **Optional** React UI package `@fps4/identity-service-react` — a drop-in `<Login/>` (password) for consumer apps (RQ-0003 / ADR-0002). Separate package so server-side consumers never pull in React. |
 | `console/` | **Operator** admin console (Next.js, `@fps4/identity-service-console` — ADR-0007). Thin server-side client over `/admin/v1`: dashboards + application/credential/user management (top level is Applications — ADR-0020). Distinct from the consumer `<Login/>` widget. |
-| `docker/` | Compose base + dev/prod overlays; `backup.sh` (nightly encrypted backups) + `migrate-rename-ds1.sh`. Deploys are manual over SSH to a Docker host (see `docs/guides/deployment.md`). |
+| `docker/` | Compose base + dev/prod overlays (the development loop); `backup.sh` (nightly encrypted backups) + `migrate-rename-ds1.sh`. Deployment is a Terraform module applied by a tenant's pipeline — nothing here deploys (see `docs/guides/deployment.md`). |
 | `docs/` | Two-plane docs: `design/` (architecture + ADRs), `reference/` (API), `guides/` (deployment config, deployment), `product/` (RQ specs). Index: `docs/README.md`. |
 
 ## Entry points

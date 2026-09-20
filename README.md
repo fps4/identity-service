@@ -156,12 +156,17 @@ Docs follow a two-plane structure — see [`docs/README.md`](docs/README.md) for
 
 ## Deployments
 
-The service is a **stateless container** with **MongoDB** as its only persistent dependency, deployed
-**manually over SSH** to a Docker host (`DOCKER_HOST=ssh://<host>`). Secrets live in a **gitignored
-`docker/.env`** (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, `OAUTH_KEY_PASSPHRASE`, the HTTPS
-`AUTH_JWT_ISSUER`, etc.) — never committed. A public HTTPS endpoint (reverse proxy or tunnel) fronts
-the service; it listens on `PORT` (default `7305`). The image build runs `npm run build && npm test`,
-so a red test fails the deploy.
+The service is a **stateless container** with **MongoDB** as its only persistent dependency; the
+`docker/` compose stack runs it on a laptop (secrets in a **gitignored `docker/.env`** — never
+committed). A public HTTPS endpoint fronts a real deployment; the service listens on `PORT` (default
+`7305`). The image build runs `npm run build && npm test`, so a red test fails the build.
 
-See [`docs/guides/deployment.md`](docs/guides/deployment.md) for the full procedure, prerequisites,
-and how a consumer's verifier env lines up with what the service mints.
+Deployment is serverless AWS as a Terraform module this repository will ship (`terraform/`), composed
+by a tenant's private configuration repository (`fps4/maestro-config-<tenant>` —
+[`../maestro/docs/tenancy-and-config.md`](../maestro/docs/tenancy-and-config.md)) and applied by the
+tenant's own pipeline; maestro's ADR-0016 and ADR-0017. The module is M1 of maestro's roadmap. Nothing
+in this repository deploys anywhere — its CI runs on GitHub-hosted runners and ends at the gate — and
+the earlier self-hosted deploy, seed and migration workflows are gone.
+
+See [`docs/guides/deployment.md`](docs/guides/deployment.md) for what a deployment needs, seeding,
+backups & recovery, and how a consumer's verifier env lines up with what the service mints.

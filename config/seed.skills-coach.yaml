@@ -14,8 +14,8 @@
 # (api/src/auth/capabilities.ts ROLE_CAPABILITIES), never the `compliance-officer` the old catalogue
 # carried — a token with that role would resolve to no capabilities at all.
 #
-# Apply via the seed-ds1 workflow:  gh workflow run seed-ds1.yml -f seed_file=config/seed.skills-coach.yaml
-# Or on the ds1 host from service/:  SEED_FILE=../config/seed.skills-coach.yaml \
+# Apply from service/ against the deployment's Mongo (the seed-ds1 workflow is retired — maestro ADR-0017):
+#   SEED_FILE=../config/seed.skills-coach.yaml \
 #   MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
 
 applications:

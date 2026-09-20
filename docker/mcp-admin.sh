@@ -16,8 +16,8 @@
 #   - the `identity-service` container running (docker compose up)
 #   - a seeded admin client (config/seed.yaml -> tenant `identity-service-ops`, client `identity-admin-mcp`)
 #   - the admin client secret reachable, from EITHER source:
-#       * the container env — the deploy injects IDENTITY_ADMIN_CLIENT_SECRET from the GitHub Actions
-#         secret (config/ds1/.env). On ds1 this is the default; no host-side secret is needed.
+#       * the container env — the deployment supplies IDENTITY_ADMIN_CLIENT_SECRET (the compose stack
+#         reads it from docker/.env). Then no host-side secret is needed.
 #       * the host — export IDENTITY_ADMIN_CLIENT_SECRET, or write it as a line
 #         `IDENTITY_ADMIN_CLIENT_SECRET=...` in ${ADMIN_SECRET_FILE:-/opt/identity-service/docker/.mcp-admin.env}
 #         (chmod 600; gitignored). Useful for local/dev. It must equal what the seed hashed for the client.
@@ -33,9 +33,9 @@ SECRET_FILE="${ADMIN_SECRET_FILE:-$(dirname "$0")/.mcp-admin.env}"
 # Resolve the client secret. Preference order:
 #   1. an explicit IDENTITY_ADMIN_CLIENT_SECRET in this (host) environment;
 #   2. the gitignored host secret file (local/dev convenience);
-#   3. otherwise, the secret already present INSIDE the container — the deploy injects
-#      IDENTITY_ADMIN_CLIENT_SECRET there from the GitHub Actions secret (config/ds1/.env), so on ds1
-#      no host-side secret is needed at all. The in-container `node` below falls back to it.
+#   3. otherwise, the secret already present INSIDE the container — the deployment supplies
+#      IDENTITY_ADMIN_CLIENT_SECRET there (the compose stack reads it from docker/.env), so no host-side
+#      secret is needed at all. The in-container `node` below falls back to it.
 if [ -z "${IDENTITY_ADMIN_CLIENT_SECRET:-}" ] && [ -f "$SECRET_FILE" ]; then
   # shellcheck disable=SC1090
   . "$SECRET_FILE"
