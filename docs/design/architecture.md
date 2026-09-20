@@ -20,7 +20,7 @@ The **identity-service** platform separates authentication responsibilities into
 
 ## Components
 
-- **Service (`service/`)** – Node.js + Express API hosting OAuth 2.0, legacy session endpoints, and the authenticated `/admin/v1` management plane. It authenticates OAuth clients, persists users, sessions, and token metadata in MongoDB, manages RSA signing keys, issues JWT access tokens for downstream services, and records every management mutation to an append-only audit log.
+- **Service (`service/`)** – Node.js + Express API hosting OAuth 2.0, legacy session endpoints, and the authenticated `/admin/v1` management plane. It authenticates OAuth clients, persists users, sessions, and token metadata in one DynamoDB table ([ADR-0023](decisions/0023-the-store-is-dynamodb.md)), manages RSA signing keys, issues JWT access tokens for downstream services, and records every management mutation to an append-only audit log.
 - **MCP server (`service/src/mcp/`)** – A stdio JSON-RPC server (`npm run mcp`) exposing the management operations as agent tools. A thin protocol adapter over the **same** service layer and the **same** admin-auth + audit path as the HTTP admin API — one authorization model, one audit trail, two transports (ADR-0007).
 - **SDK (`sdk/`)** – Headless TypeScript client wrapping the HTTP surface: the OAuth client-credentials helper, the Google login helpers, and the local register/login helpers. No UI; safe server-side.
 - **React (`react/`)** – Optional, opt-in package (`@fps4/identity-service-react`) shipping a drop-in `<Login/>` for the local IdP. Separate package so server-side consumers never pull in React.
@@ -42,7 +42,7 @@ flowchart LR
         session["Session Core"]
         keys["Key Manager"]
     end
-    db[("MongoDB<br/>applications · clients · users · assignments · sessions<br/>tokens · authorizations · key_store · audit_logs")]
+    db[("DynamoDB — one table<br/>application · oauth_client · user · assignment · session<br/>oauth_token · oauth_authorization · key_store · audit_log<br/>principal · outbox · counter · unique")]
     admin["Operator / Agent"]
     subgraph mgmt["Management plane (ADR-0007)"]
         api["/admin/v1 (HTTP)"]
@@ -61,8 +61,8 @@ flowchart LR
 
 ## Deployment & Application Model
 
-- A **deployment** (`ds1`, …) is one realm: a single MongoDB, one active signing key, one issuer origin, one Google app, and one shared user pool. Users are deployment-scoped, unique by `email`, and can authenticate against any application in the instance (instance-wide SSO). See [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md).
-- An **Application** (`applications` collection) is the first-class per-consumer object — the product ([ADR-0020](decisions/0020-application-aggregate.md)). It owns a `name`, a **default `audience`** (the token `aud` for tokens minted through it), a **role catalogue**, a **protected-resource registry**, and the users **assigned** to it.
+- A **deployment** (`ds1`, …) is one realm: a single DynamoDB table, one active signing key, one issuer origin, one Google app, and one shared user pool. Users are deployment-scoped, unique by `email`, and can authenticate against any application in the instance (instance-wide SSO). See [ADR-0018](decisions/0018-collapse-tenant-into-deployment.md).
+- An **Application** (`application` items) is the first-class per-consumer object — the product ([ADR-0020](decisions/0020-application-aggregate.md)). It owns a `name`, a **default `audience`** (the token `aud` for tokens minted through it), a **role catalogue**, a **protected-resource registry**, and the users **assigned** to it.
 - **OAuth clients are credentials under an application** (`applicationId`, required): a user-login (web) credential (`password`/`authorization_code`), a machine/runtime credential (`client_credentials`), a CI credential, etc. A credential carries its own grant types, redirect URIs, scopes, and `isConfidential`; the **role catalogue and default audience live on the application**, not the credential. A credential MAY carry an `audience` **override** (e.g. a product runtime reporting to `maestro-workspace`). Scope policy is per-credential; token rate limits and budgets are deployment-wide (`CONFIG.oauth.limits`) and evaluated on every token issuance.
 - The **role catalogue** — `roles: [{ key, name?, description? }]` — is the set of app-scoped roles that exist for the application. Catalogues are seed-bootstrapped (GitOps baseline) **and** runtime-editable through the management plane; the live DB is authoritative ([ADR-0019](decisions/0019-application-assignments-and-app-roles.md)).
 - The **protected-resource registry** — `resources: [<absolute URI>]` — is the set of RFC 8707 `resource` indicators the application's credentials may bind a token's `aud` to, e.g. the product's own MCP endpoint ([ADR-0009](decisions/0009-remote-authenticated-mcp-service.md) §5). Scoping it to the application is what lets a product other than identity-service sit behind this authorization server while keeping one product's credential from minting a token another product's resource server would accept. Seed-bootstrapped and runtime-editable, same as the catalogue.
@@ -79,9 +79,9 @@ flowchart LR
 ## Deployment
 
 - The service runs as a stateless container driven entirely by environment variables (`service/.env.example` documents all knobs).
-- MongoDB is the only persistent dependency. `docker/compose.yaml` paired with the dev/prod overlays (`docker/compose.dev.yaml`, `docker/compose.prod.yaml`) provisions Mongo and the service for local development and the deployment workflow.
-- RSA signing keys are stored in the `key_store` collection. Key rotation utilities mint new keys, demote the previous key to `inactive`, and expose the public JWKS at `/.well-known/jwks.json` for verifiers.
-- A scheduled nightly `mongodump` ships an **encrypted** snapshot off-host for point-in-time recovery (`docker/backup.sh`); seed-as-code (ADR-0006) remains the from-git definition floor. See the [deployment guide](../guides/deployment.md).
+- One DynamoDB table is the only persistent dependency ([ADR-0023](decisions/0023-the-store-is-dynamodb.md), maestro ADR-0018): every item keyed `pk`/`sk` under `realm#<kind>` (the realm's own) or `ws#<workspace>#<kind>` (maestro's record), two general indexes, a sparse `pending` index for the relay, TTL on `expires_at`. Every act is one `TransactWriteItems`; uniqueness is a conditional put or a `unique` item in the same transaction. The Terraform module makes the table and grants each function's role; no database credential exists. `docker/compose.yaml` with the dev/prod overlays runs DynamoDB Local, makes the table from the schema in code, and the service, for local development.
+- RSA signing keys are stored as `key_store` items. Key rotation utilities mint new keys, demote the previous key to `inactive` in one transaction, and expose the public JWKS at `/.well-known/jwks.json` for verifiers.
+- A scheduled backup Lambda pages the whole table to S3 as gzipped canonical JSON lines (optionally encrypted); point-in-time recovery on the table is the second line; seed-as-code (ADR-0006) remains the from-git definition floor. See the [deployment guide](../guides/deployment.md).
 
 ## OAuth 2.0 Architecture Highlights
 
@@ -115,11 +115,11 @@ The plane reuses the **idempotent service layer** the seed loader already uses, 
 re-seed converge on the same state. Admin principals authenticate as ordinary `client_credentials`
 clients whose token carries an `admin` scope (or a granular `admin:<area>` scope for least-privilege
 agents), verified against this service's **own** JWKS (`service/src/core/admin-auth.ts`). Every mutation
-is written to the `audit_logs` collection. This is the admin-auth layer whose **absence** ADR-0003 cited
+is written as `audit_log` items. This is the admin-auth layer whose **absence** ADR-0003 cited
 as the reason to keep provisioning off the wire — built first, then the management surface exposed over it.
 
 Seed-as-code (ADR-0003/0006) is retained but **demoted** to the bootstrap and disaster-recovery floor;
-nightly encrypted off-host `mongodump` backups provide point-in-time recovery of runtime state (issued
+the nightly backup to S3 and the table's point-in-time recovery provide recovery of runtime state (issued
 tokens, authorizations, lockouts, key history, audit) that re-seeding from git cannot restore — see the
 [deployment guide](../guides/deployment.md).
 

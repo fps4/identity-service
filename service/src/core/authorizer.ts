@@ -29,16 +29,9 @@ export function createAuthorizer(deps: AuthorizerDependencies): Authorizer {
 
     deps.logger?.info?.({ client: input.clientMeta }, 'auth request received');
 
-    const connection = await deps.getMasterConnection();
-    const { Session } = deps.makeModels(connection);
-
-    if (typeof Session.init === 'function') {
-      await Session.init();
-    }
-
     const sessionId = uuid();
     const context = buildSessionContext(input.clientMeta);
-    await Session.create({
+    await deps.store.sessions.create({
       _id: sessionId,
       visitorId,
       status: 'active',
@@ -74,28 +67,26 @@ export function createAuthorizer(deps: AuthorizerDependencies): Authorizer {
       throw new InvalidInputError('sessionId is required');
     }
 
-    const connection = await deps.getMasterConnection();
-    const { Session } = deps.makeModels(connection);
-
-    const session = await Session.findById(input.sessionId).exec();
+    const session = await deps.store.sessions.get(input.sessionId);
     if (!session) {
       throw new SessionNotFoundError(input.sessionId);
     }
 
     let modified = false;
+    const changes: { contactId?: string; context?: Record<string, unknown> } = {};
     if (input.contactId) {
-      (session as any).contactId = input.contactId;
+      changes.contactId = input.contactId;
       modified = true;
     }
 
     if (input.cookies && typeof input.cookies === 'object') {
-      const context = ((session as any).context ?? {}) as Record<string, unknown>;
+      const context = { ...(session.context ?? {}) } as Record<string, unknown>;
       for (const [key, value] of Object.entries(input.cookies)) {
         if (key === 'session_id' || value == null) continue;
         context[key] = String(value);
         modified = true;
       }
-      (session as any).context = context;
+      changes.context = context;
     }
 
     if (!modified) {
@@ -103,17 +94,19 @@ export function createAuthorizer(deps: AuthorizerDependencies): Authorizer {
     }
 
     const updatedAt = now();
-    (session as any).updatedAt = updatedAt;
-    await session.save();
+    const updated = await deps.store.sessions.update(input.sessionId, { ...changes, updatedAt });
+    if (!updated) {
+      throw new SessionNotFoundError(input.sessionId);
+    }
 
     deps.logger?.info?.({ sessionId: input.sessionId }, 'session updated');
 
     return {
       sessionId: input.sessionId,
       updated: {
-        contactId: (session as any).contactId ?? null,
-        context: ((session as any).context ?? null) as Record<string, unknown> | null,
-        updatedAt: (session as any).updatedAt as Date
+        contactId: updated.contactId ?? null,
+        context: (updated.context ?? null) as Record<string, unknown> | null,
+        updatedAt: updated.updatedAt as Date
       }
     };
   }

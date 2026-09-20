@@ -3,19 +3,18 @@
  * outbox — the entry point `scripts/bundle.mjs` bundles and the Terraform module deploys on a schedule,
  * beside the service and the backup. The environment carries the archive bucket and the FIFO topic the
  * spine's Terraform module outputs (`ARCHIVE_BUCKET`, `ARCHIVE_PREFIX`, `EVENTS_TOPIC_ARN`) plus this
- * service's own MongoDB connection (`MONGO_URI`, `MONGO_DB_NAME`); the service itself runs with
- * `RECORD_SINK=off` there. One connection per container, made on first use. Each run logs one line in
- * CloudWatch's embedded metric format (`maestro/spine`: Archived, Published, Refused).
+ * service's own table (`TABLE_NAME`, `MAESTRO_WORKSPACE_ID`); the service itself runs with
+ * `RECORD_SINK=off` there. No credential: the function's role is granted the table. Each run logs one
+ * line in CloudWatch's embedded metric format (`maestro/spine`: Archived, Published, Refused).
  */
 import { relayHandler } from '@fps4/maestro-spine';
-import { getMasterConnection } from '../utils/db.js';
-import { makeModels } from '../models/index.js';
-import { MongoOutboxSource, RECORD_TYPES } from '../record/index.js';
+import { getStore } from '../db/index.js';
+import { DynamoOutboxSource, RECORD_TYPES } from '../record/index.js';
 
-let source: MongoOutboxSource | undefined;
+let source: DynamoOutboxSource | undefined;
 
-function connect(): MongoOutboxSource {
-  source ??= new MongoOutboxSource(async () => makeModels(await getMasterConnection()));
+function connect(): DynamoOutboxSource {
+  source ??= new DynamoOutboxSource(async () => getStore());
   return source;
 }
 

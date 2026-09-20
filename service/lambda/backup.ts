@@ -1,45 +1,45 @@
 /**
- * The scheduled backup as a Lambda (maestro M1, ADR-0008's job on S3). The live database is the system
- * of record; this writes a point-in-time copy of every collection — users, applications, credentials,
- * assignments, issued tokens, lockouts, the signing-key history, the audit log — to S3 under
- * backups/<yyyy-mm-dd>/, one gzipped file of canonical Extended JSON lines per collection plus a
- * manifest. docker/backup.sh does the same with mongodump inside the mongo container; a Lambda has no
- * mongodump, so this speaks the driver and writes a format mongoimport reads back:
+ * The scheduled backup as a Lambda (maestro M1, ADR-0008's job on S3; ADR-0023). The live table is the
+ * system of record; this writes a point-in-time copy of every item — users, applications, credentials,
+ * assignments, issued tokens, lockouts, the signing-key history, the audit log, the record's outbox and
+ * registry — to S3 under backups/<yyyy-mm-dd>/, as gzipped canonical JSON lines, one file per item
+ * `kind`, plus a manifest. Point-in-time recovery, which the module turns on, is the second line: this
+ * copy is what survives the table itself, and what an operator reads without DynamoDB.
  *
- *   mongoimport --uri "$MONGO_URI/$MONGO_DB_NAME" --collection <name> --drop --file <name>.jsonl
+ * A line is the item exactly as the table holds it, keys and index attributes included, as JSON with
+ * its keys sorted — so a restore is a `PutItem` per line and two backups of the same item are the same
+ * bytes. Numbers are DynamoDB numbers (`wrapNumbers`), written as JSON numbers; nothing this service
+ * stores exceeds a double. Signing keys are stored encrypted under OAUTH_KEY_PASSPHRASE and are copied
+ * as stored: a restore needs the same passphrase, not this one.
  *
- * Canonical Extended JSON (relaxed=false, values not promoted) keeps every BSON type as it was — an
- * Int32 stays an Int32, a Long a Long — so a restore is byte-for-byte the same documents. Signing keys
- * are stored encrypted under OAUTH_KEY_PASSPHRASE and are copied as stored: a restore needs the same
- * passphrase, not this one.
- *
- * Environment (set by the Terraform module): MONGO_URI (a secret), MONGO_DB_NAME, BACKUP_BUCKET,
- * BACKUP_PREFIX (default `backups`), and optionally BACKUP_PASSPHRASE (a secret) — when present each
- * object is additionally encrypted with AES-256-GCM (backup-crypto.ts) and named `.enc`. Errors
- * propagate: a failed run is a Lambda error, which the module's alarm reports.
+ * Environment (set by the Terraform module): TABLE_NAME, BACKUP_BUCKET, BACKUP_PREFIX (default
+ * `backups`), and optionally BACKUP_PASSPHRASE (a secret) — when present each object is additionally
+ * encrypted with AES-256-GCM (backup-crypto.ts) and named `.enc`. The function's role may Scan and
+ * DescribeTable the table and put under the prefix; nothing else. Errors propagate: a failed run is a
+ * Lambda error, which the module's alarm reports.
  */
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import mongoose from 'mongoose';
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DescribeTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { encryptBackup } from './backup-crypto.js';
 
-const { EJSON } = mongoose.mongo.BSON;
-
-interface CollectionEntry {
-  name: string;
-  documents: number;
+interface KindEntry {
+  kind: string;
+  items: number;
   key: string;
   bytes: number;
   sha256: string;
 }
 
 export interface BackupManifest {
-  database: string;
+  table: string;
   takenAt: string;
-  format: 'ejson-canonical-jsonl+gzip';
+  format: 'dynamodb-items-jsonl+gzip';
   encryption: 'aes-256-gcm/scrypt' | null;
-  collections: CollectionEntry[];
+  itemCount: number;
+  kinds: KindEntry[];
 }
 
 function required(name: string): string {
@@ -48,9 +48,23 @@ function required(name: string): string {
   return value;
 }
 
+/** JSON with the keys of every object sorted, so the same item is always the same line. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortKeys(value));
+}
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as object).sort()) out[key] = sortKeys((value as Record<string, unknown>)[key]);
+    return out;
+  }
+  return value;
+}
+
 export async function handler(): Promise<BackupManifest> {
-  const mongoUri = required('MONGO_URI');
-  const dbName = process.env.MONGO_DB_NAME || 'identity-service';
+  const table = required('TABLE_NAME');
   const bucket = required('BACKUP_BUCKET');
   const prefix = (process.env.BACKUP_PREFIX || 'backups').replace(/\/+$/, '');
   const passphrase = process.env.BACKUP_PASSPHRASE || '';
@@ -58,53 +72,57 @@ export async function handler(): Promise<BackupManifest> {
   const takenAt = new Date();
   const day = takenAt.toISOString().slice(0, 10);
   const s3 = new S3Client({});
-  const connection = await mongoose.createConnection(`${mongoUri}/${dbName}`, { maxPoolSize: 2, autoIndex: false }).asPromise();
+  const dynamo = new DynamoDBClient({ ...(process.env.DYNAMODB_ENDPOINT ? { endpoint: process.env.DYNAMODB_ENDPOINT } : {}) });
+  const doc = DynamoDBDocumentClient.from(dynamo, { unmarshallOptions: { wrapNumbers: false } });
 
-  try {
-    const db = connection.db;
-    if (!db) throw new Error('no database handle after connect');
-    const names = (await db.listCollections({}, { nameOnly: true }).toArray())
-      .map((c) => c.name)
-      .filter((n) => !n.startsWith('system.'))
-      .sort();
+  await dynamo.send(new DescribeTableCommand({ TableName: table }));
 
-    const collections: CollectionEntry[] = [];
-    for (const name of names) {
-      const lines: string[] = [];
-      const cursor = db.collection(name).find({}, { promoteValues: false, promoteLongs: false });
-      for await (const doc of cursor) lines.push(EJSON.stringify(doc, { relaxed: false }));
-      const plain = gzipSync(Buffer.from(lines.join('\n') + (lines.length ? '\n' : ''), 'utf8'));
-      const body = passphrase ? encryptBackup(plain, passphrase) : plain;
-      const key = `${prefix}/${day}/${name}.jsonl.gz${passphrase ? '.enc' : ''}`;
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: key,
-          Body: body,
-          ContentType: passphrase ? 'application/octet-stream' : 'application/gzip'
-        })
-      );
-      collections.push({ name, documents: lines.length, key, bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') });
+  // The whole table, paged, grouped by kind in memory: an identity realm is small, and the module sizes
+  // the function for it (backup_memory_mb).
+  const byKind = new Map<string, string[]>();
+  let startKey: Record<string, unknown> | undefined;
+  do {
+    const page = await doc.send(new ScanCommand({ TableName: table, ConsistentRead: true, ...(startKey ? { ExclusiveStartKey: startKey } : {}) }));
+    for (const item of page.Items ?? []) {
+      const kind = typeof item.kind === 'string' ? item.kind : 'unknown';
+      (byKind.get(kind) ?? byKind.set(kind, []).get(kind)!).push(canonicalJson(item));
     }
+    startKey = page.LastEvaluatedKey;
+  } while (startKey);
 
-    const manifest: BackupManifest = {
-      database: dbName,
-      takenAt: takenAt.toISOString(),
-      format: 'ejson-canonical-jsonl+gzip',
-      encryption: passphrase ? 'aes-256-gcm/scrypt' : null,
-      collections
-    };
+  const kinds: KindEntry[] = [];
+  for (const kind of [...byKind.keys()].sort()) {
+    const lines = byKind.get(kind)!;
+    const plain = gzipSync(Buffer.from(lines.join('\n') + '\n', 'utf8'));
+    const body = passphrase ? encryptBackup(plain, passphrase) : plain;
+    const key = `${prefix}/${day}/${kind}.jsonl.gz${passphrase ? '.enc' : ''}`;
     await s3.send(
       new PutObjectCommand({
         Bucket: bucket,
-        Key: `${prefix}/${day}/manifest.json`,
-        Body: JSON.stringify(manifest, null, 2),
-        ContentType: 'application/json'
+        Key: key,
+        Body: body,
+        ContentType: passphrase ? 'application/octet-stream' : 'application/gzip'
       })
     );
-    console.log(JSON.stringify({ msg: 'backup written', database: dbName, day, collections: collections.length, documents: collections.reduce((n, c) => n + c.documents, 0) }));
-    return manifest;
-  } finally {
-    await connection.close();
+    kinds.push({ kind, items: lines.length, key, bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') });
   }
+
+  const manifest: BackupManifest = {
+    table,
+    takenAt: takenAt.toISOString(),
+    format: 'dynamodb-items-jsonl+gzip',
+    encryption: passphrase ? 'aes-256-gcm/scrypt' : null,
+    itemCount: kinds.reduce((n, k) => n + k.items, 0),
+    kinds
+  };
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: `${prefix}/${day}/manifest.json`,
+      Body: JSON.stringify(manifest, null, 2),
+      ContentType: 'application/json'
+    })
+  );
+  console.log(JSON.stringify({ msg: 'backup written', table, day, kinds: kinds.length, items: manifest.itemCount }));
+  return manifest;
 }

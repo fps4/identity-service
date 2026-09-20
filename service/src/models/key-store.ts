@@ -1,6 +1,8 @@
-import mongoose, { Connection, Document, Model } from 'mongoose';
-
-export interface KeyStoreDocument extends Document {
+/**
+ * An RSA signing key (RS256). The private key is stored encrypted under OAUTH_KEY_PASSPHRASE
+ * (`utils/key-store.ts`). `kid` is the key: `realm#key_store` / `<kid>` (ADR-0023).
+ */
+export interface KeyStoreDocument {
   kid: string;
   privateKey: string; // PEM, encrypted if configured
   publicKey: string; // PEM
@@ -9,22 +11,3 @@ export interface KeyStoreDocument extends Document {
   createdAt?: Date;
   rotatedAt?: Date | null;
 }
-
-const keyStoreSchema = new mongoose.Schema<KeyStoreDocument>({
-  kid: { type: String, required: true, unique: true },
-  privateKey: { type: String, required: true },
-  publicKey: { type: String, required: true },
-  algorithm: { type: String, enum: ['RS256'], default: 'RS256' },
-  status: { type: String, enum: ['active', 'inactive', 'retired'], default: 'active', index: true },
-  createdAt: { type: Date, default: Date.now },
-  rotatedAt: { type: Date, default: null }
-});
-
-export function getKeyStoreModel(connection: Connection): Model<KeyStoreDocument> {
-  return (connection.models.KeyStore as Model<KeyStoreDocument>) ??
-    connection.model<KeyStoreDocument>('KeyStore', keyStoreSchema, 'key_store');
-}
-
-export const KeyStore: Model<KeyStoreDocument> =
-  (mongoose.models.KeyStore as Model<KeyStoreDocument>) ??
-  mongoose.model<KeyStoreDocument>('KeyStore', keyStoreSchema, 'key_store');

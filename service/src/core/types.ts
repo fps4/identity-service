@@ -1,26 +1,8 @@
-import type { Connection } from 'mongoose';
+import type { Store } from '../db/index.js';
 
 export interface LoggerLike {
   info?: (...args: any[]) => void;
   error?: (...args: any[]) => void;
-}
-
-export interface SessionDocumentLike {
-  contactId?: string | null;
-  context?: Record<string, unknown> | null;
-  updatedAt: Date;
-  save(): Promise<void>;
-}
-
-export interface SessionModelLike {
-  init?: () => Promise<unknown>;
-  create: (...args: any[]) => Promise<any>;
-  findById(id: string): { exec(): Promise<SessionDocumentLike | null> };
-}
-
-export interface AuthorizerModels {
-  Session: SessionModelLike;
-  [key: string]: unknown;
 }
 
 export interface ClientMeta {
@@ -55,8 +37,8 @@ export interface SignSessionJwtArgs {
 export type SignSessionJwtFn = (args: SignSessionJwtArgs) => Promise<{ token: string; exp: number }>;
 
 export interface AuthorizerDependencies {
-  getMasterConnection: () => Promise<Connection>;
-  makeModels: (connection: Connection) => AuthorizerModels;
+  /** The sessions live in the table (ADR-0023). */
+  store: Pick<Store, 'sessions'>;
   signJwt: SignSessionJwtFn;
   sessionTtlMinutes: number;
   logger?: LoggerLike;

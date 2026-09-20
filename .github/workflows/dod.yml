@@ -32,6 +32,16 @@ jobs:
     defaults:
       run:
         working-directory: service
+    # The tests run against DynamoDB Local (ADR-0023): the same image the compose loop runs, in memory,
+    # each test file on a table of its own (service/tests/helpers/store.ts).
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:3.3.1
+        ports:
+          - 8000:8000
+    env:
+      DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+      AWS_REGION: local
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

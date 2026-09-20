@@ -3,13 +3,17 @@
  * credential, backfill one for a record that predates the registry, and resolve ids to kinds for the
  * spine's append rules.
  *
- * Minting is idempotent and safe under a race: the `principals` row is keyed by what it binds to, and
- * the `principalId` on the user/credential is set only where it is still absent, so two requests that
- * both find an id missing converge on one. A record's principal id, once set, never changes.
+ * Minting is idempotent and safe under a race: the registry row's binding is unique by what it binds
+ * to, and the `principalId` on the user/credential is set only where it is still absent, so two requests
+ * that both find an id missing converge on one. A record's principal id, once set, never changes.
+ *
+ * A backfill is its own transaction, committed before the act that needed it: DynamoDB refuses two
+ * writes to one item in a transaction, and the act may well write the same user again (a deletion, a
+ * status change). It mints only — it emits no event — so an act that fails after it leaves nothing
+ * wrong behind: the id is the record's, backfilled on first use as ADR-0022 says.
  */
-import type { ClientSession } from 'mongoose';
-import type { ModelsBucket } from '../oauth/types.js';
-import type { PrincipalKind, PrincipalStatus } from '../models/principal.js';
+import type { PrincipalDocument, PrincipalKind, PrincipalStatus } from '../models/index.js';
+import { ConditionFailed, Transaction, type Store } from '../db/index.js';
 import { mintPrincipalId } from './ids.js';
 
 export interface KnownPrincipal {
@@ -33,6 +37,11 @@ export function principalStatusOf(user: { status?: string }): PrincipalStatus {
   return user.status === 'disabled' ? 'suspended' : 'active';
 }
 
+/** The registry row for a new principal — what an act registers in its own transaction. */
+export function principalRow(id: string, kind: PrincipalKind, status: PrincipalStatus, subjectType: 'user' | 'client', subjectId: string, now: Date): PrincipalDocument {
+  return { _id: id, kind, status, subjectType, subjectId, createdAt: now, updatedAt: now };
+}
+
 /**
  * The user's principal, minted and persisted if the record has none yet (the lazy migration for a pool
  * that predates ADR-0022). The backfill mints only — it emits no `PrincipalRegistered`, because the
@@ -40,19 +49,14 @@ export function principalStatusOf(user: { status?: string }): PrincipalStatus {
  * endpoint is how a consumer reconciles principals the archive never saw born.
  */
 export async function ensureUserPrincipal(
-  models: ModelsBucket,
-  user: { _id: string; principalId?: string; status?: string },
-  session?: ClientSession
+  store: Store,
+  user: { _id: string; principalId?: string; status?: string }
 ): Promise<KnownPrincipal> {
   if (user.principalId) return { id: user.principalId, kind: 'human' };
-  const id = await bind(models, 'user', user._id, 'human', principalStatusOf(user), session);
-  await models.User.updateOne(
-    { _id: user._id, principalId: { $exists: false } },
-    { $set: { principalId: id } },
-    { session }
-  ).exec();
-  // Under a race the other writer's id is the one on the record; the registry row agrees by its key.
-  const fresh = await models.User.findById(user._id, null, { session }).select('principalId').lean().exec() as { principalId?: string } | null;
+  const id = await bind(store, 'user', user._id, 'human', principalStatusOf(user));
+  await store.users.setPrincipalIdIfAbsent(user._id, id);
+  // Under a race the other writer's id is the one on the record; the registry row agrees by its binding.
+  const fresh = await store.users.get(user._id);
   return { id: fresh?.principalId ?? id, kind: 'human' };
 }
 
@@ -61,71 +65,58 @@ export async function ensureUserPrincipal(
  * not a principal (a user-login credential). Same backfill rule as for users.
  */
 export async function ensureClientPrincipal(
-  models: ModelsBucket,
-  client: { _id: string; principalId?: string; grantTypes?: string[]; claims?: Record<string, unknown> },
-  session?: ClientSession
+  store: Store,
+  client: { _id: string; principalId?: string; grantTypes?: string[]; claims?: Record<string, unknown> }
 ): Promise<KnownPrincipal | null> {
   const kind = clientPrincipalKind(client);
   if (!kind) return null;
   if (client.principalId) return { id: client.principalId, kind };
-  const id = await bind(models, 'client', client._id, kind, 'active', session);
-  await models.OAuthClient.updateOne(
-    { _id: client._id, principalId: { $exists: false } },
-    { $set: { principalId: id } },
-    { session }
-  ).exec();
-  const fresh = await models.OAuthClient.findById(client._id, null, { session }).select('principalId').lean().exec() as { principalId?: string } | null;
+  const id = await bind(store, 'client', client._id, kind, 'active');
+  await store.clients.setPrincipalIdIfAbsent(client._id, id);
+  const fresh = await store.clients.get(client._id);
   return { id: fresh?.principalId ?? id, kind };
 }
 
-/** Insert the registry row for a subject, or return the one a concurrent writer already inserted. */
+/** Register the row for a subject, or return the one a concurrent writer already registered. */
 async function bind(
-  models: ModelsBucket,
+  store: Store,
   subjectType: 'user' | 'client',
   subjectId: string,
   kind: PrincipalKind,
-  status: PrincipalStatus,
-  session?: ClientSession
+  status: PrincipalStatus
 ): Promise<string> {
-  const existing = await models.Principal.findOne({ subjectType, subjectId }, null, { session }).lean().exec() as { _id: string } | null;
+  const existing = await store.principals.getBySubject(subjectType, subjectId);
   if (existing) return existing._id;
   const id = mintPrincipalId(kind);
-  const now = new Date();
+  const tx = new Transaction();
+  store.principals.register(tx, principalRow(id, kind, status, subjectType, subjectId, new Date()));
   try {
-    await models.Principal.create([{ _id: id, kind, status, subjectType, subjectId, createdAt: now, updatedAt: now }], { session });
+    await store.commit(tx);
     return id;
   } catch (err) {
-    if ((err as { code?: number }).code === 11000) {
-      const raced = await models.Principal.findOne({ subjectType, subjectId }, null, { session }).lean().exec() as { _id: string } | null;
+    if (err instanceof ConditionFailed) {
+      const raced = await store.principals.getBySubject(subjectType, subjectId);
       if (raced) return raced._id;
     }
     throw err;
   }
 }
 
-/** Mirror a subject's status change onto its registry row. The row is never deleted (see the model). */
-export async function setPrincipalStatus(
-  models: ModelsBucket,
-  principalId: string,
-  status: PrincipalStatus,
-  session?: ClientSession
-): Promise<void> {
-  await models.Principal.updateOne({ _id: principalId }, { $set: { status, updatedAt: new Date() } }, { session }).exec();
+/** Mirror a subject's status change onto its registry row, inside the act's transaction. The row is never deleted. */
+export function setPrincipalStatus(store: Store, tx: Transaction, principalId: string, status: PrincipalStatus, now = new Date()): void {
+  store.principals.setStatus(tx, principalId, status, now);
 }
 
 /**
- * The kinds of a set of principal ids, from the registry. What the spine's `assertEvent` resolver reads:
- * an id the registry does not know is unresolvable and the event naming it is refused.
+ * The kinds of a set of principal ids, from the registry — and from the transaction in hand, for a
+ * principal registered in the same act as the event that names it. What the spine's `assertEvent`
+ * resolver reads: an id the registry does not know is unresolvable and the event naming it is refused.
  */
-export async function loadKinds(
-  models: ModelsBucket,
-  ids: Iterable<string>,
-  session?: ClientSession
-): Promise<Map<string, { kind: PrincipalKind }>> {
+export async function loadKinds(store: Store, ids: Iterable<string>, tx?: Transaction): Promise<Map<string, { kind: PrincipalKind }>> {
   const unique = [...new Set(ids)].filter(Boolean);
   const out = new Map<string, { kind: PrincipalKind }>();
   if (unique.length === 0) return out;
-  const rows = await models.Principal.find({ _id: { $in: unique } }, null, { session }).select('_id kind').lean().exec() as Array<{ _id: string; kind: PrincipalKind }>;
-  for (const row of rows) out.set(row._id, { kind: row.kind });
+  for (const row of await store.principals.getMany(unique)) out.set(row._id, { kind: row.kind });
+  if (tx) for (const row of store.principals.stagedIn(tx)) if (unique.includes(row._id)) out.set(row._id, { kind: row.kind });
   return out;
 }

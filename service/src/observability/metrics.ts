@@ -1,6 +1,6 @@
 // Golden-signal collection for this service's own runtime health. An Express middleware times every
 // request into a rolling window, and `snapshot()` rolls that window up into request rate, error rate,
-// latency percentiles and a coarse error map, plus liveness derived from the Mongo connection. No
+// latency percentiles and a coarse error map, plus liveness derived from the table's reachability. No
 // content and no per-request retention beyond the window — just bounded counters and durations.
 //
 // This used to speak maestro's heartbeat/telemetry wire contract (US-0070/US-0076) and shipped the
@@ -27,7 +27,7 @@ export interface MetricsRecorderOptions {
   maxSamples?: number;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
-  /** Whether the critical dependency (Mongo) is currently usable. Drives `down` status. */
+  /** Whether the critical dependency (the table) is currently usable. Drives `down` status. */
   dependencyHealthy?: () => boolean;
   /** Injectable process-uptime seconds (tests). Defaults to `process.uptime`. */
   uptimeSeconds?: () => number;

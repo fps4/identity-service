@@ -36,87 +36,26 @@ vi.mock('../src/utils/key-store.js', () => ({
   rotateSigningKey: vi.fn()
 }));
 
-// --- A minimal in-memory mongoose-ish model layer ---------------------------------------------
+// --- A table of the test's own on DynamoDB Local -----------------------------------------------
 
-const attachSave = <T extends object>(doc: T): T & { save: () => Promise<void> } => {
-  if (typeof (doc as any).save !== 'function') {
-    Object.defineProperty(doc, 'save', { value: async () => {}, enumerable: false, configurable: true });
-  }
-  return doc as any;
-};
-
-const matches = (item: any, query: any): boolean =>
-  Object.entries(query).every(([key, value]) => item[key] === value);
-
-// `resolveUserBySubject` (used by the refresh grant) queries with `$or` over `_id` and the linked
-// identities, which the flat matcher above cannot express — so the User mock gets its own.
-function userMatches(u: any, query: any): boolean {
-  return Object.entries(query).every(([key, value]) => {
-    if (key === '$or') return (value as any[]).some((sub) => userMatches(u, sub));
-    if (key === 'identities.subject') return (u.identities ?? []).some((i: any) => i.subject === value);
-    return u[key] === value;
-  });
-}
-
-interface Store {
-  clients: any[];
-  applications: any[];
-  authorizations: any[];
-  tokens: any[];
-  sessions: any[];
-  users: any[];
-  assignments: any[];
-}
-
-const makeStore = (): Store => ({
-  clients: [], applications: [], authorizations: [], tokens: [], sessions: [], users: [], assignments: []
-});
-
-const assignmentMatches = (a: any, q: any): boolean =>
-  a.applicationId === q.applicationId && a.status === q.status && (a.userId === undefined || a.userId === q.userId);
+import type { Store } from '../src/db/index.js';
+import { testStore, type TestStore } from './helpers/store.js';
+import { fixtures } from './helpers/fixtures.js';
 
 function makeDeps(store: Store, now: () => Date) {
-  return {
-    getMasterConnection: async () => ({}) as any,
-    now,
-    makeModels: () => ({
-      OAuthClient: { findById: (id: string) => ({ lean: () => ({ exec: async () => store.clients.find((c) => c._id === id) ?? null }) }) },
-      Application: { findById: (id: string) => ({ lean: () => ({ exec: async () => store.applications.find((a) => a._id === id) ?? null }) }) },
-      OAuthAuthorization: {
-        create: async (doc: any) => { store.authorizations.push(doc); return doc; },
-        findOne: (q: any) => ({ exec: async () => { const a = store.authorizations.find((x) => matches(x, q)); return a ? attachSave(a) : null; } })
-      },
-      OAuthToken: {
-        create: async (doc: any) => { store.tokens.push(doc); return doc; },
-        findOne: (q: any) => ({ exec: async () => { const t = store.tokens.find((x) => matches(x, q)); return t ? attachSave(t) : null; } })
-      },
-      Session: {
-        create: async (doc: any) => { store.sessions.push(doc); return doc; },
-        findById: (id: string) => ({ exec: async () => { const s = store.sessions.find((x) => x._id === id); return s ? attachSave(s) : null; } })
-      },
-      User: {
-        findOne: (q: any) => ({
-          exec: async () => { const u = store.users.find((x) => userMatches(x, q)); return u ? attachSave(u) : null; },
-          lean: () => ({ exec: async () => store.users.find((x) => userMatches(x, q)) ?? null })
-        }),
-        create: async (doc: any) => { store.users.push(doc); return attachSave(doc); }
-      },
-      Assignment: {
-        findOne: (q: any) => ({ lean: () => ({ exec: async () => store.assignments.find((a) => assignmentMatches(a, q)) ?? null }) })
-      },
-      KeyStore: {} as any
-    }) as any,
-    logger: { info: () => {}, error: () => {} } as any
-  };
+  return { store, now, logger: { info: () => {}, error: () => {} } as any };
 }
+
+/** The single-use code a completed login redirects the consumer back with. */
+const codeOf = (redirectTo: string) => new URL(redirectTo).searchParams.get('code')!;
 
 const pkceChallenge = (verifier: string) => createHash('sha256').update(verifier).digest('base64url');
 
 const PASSWORD = 'correct-horse-battery-staple';
 
-function seedClient(store: Store) {
-  store.applications.push({ _id: 'app-admin', name: 'Admin', audience: 'identity-console', roles: [] });
-  store.clients.push({
+async function seedClient(store: Store, resources: string[] = []) {
+  await fixtures.application(store, { _id: 'app-admin', name: 'Admin', audience: 'identity-console', roles: [], resources });
+  await fixtures.client(store, {
     _id: 'client-mcp',
     name: 'MCP client',
     applicationId: 'app-admin',
@@ -126,7 +65,7 @@ function seedClient(store: Store) {
     scopes: [],
     isConfidential: false
   });
-  store.users.push({
+  await fixtures.user(store, {
     _id: 'user-1',
     email: 'operator@fps4.test',
     emailVerified: true,
@@ -135,7 +74,7 @@ function seedClient(store: Store) {
     failedAttempts: 0,
     lockedUntil: null
   });
-  store.assignments.push({ _id: 'assign-1', applicationId: 'app-admin', userId: 'user-1', roles: ['platform_admin'], status: 'active' });
+  await fixtures.assignment(store, { applicationId: 'app-admin', userId: 'user-1', roles: ['platform_admin'], status: 'active' });
 }
 
 const authorizeArgs = (verifier: string, extra: Record<string, unknown> = {}) => ({
@@ -147,22 +86,27 @@ const authorizeArgs = (verifier: string, extra: Record<string, unknown> = {}) =>
 });
 
 describe('First-party interactive login (RQ-0002 over authorization_code)', () => {
+  let db: TestStore;
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
   const now = () => new Date('2026-08-02T12:00:00.000Z');
 
-  beforeEach(() => {
-    store = makeStore();
-    seedClient(store);
-    server = createOAuthServer(makeDeps(store, now) as any);
+  beforeEach(async () => {
+    db = await testStore();
+    store = db.store;
+    await seedClient(store);
+    server = createOAuthServer(makeDeps(store, now));
   });
+  afterEach(() => db.drop());
 
   it('serves a login form instead of an upstream redirect when no Google app is configured', async () => {
     const result = await server.startAuthorization(authorizeArgs('verifier-abc-123'));
 
     expect(result.mode).toBe('login');
     expect(result.mode === 'login' && result.loginToken).toBeTruthy();
-    expect(store.authorizations[0].idp).toBe('local');
+    const record = await store.authorizations.getByLoginToken(result.mode === 'login' ? result.loginToken : '');
+    expect(record).toMatchObject({ idp: 'local', status: 'pending', clientId: 'client-mcp' });
+    expect(record!.expiresAt).toEqual(new Date(now().getTime() + CONFIG.oauth.authorizationTtlSec * 1000));
   });
 
   it('refuses the browser leg when the local IdP is disabled and there is no Google app', async () => {
@@ -188,7 +132,7 @@ describe('First-party interactive login (RQ-0002 over authorization_code)', () =
     expect(url.searchParams.get('state')).toBe('consumer-state-xyz');
     expect(url.searchParams.get('code')).toBeTruthy();
 
-    const record = store.authorizations[0];
+    const record = (await store.authorizations.getByCode(url.searchParams.get('code')!))!;
     expect(record.status).toBe('authenticated');
     expect(record.sub).toBe('user-1'); // a local login's subject IS the user record id
     expect(record.loginToken).toBeUndefined(); // single-use
@@ -209,7 +153,7 @@ describe('First-party interactive login (RQ-0002 over authorization_code)', () =
 
     await expect(server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: 'wrong' }))
       .rejects.toBeInstanceOf(InvalidGrantError);
-    expect(store.users[0].failedAttempts).toBe(1);
+    expect((await store.users.get('user-1'))!.failedAttempts).toBe(1);
   });
 
   it('fails an unknown email identically to a wrong password (no user enumeration)', async () => {
@@ -257,20 +201,22 @@ describe('First-party interactive login (RQ-0002 over authorization_code)', () =
   it('refuses an expired authorization', async () => {
     const started = await server.startAuthorization(authorizeArgs('verifier-abc-123'));
     const loginToken = started.mode === 'login' ? started.loginToken : '';
-    store.authorizations[0].expiresAt = new Date('2026-08-02T11:00:00.000Z'); // before `now`
+    // The form is submitted after the authorization's lifetime has passed.
+    const later = createOAuthServer(makeDeps(store, () => new Date(now().getTime() + (CONFIG.oauth.authorizationTtlSec + 1) * 1000)));
 
-    await expect(server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD }))
+    await expect(later.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD }))
       .rejects.toBeInstanceOf(AccessDeniedError);
+    expect(await later.getLoginContext(loginToken)).toBeNull();
   });
 
   it('exchanges the code for a user token carrying the assignment roles', async () => {
     const verifier = 'verifier-abc-123';
     const started = await server.startAuthorization(authorizeArgs(verifier));
     const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const { redirectTo } = await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
 
     const token = await server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code: codeOf(redirectTo),
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback'
@@ -287,12 +233,12 @@ describe('First-party interactive login (RQ-0002 over authorization_code)', () =
     const verifier = 'verifier-abc-123';
     const started = await server.startAuthorization(authorizeArgs(verifier));
     const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const { redirectTo } = await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
 
-    store.users[0].status = 'disabled';
+    await store.users.update('user-1', { status: 'disabled' });
 
     await expect(server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code: codeOf(redirectTo),
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback'
@@ -304,31 +250,40 @@ describe('First-party interactive login (RQ-0002 over authorization_code)', () =
     const loginToken = started.mode === 'login' ? started.loginToken : '';
     await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
 
-    expect(store.users).toHaveLength(1);
-    expect(store.users[0].identities).toBeUndefined(); // no federated identity was linked
+    expect(await store.users.count()).toBe(1);
+    expect((await store.users.get('user-1'))!.identities).toEqual([]); // no federated identity was linked
   });
 });
 
 describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', () => {
+  let db: TestStore;
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
   const now = () => new Date('2026-08-02T12:00:00.000Z');
   const RESOURCE = CONFIG.mcp.resourceUrl;
 
-  beforeEach(() => {
-    store = makeStore();
-    seedClient(store);
-    server = createOAuthServer(makeDeps(store, now) as any);
+  beforeEach(async () => {
+    db = await testStore();
+    store = db.store;
+    await seedClient(store);
+    server = createOAuthServer(makeDeps(store, now));
   });
+  afterEach(() => db.drop());
+
+  /** Start, log in, and hand back the code the consumer receives. */
+  const login = async (verifier: string, resource?: string) => {
+    const started = await server.startAuthorization(authorizeArgs(verifier, resource ? { resource } : {}));
+    const loginToken = started.mode === 'login' ? started.loginToken : '';
+    const { redirectTo } = await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    return codeOf(redirectTo);
+  };
 
   it('binds the issued token to the requested MCP resource instead of the application audience', async () => {
     const verifier = 'verifier-abc-123';
-    const started = await server.startAuthorization(authorizeArgs(verifier, { resource: RESOURCE }));
-    const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const code = await login(verifier, RESOURCE);
 
     const token = await server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code,
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback',
@@ -346,12 +301,10 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
    */
   it('keeps the resource audience across a refresh', async () => {
     const verifier = 'verifier-abc-123';
-    const started = await server.startAuthorization(authorizeArgs(verifier, { resource: RESOURCE }));
-    const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const code = await login(verifier, RESOURCE);
 
     const first = await server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code,
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback',
@@ -366,12 +319,10 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
 
   it('keeps the binding across repeated refreshes, so a long session does not drift', async () => {
     const verifier = 'verifier-abc-123';
-    const started = await server.startAuthorization(authorizeArgs(verifier, { resource: RESOURCE }));
-    const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const code = await login(verifier, RESOURCE);
 
     let token = await server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code,
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback',
@@ -385,12 +336,10 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
 
   it('still falls back to the application audience when no resource was ever named', async () => {
     const verifier = 'verifier-abc-123';
-    const started = await server.startAuthorization(authorizeArgs(verifier));
-    const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const code = await login(verifier);
 
     const first = await server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code,
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback'
@@ -403,17 +352,15 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
   it('rejects an unrecognized resource at the authorization request, before any login prompt', async () => {
     await expect(server.startAuthorization(authorizeArgs('verifier-abc-123', { resource: 'https://evil.test/mcp' })))
       .rejects.toBeInstanceOf(InvalidTargetError);
-    expect(store.authorizations).toHaveLength(0); // nothing persisted
+    expect(await store.authorizations.count()).toBe(0); // nothing persisted
   });
 
   it('rejects an exchange that names a different resource than the authorization did', async () => {
     const verifier = 'verifier-abc-123';
-    const started = await server.startAuthorization(authorizeArgs(verifier, { resource: RESOURCE }));
-    const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const code = await login(verifier, RESOURCE);
 
     await expect(server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code,
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback',
@@ -423,12 +370,10 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
 
   it('rejects an exchange naming a resource when the authorization named none', async () => {
     const verifier = 'verifier-abc-123';
-    const started = await server.startAuthorization(authorizeArgs(verifier));
-    const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const code = await login(verifier);
 
     await expect(server.issueAuthorizationCodeToken({
-      code: store.authorizations[0].code,
+      code,
       codeVerifier: verifier,
       clientId: 'client-mcp',
       redirectUri: 'http://localhost:9876/callback',
@@ -445,27 +390,30 @@ describe('Audience-binding via RFC 8707 resource indicator (ADR-0009 Phase 2)', 
  * auth error.
  */
 describe('Per-application protected-resource registry (ADR-0009 Phase 2, ADR-0020)', () => {
+  let db: TestStore;
   let store: Store;
   let server: ReturnType<typeof createOAuthServer>;
   const now = () => new Date('2026-08-06T12:00:00.000Z');
   const COACH_RESOURCE = 'https://coach-mcp.fps4.nl/mcp';
 
-  beforeEach(() => {
-    store = makeStore();
-    seedClient(store);
+  beforeEach(async () => {
+    db = await testStore();
+    store = db.store;
     // The client's own application owns the resource it wants its token audience-bound to.
-    store.applications[0].resources = [COACH_RESOURCE];
-    server = createOAuthServer(makeDeps(store, now) as any);
+    await seedClient(store, [COACH_RESOURCE]);
+    server = createOAuthServer(makeDeps(store, now));
   });
+  afterEach(() => db.drop());
 
   const login = async (verifier: string, resource?: string) => {
     const started = await server.startAuthorization(authorizeArgs(verifier, resource ? { resource } : {}));
     const loginToken = started.mode === 'login' ? started.loginToken : '';
-    await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    const { redirectTo } = await server.completeLocalLogin({ loginToken, email: 'operator@fps4.test', password: PASSWORD });
+    return codeOf(redirectTo);
   };
 
-  const exchange = (verifier: string, resource?: string) => server.issueAuthorizationCodeToken({
-    code: store.authorizations[0].code,
+  const exchange = (code: string, verifier: string, resource?: string) => server.issueAuthorizationCodeToken({
+    code,
     codeVerifier: verifier,
     clientId: 'client-mcp',
     redirectUri: 'http://localhost:9876/callback',
@@ -474,16 +422,16 @@ describe('Per-application protected-resource registry (ADR-0009 Phase 2, ADR-002
 
   it("binds a user token to a resource the credential's own application declares", async () => {
     const verifier = 'verifier-abc-123';
-    await login(verifier, COACH_RESOURCE);
-    const token = await exchange(verifier, COACH_RESOURCE);
+    const code = await login(verifier, COACH_RESOURCE);
+    const token = await exchange(code, verifier, COACH_RESOURCE);
 
     expect(decodeJwt(token.accessToken).aud).toBe(COACH_RESOURCE);
   });
 
   it("keeps this service's own MCP resource acceptable alongside the application's", async () => {
     const verifier = 'verifier-abc-123';
-    await login(verifier, CONFIG.mcp.resourceUrl);
-    const token = await exchange(verifier, CONFIG.mcp.resourceUrl);
+    const code = await login(verifier, CONFIG.mcp.resourceUrl);
+    const token = await exchange(code, verifier, CONFIG.mcp.resourceUrl);
 
     expect(decodeJwt(token.accessToken).aud).toBe(CONFIG.mcp.resourceUrl);
   });
@@ -491,23 +439,23 @@ describe('Per-application protected-resource registry (ADR-0009 Phase 2, ADR-002
   it('refuses a resource that belongs to a DIFFERENT application', async () => {
     // A second product registers its own endpoint. This client's application must not be able to name
     // it, or one product's credential could mint a token another product's resource server accepts.
-    store.applications.push({ _id: 'app-other', name: 'Other', audience: 'other', roles: [], resources: ['https://other-mcp.fps4.nl/mcp'] });
+    await fixtures.application(store, { _id: 'app-other', name: 'Other', audience: 'other', roles: [], resources: ['https://other-mcp.fps4.nl/mcp'] });
 
     await expect(server.startAuthorization(authorizeArgs('verifier-abc-123', { resource: 'https://other-mcp.fps4.nl/mcp' })))
       .rejects.toBeInstanceOf(InvalidTargetError);
-    expect(store.authorizations).toHaveLength(0); // nothing persisted
+    expect(await store.authorizations.count()).toBe(0); // nothing persisted
   });
 
   it("refuses the application's resource once it is removed from the registry", async () => {
-    store.applications[0].resources = [];
+    await store.applications.update('app-admin', { resources: [] });
     await expect(server.startAuthorization(authorizeArgs('verifier-abc-123', { resource: COACH_RESOURCE })))
       .rejects.toBeInstanceOf(InvalidTargetError);
   });
 
   it("re-mints the application's resource as the aud across a refresh", async () => {
     const verifier = 'verifier-abc-123';
-    await login(verifier, COACH_RESOURCE);
-    const first = await exchange(verifier, COACH_RESOURCE);
+    const code = await login(verifier, COACH_RESOURCE);
+    const first = await exchange(code, verifier, COACH_RESOURCE);
 
     const refreshed = await server.refreshUserToken({ refreshToken: first.refreshToken, clientId: 'client-mcp' });
 

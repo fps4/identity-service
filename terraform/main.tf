@@ -1,7 +1,7 @@
 # identity-service on AWS (maestro M1, ADR-0002/0006/0016): the Express server unchanged, behind the
 # Lambda Web Adapter on a Lambda function, behind an HTTP API Gateway — one realm per deployment. The
-# database is the tenant's Atlas cluster, named by MONGO_URI (ADR-0005). Backups are in backup.tf; the
-# relay that carries the registry's events into the spine's archive is in relay.tf.
+# record store is the DynamoDB table this module makes (table.tf; maestro ADR-0018, ADR-0023). Backups
+# are in backup.tf; the relay that carries the registry's events into the spine's archive is in relay.tf.
 
 locals {
   tags         = merge({ "maestro:component" = "identity-service" }, var.tags)
@@ -16,9 +16,9 @@ locals {
   secret_values = { for key, version in data.aws_secretsmanager_secret_version.secret : key => version.secret_string }
 
   # Precedence: the module's defaults, the tenant's environment, the secrets, then the adapter's own
-  # variables, the issuer and the record's sink, which nothing overrides. RECORD_SINK=off: the service
-  # writes the outbox and relays nothing in-process; the relay function (relay.tf) is the one relay
-  # (ADR-0022 §5). A tenant's `s3` here would have two relays racing over one outbox.
+  # variables, the issuer, the table and the record's sink, which nothing overrides. RECORD_SINK=off:
+  # the service writes the outbox and relays nothing in-process; the relay function (relay.tf) is the
+  # one relay (ADR-0022 §5). A tenant's `s3` here would have two relays racing over one outbox.
   service_environment = merge(
     {
       NODE_ENV   = "production"
@@ -28,6 +28,7 @@ locals {
     local.secret_values,
     {
       PORT                             = local.port
+      TABLE_NAME                       = aws_dynamodb_table.records.name
       AUTH_JWT_ISSUER                  = local.issuer
       GOOGLE_REDIRECT_URI              = "${local.issuer}/oauth2/callback"
       RECORD_SINK                      = "off"
@@ -35,8 +36,8 @@ locals {
       AWS_LWA_PORT                     = local.port
       AWS_LWA_READINESS_CHECK_PATH     = "/health"
       AWS_LWA_READINESS_CHECK_PROTOCOL = "http"
-      # The server connects to the database before it listens; if that outlasts the 10 s init window
-      # the adapter keeps waiting during the first invocation instead of failing the cold start.
+      # The server reaches its table before it listens; if that outlasts the 10 s init window the
+      # adapter keeps waiting during the first invocation instead of failing the cold start.
       AWS_LWA_ASYNC_INIT = "true"
     }
   )
@@ -68,19 +69,26 @@ resource "aws_iam_role" "service" {
   tags = local.tags
 }
 
-# Logs only. The service talks to its database and to Google; its signing keys live encrypted in the
-# database (src/utils/key-store.ts), not in any AWS service, so it needs no AWS API. The archive is
-# the relay's.
+# Its table and its logs. The service reads and writes every kind of item, as one transaction per act
+# (ADR-0023); its signing keys live encrypted in the table (src/utils/key-store.ts), not in any AWS
+# service. The archive is the relay's. No Scan: nothing the service does reads the whole table.
 resource "aws_iam_role_policy" "service" {
   name = "service"
   role = aws_iam_role.service.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-      Resource = "${aws_cloudwatch_log_group.service.arn}:*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = local.table_actions
+        Resource = local.table_resources
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.service.arn}:*"
+      }
+    ]
   })
 }
 

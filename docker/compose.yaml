@@ -1,34 +1,38 @@
 services:
-  # One-shot: a fresh named volume mounts root-owned, but the mongo image runs as uid 1001 and would
-  # fail to write to /bitnami/mongodb. Fix ownership before mongo starts (idempotent, exits 0).
-  mongo-init-perms:
-    container_name: identity-service-mongo-init
-    image: ghcr.io/flakybitnet/mongodb-server:8.0.13-fb1
-    user: "0:0"
-    # Override the bitnami entrypoint so this is a pure chown, not a mongo boot.
-    entrypoint: ["chown", "-R", "1001:1001", "/bitnami/mongodb"]
-    command: []
-    volumes:
-      - mongo_data:/bitnami/mongodb
-    restart: "no"
-
-  mongo:
-    container_name: identity-service-mongo
-    # MongoDB 5.0+ requires AVX; using `mongo:latest` pulls a newer major
-    # Ref: https://github.com/flakybitnet/mongodb-oci
-    image: ghcr.io/flakybitnet/mongodb-server:8.0.13-fb1
+  # The table on a laptop (ADR-0023): DynamoDB Local, its data on a named volume so the realm survives a
+  # recreation. The same image the tests run against; a deployment's table is the Terraform module's.
+  dynamodb:
+    container_name: identity-service-dynamodb
+    image: amazon/dynamodb-local:3.3.1
     restart: unless-stopped
-    depends_on:
-      mongo-init-perms:
-        condition: service_completed_successfully
-    ports:
-      - "${MONGO_PORT:-27019}:27017"
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/home/dynamodblocal/data"]
     volumes:
-      # This is a Bitnami-style image: mongod's dbPath is /bitnami/mongodb/data/db, NOT /data/db.
-      # Mounting at /data/db (the stock-mongo path) left the real data in the container's EPHEMERAL
-      # layer — wiped on every container recreation (i.e. every deploy). Persist /bitnami/mongodb so
-      # the database actually survives.
-      - mongo_data:/bitnami/mongodb
+      - dynamodb_data:/home/dynamodblocal/data
+    ports:
+      - "${DYNAMODB_PORT:-8000}:8000"
+    healthcheck:
+      # Any request answers once the JVM listens; a 400 on a bare GET is an answer.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:8000/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: the table, from the schema in code (service/src/db/table.ts) — what the Terraform module
+  # declares for a deployment. Idempotent; exits 0 once the table is there with its indexes and TTL.
+  table-init:
+    container_name: identity-service-table-init
+    build:
+      context: ../service
+      dockerfile: Dockerfile
+    command: ["node", "dist/db/create-table.js"]
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    environment:
+      TABLE_NAME: ${TABLE_NAME:-identity-service}
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: ${AWS_REGION:-local}
+    restart: "no"
 
   identity-service:
     container_name: identity-service
@@ -36,15 +40,18 @@ services:
       context: ../service
       dockerfile: Dockerfile
     depends_on:
-      - mongo
+      table-init:
+        condition: service_completed_successfully
     networks:
       - default
       - net-public
     environment:
       PORT: ${PORT:-7305}
       NODE_ENV: ${NODE_ENV:-production}
-      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
-      MONGO_DB_NAME: ${MONGO_DB_NAME:-identity-service}
+      # The table (ADR-0023). No credential: DynamoDB Local takes any key; a deployment's function has a role.
+      TABLE_NAME: ${TABLE_NAME:-identity-service}
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: ${AWS_REGION:-local}
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-local-dev-secret}
       AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-identity-service}
       AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:-identity-service-clients}
@@ -63,8 +70,8 @@ services:
       # management plane as a per-actor operator principal. Matches the `operators` tenant in seed.yaml.
       ADMIN_OPERATOR_ROLES: ${ADMIN_OPERATOR_ROLES:-platform_admin}
       # Remote MCP transport (ADR-0009). MCP_RESOURCE_URL overrides the default (AUTH_JWT_ISSUER/mcp) with
-      # the dedicated origin (auth-mcp.fps4.nl on ds1); audience-binding (RFC 8707) then requires a token
-      # minted for that resource. Empty MCP_RESOURCE_URL falls back to the app default.
+      # the dedicated origin; audience-binding (RFC 8707) then requires a token minted for that resource.
+      # Empty MCP_RESOURCE_URL falls back to the app default.
       MCP_HTTP_ENABLED: ${MCP_HTTP_ENABLED:-true}
       MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-}
       MCP_REQUIRE_AUDIENCE: ${MCP_REQUIRE_AUDIENCE:-true}
@@ -88,21 +95,28 @@ services:
       AUTH_AUTHORIZE_REQUESTS_GLOBAL_PER_MINUTE: ${AUTH_AUTHORIZE_REQUESTS_GLOBAL_PER_MINUTE:-600}
       AUTH_LOGIN_ATTEMPTS_PER_MINUTE: ${AUTH_LOGIN_ATTEMPTS_PER_MINUTE:-20}
       AUTH_LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE: ${AUTH_LOGIN_ATTEMPTS_GLOBAL_PER_MINUTE:-200}
-      # Upstream Google OIDC app (RQ-0001). The deploy workflow injects these as Actions secrets; without
-      # them here they never reach the app, and /oauth2/authorize serves the first-party login instead.
+      # Upstream Google OIDC app (RQ-0001). Without these here they never reach the app, and
+      # /oauth2/authorize serves the first-party login instead.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
       OAUTH_AUTHORIZATION_TTL_SEC: ${OAUTH_AUTHORIZATION_TTL_SEC:-600}
       OAUTH_CLIENT_CREDENTIALS_SCOPE: ${OAUTH_CLIENT_CREDENTIALS_SCOPE:-}
       ADMIN_API_ENABLED: ${ADMIN_API_ENABLED:-true}
+      # maestro's record (ADR-0022): this realm's workspace, and the laptop's sink.
+      MAESTRO_WORKSPACE_ID: ${MAESTRO_WORKSPACE_ID:-ws-identity-dev}
+      MAESTRO_ACCOUNTABLE: ${MAESTRO_ACCOUNTABLE:-}
+      RECORD_SINK: ${RECORD_SINK:-local}
+      RECORD_ARCHIVE_DIR: ${RECORD_ARCHIVE_DIR:-/app/archive}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_PRETTY: ${LOG_PRETTY:-false}
+    volumes:
+      - archive_data:/app/archive
     ports:
       - "${CORE_AUTH_PORT:-7305}:7305"
 
-  # Operator admin console (RQ-0007, ADR-0007/0010). A thin Next.js client over /admin/v1 — holds no DB
-  # credentials. Operators sign in with the `password` grant (browser → public issuer) and the console
+  # Operator admin console (RQ-0007, ADR-0007/0010). A thin Next.js client over /admin/v1 — holds no
+  # database access. Operators sign in with the `password` grant (browser → public issuer) and the console
   # forwards their token server-side. Published on :7306; the Cloudflare hostname ids.fps4.nl
   # points at the docker host's :7306. On net-public so the tunnel can reach it.
   console:
@@ -132,7 +146,8 @@ services:
       - "${CONSOLE_PORT:-7306}:7306"
 
 volumes:
-  mongo_data:
+  dynamodb_data:
+  archive_data:
 
 networks:
   net-public:

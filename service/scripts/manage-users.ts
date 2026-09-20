@@ -1,19 +1,19 @@
 /**
  * Admin CLI for local-credential users (RQ-0002). The operator-side counterpart to self-service
  * registration: create users, reset passwords, and lock/unlock/disable accounts — the password-reset
- * path while there is no email channel. Run with tsx against the service's Mongo.
+ * path while there is no email channel. Run with tsx against the service's table. Predates the record
+ * (ADR-0022): nothing here is recorded — use the management plane for an act that should be.
  *
  *   tsx scripts/manage-users.ts create       --email=<e> --password=<p>
  *   tsx scripts/manage-users.ts set-password  --email=<e> --password=<p>
- *   tsx scripts/manage-users.ts set-roles     --email=<e> --roles=a,b   (RQ-0005; "" clears)
  *   tsx scripts/manage-users.ts lock|unlock|disable|enable|delete --email=<e>
  *
  * Users are deployment-scoped (ADR-0018): email is the unique key, no tenant.
- * MONGO_URI / MONGO_DB_NAME come from the environment (or .env), same as the service.
+ * TABLE_NAME / DYNAMODB_ENDPOINT / AWS_REGION come from the environment (or .env), same as the service.
  */
 import process from 'process';
-import { getMasterConnection, disconnect } from '../src/utils/db.js';
-import { makeModels } from '../src/models/index.js';
+import { randomUUID } from 'crypto';
+import { getStore, Transaction } from '../src/db/index.js';
 import { hashSecret } from '../src/utils/hash.js';
 import { assertPasswordPolicy, normalizeEmail } from '../src/services/users.js';
 
@@ -31,13 +31,12 @@ async function main() {
   const { command, args } = parseArgs();
   const email = args.get('email') ? normalizeEmail(args.get('email')!) : undefined;
   if (!command || !email) {
-    console.error('Usage: manage-users <create|set-password|set-roles|lock|unlock|disable|enable|delete> --email=<e> [--password=<p>] [--roles=a,b]');
+    console.error('Usage: manage-users <create|set-password|lock|unlock|disable|enable|delete> --email=<e> [--password=<p>]');
     process.exitCode = 2;
     return;
   }
 
-  const connection = await getMasterConnection();
-  const { User } = makeModels(connection);
+  const store = getStore();
   const now = new Date();
 
   switch (command) {
@@ -45,34 +44,22 @@ async function main() {
       const password = args.get('password');
       if (!password) throw new Error('--password is required for create');
       assertPasswordPolicy(password);
-      const existing = await User.findOne({ email }).lean().exec();
+      const existing = await store.users.getByEmail(email);
       if (existing) throw new Error(`User already exists: ${email}`);
-      // RQ-0005: honour --roles at creation so the new user's token carries the `roles` claim
-      // immediately (else it issues role-less tokens until a separate set-roles run).
-      const roles = (args.get('roles') ?? '').split(',').map((r) => r.trim()).filter(Boolean);
-      const doc = await User.create({ email, passwordHash: hashSecret(password), status: 'active', passwordUpdatedAt: now, roles });
-      console.log(`created user ${doc._id} (${email}) — this id is the token sub; roles [${roles.join(', ')}]`);
+      const id = randomUUID();
+      const tx = new Transaction();
+      store.users.put(tx, { _id: id, email, passwordHash: hashSecret(password), identities: [], emailVerified: false, status: 'active', failedAttempts: 0, passwordUpdatedAt: now, createdAt: now, updatedAt: now });
+      await store.commit(tx);
+      console.log(`created user ${id} (${email}) — this id is the token sub; assign an application for access (ADR-0019)`);
       break;
     }
     case 'set-password': {
       const password = args.get('password');
       if (!password) throw new Error('--password is required for set-password');
       assertPasswordPolicy(password);
-      const result = await User.updateOne(
-        { email },
-        { $set: { passwordHash: hashSecret(password), passwordUpdatedAt: now, failedAttempts: 0, lockedUntil: null, updatedAt: now } }
-      ).exec();
-      report(result.matchedCount, email, 'password reset');
-      break;
-    }
-    case 'set-roles': {
-      const raw = args.get('roles') ?? '';
-      const roles = raw.split(',').map((r) => r.trim()).filter(Boolean);
-      const result = await User.updateOne(
-        { email },
-        { $set: { roles, updatedAt: now } }
-      ).exec();
-      report(result.matchedCount, email, `roles set to [${roles.join(', ')}]`);
+      const user = await store.users.getByEmail(email);
+      const updated = user && await store.users.update(user._id, { passwordHash: hashSecret(password), passwordUpdatedAt: now, failedAttempts: 0, lockedUntil: null, updatedAt: now });
+      report(updated ? 1 : 0, email, 'password reset');
       break;
     }
     case 'lock':
@@ -80,19 +67,22 @@ async function main() {
     case 'disable':
     case 'enable':
     case 'delete': {
-      const set =
-        command === 'lock' ? { status: 'locked', lockedUntil: null }
-        : command === 'unlock' ? { status: 'active', failedAttempts: 0, lockedUntil: null }
-        : command === 'disable' ? { status: 'disabled' }
-        : command === 'enable' ? { status: 'active', failedAttempts: 0, lockedUntil: null }
-        : null;
+      const user = await store.users.getByEmail(email);
+      if (!user) { report(0, email, command); break; }
       if (command === 'delete') {
-        const result = await User.deleteOne({ email }).exec();
-        report(result.deletedCount, email, 'deleted');
-      } else {
-        const result = await User.updateOne({ email }, { $set: { ...set, updatedAt: now } }).exec();
-        report(result.matchedCount, email, command);
+        const tx = new Transaction();
+        store.users.delete(tx, user);
+        await store.commit(tx);
+        report(1, email, 'deleted');
+        break;
       }
+      const set =
+        command === 'lock' ? { status: 'locked' as const, lockedUntil: null }
+        : command === 'unlock' ? { status: 'active' as const, failedAttempts: 0, lockedUntil: null }
+        : command === 'disable' ? { status: 'disabled' as const }
+        : { status: 'active' as const, failedAttempts: 0, lockedUntil: null };
+      const updated = await store.users.update(user._id, { ...set, updatedAt: now });
+      report(updated ? 1 : 0, email, command);
       break;
     }
     default:
@@ -109,6 +99,4 @@ function report(count: number, email: string, action: string) {
   }
 }
 
-main()
-  .catch((err) => { console.error(err.message ?? err); process.exitCode = 1; })
-  .finally(() => disconnect());
+main().catch((err) => { console.error(err.message ?? err); process.exitCode = 1; });

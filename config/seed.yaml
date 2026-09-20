@@ -1,4 +1,4 @@
-# ds1 identity BOOTSTRAP definition (non-secret, STRUCTURAL). The live MongoDB is the system of record
+# ds1 identity BOOTSTRAP definition (non-secret, STRUCTURAL). The live table is the system of record
 # (ADR-0007); this file only stands up a brand-new empty deployment. Day-2 changes go through the
 # management plane (/admin/v1 + MCP + console), not a re-seed.
 #
@@ -22,7 +22,7 @@
 # COMMITTED on purpose: every secret is an ${ENV_VAR} reference resolved at run time; this file holds NO
 # plaintext. Bootstrap an empty DB from service/ with:
 #   IDENTITY_ADMIN_CLIENT_SECRET=… SEED_CONSOLE_ADMIN_PASSWORD=… \
-#     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
+#     TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
 # DR is a RESTORE from the nightly off-host backup (docker/backup.sh — ADR-0008). Idempotent.
 
 applications:

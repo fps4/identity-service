@@ -1,13 +1,15 @@
 /**
  * Idempotent seed loader (RQ-0004, ADR-0018). Reads a gitignored YAML config of OAuth clients + local
- * users (one deployment = one realm, so no tenant layer) and upserts them into Mongo. Operator-run
- * (NOT an HTTP endpoint — ADR-0003); the only secret it needs is the Mongo connection from the environment.
+ * users (one deployment = one realm, so no tenant layer) and upserts them into the table. Operator-run
+ * (NOT an HTTP endpoint — ADR-0003); it needs no secret of its own — the table is reached with the
+ * operator's AWS credentials (or DynamoDB Local on a laptop).
  *
  *   cd service
  *   npm run seed                       # reads ../config/seed.yaml
  *   npm run seed -- --file=/abs/path   # explicit file
  *
- * MONGO_URI / MONGO_DB_NAME come from the environment (.env), same as the service. Re-running is
+ * TABLE_NAME / DYNAMODB_ENDPOINT / AWS_REGION come from the environment (.env), same as the service
+ * (ADR-0023). Re-running is
  * safe: applications and credential STRUCTURE are upserted; existing users are left untouched
  * (insert-if-absent), so a re-run never resets a password — use `manage-users set-password` to change
  * one. Credential SECRETS follow the same insert-if-absent rule (ADR-0021, {@link credentialUpdate}):
@@ -28,12 +30,9 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { parse as parseYaml } from 'yaml';
 import { uuidv7 } from '@fps4/maestro-spine';
-import { getMasterConnection, disconnect } from '../src/utils/db.js';
-import { makeModels } from '../src/models/index.js';
+import { getStore, type Store } from '../src/db/index.js';
 import { hashSecret } from '../src/utils/hash.js';
 import { CONFIG } from '../src/config.js';
-import type { Connection } from 'mongoose';
-import type { ModelsBucket } from '../src/oauth/types.js';
 import { parseSeedConfig, type SeedConfig, type SeedCredential } from '../src/services/seed-config.js';
 import { assertPasswordPolicy, normalizeEmail } from '../src/services/users.js';
 import {
@@ -43,6 +42,7 @@ import {
   ensureUserPrincipal,
   mintPrincipalId,
   operatorContext,
+  principalRow,
   realmOf,
   selfContext,
   withRecordTransaction,
@@ -51,15 +51,15 @@ import {
 } from '../src/record/index.js';
 
 /**
- * The Mongo update for one seeded credential, split into what a re-seed may reconcile and what it may
- * only ever write once (ADR-0021).
+ * The update for one seeded credential, split into what a re-seed may reconcile and what it may only
+ * ever write once (ADR-0021).
  *
  * Structure — grants, redirect URIs, audience, claims — is declarative, so it goes in `$set` and is
  * reconciled on every run. The secret hash is NOT. A confidential credential's secret is minted by
  * identity-service and handed to its consumer once, so re-hashing a config value on every run would
  * silently revert an operational rotation: the credential keeps working here and stops working for
- * whoever holds the rotated value. It goes in `$setOnInsert`, which Mongo applies only when the upsert
- * actually inserts — the same insert-if-absent rule users have always had.
+ * whoever holds the rotated value. It goes in `$setOnInsert`, written only where the attribute is still
+ * absent (`if_not_exists`) — the same insert-if-absent rule users have always had.
  *
  * A confidential credential declared with no `secret:` is inserted with an unguessable random hash that
  * nobody holds. That is deliberate, not a gap: the credential exists structurally and cannot
@@ -118,8 +118,7 @@ export function seatChanges(principal: string, application: string, before: read
 
 export interface SeedRunDeps {
   config: SeedConfig;
-  connection: Connection;
-  models: ModelsBucket;
+  store: Store;
   operatorEmail: string;
   record: RecordConfig;
   now?: Date;
@@ -151,20 +150,17 @@ async function main() {
   const operatorEmail = resolveOperatorEmail(process.argv.slice(2), process.env, config.users[0]?.email);
   if (!operatorEmail) throw new Error('The seed needs an operator to attribute its acts to: pass --as=<email> or list a user in the seed file');
 
-  const connection = await getMasterConnection();
   const r = await runSeed({
     config,
-    connection,
-    models: makeModels(connection),
+    store: getStore(),
     operatorEmail,
     record: { workspaceId: CONFIG.record.workspaceId, accountable: CONFIG.record.accountable, consequenceClass: CONFIG.record.consequenceClass }
   });
   console.log(`seed: ${r.appsUpserted} applications, ${r.clientsUpserted} credentials upserted; ${r.usersCreated} users created, ${r.usersSkipped} existing skipped; ${r.assignmentsUpserted} assignments upserted; ${r.eventsEmitted} events recorded as ${operatorEmail} (${r.operatorPrincipalId})`);
 }
 
-/** The seed run itself, over an open connection — what `main` calls and a test drives against a fake. */
-export async function runSeed({ config, connection, models, operatorEmail, record, now = new Date() }: SeedRunDeps): Promise<SeedRunReport> {
-  const { Application, OAuthClient, User, Assignment, Principal } = models;
+/** The seed run itself, over a store — what `main` calls and a test drives against DynamoDB Local. */
+export async function runSeed({ config, store, operatorEmail, record, now = new Date() }: SeedRunDeps): Promise<SeedRunReport> {
   const realm = realmOf(record.workspaceId);
   const correlation_id = uuidv7(); // one per run: every event the seed records carries it
   let appsUpserted = 0, clientsUpserted = 0, usersCreated = 0, usersSkipped = 0, assignmentsUpserted = 0, eventsEmitted = 0;
@@ -173,11 +169,7 @@ export async function runSeed({ config, connection, models, operatorEmail, recor
     // The application owns its name, default audience, role catalogue, and protected-resource registry
     // (ADR-0020, ADR-0009 Phase 2). Like `roles`, `resources` is REPLACED wholesale on every run — a seed
     // file naming an application must restate both in full or it silently empties them.
-    await Application.updateOne(
-      { _id: app.id },
-      { $set: { name: app.name, audience: app.audience, roles: app.roles ?? [], resources: app.resources ?? [], updatedAt: now } },
-      { upsert: true }
-    ).exec();
+    await store.applications.upsert(app.id, { name: app.name, audience: app.audience, roles: app.roles ?? [], resources: app.resources ?? [] }, now);
     appsUpserted++;
   }
 
@@ -185,51 +177,50 @@ export async function runSeed({ config, connection, models, operatorEmail, recor
   // introduces them, their own registration — by themselves, in the `self` seat — is the run's first
   // event; otherwise they must already exist in the pool.
   const seededOperator = config.users.find((u) => normalizeEmail(u.email) === operatorEmail);
-  let operator: { _id: string; principalId?: string; status?: string } | null =
-    await User.findOne({ email: operatorEmail }).select('_id principalId status').lean().exec();
+  let operator: { _id: string; principalId?: string; status?: string } | null = await store.users.getByEmail(operatorEmail);
   let operatorCreatedHere = false;
   if (!operator && seededOperator) {
     const principalId = mintPrincipalId('human');
-    operator = await withRecordTransaction(connection, async (session) => {
-      const [created] = await User.create([{
-        email: operatorEmail, passwordHash: hashSecret(seededOperator.password),
-        status: seededOperator.status, passwordUpdatedAt: now, principalId
-      }], { session });
-      await Principal.create([{ _id: principalId, kind: 'human', status: seededOperator.status === 'disabled' ? 'suspended' : 'active', subjectType: 'user', subjectId: created._id, createdAt: now, updatedAt: now }], { session });
-      const self = createRecorder({ models, config: record, ...selfContext({ id: principalId, kind: 'human' }, correlation_id) });
-      eventsEmitted += (await self.emit(session, [{ type: 'PrincipalRegistered', subject: principalId, body: { kind: 'human', source: 'seed', realm } }])).length;
-      return { _id: created._id, principalId, status: seededOperator.status };
+    const userId = randomUUID();
+    operator = await withRecordTransaction(store, async (tx) => {
+      store.users.put(tx, {
+        _id: userId, email: operatorEmail, passwordHash: hashSecret(seededOperator.password), identities: [], emailVerified: false,
+        status: seededOperator.status ?? 'active', failedAttempts: 0, passwordUpdatedAt: now, principalId, createdAt: now, updatedAt: now
+      });
+      store.principals.register(tx, principalRow(principalId, 'human', seededOperator.status === 'disabled' ? 'suspended' : 'active', 'user', userId, now));
+      const self = createRecorder({ store, config: record, ...selfContext({ id: principalId, kind: 'human' }, correlation_id) });
+      eventsEmitted += (await self.emit(tx, [{ type: 'PrincipalRegistered', subject: principalId, body: { kind: 'human', source: 'seed', realm } }])).length;
+      return { _id: userId, principalId, status: seededOperator.status };
     });
     usersCreated++;
     operatorCreatedHere = true;
   }
   if (!operator) throw new Error(`The operator ${operatorEmail} is neither in the pool nor in the seed file; pass --as=<email> naming an existing user`);
-  const operatorPrincipal = await ensureUserPrincipal(models, operator);
+  const operatorPrincipal = await ensureUserPrincipal(store, operator);
   const ctx = operatorContext(operatorPrincipal, correlation_id);
-  const recorder = createRecorder({ models, config: record, ...ctx });
+  const recorder = createRecorder({ store, config: record, ...ctx });
 
   for (const app of config.applications) {
     // Each credential (OAuth client) under the application. Structure is reconciled every run; the
     // secret hash is written once on insert and never again — see credentialUpdate. A machine credential
     // is a principal (ADR-0022): registered when inserted, its declared roles seats that follow the diff.
     for (const c of app.credentials ?? []) {
-      const before = await OAuthClient.findById(c.id).lean().exec();
+      const before = await store.clients.get(c.id);
       const kind = clientPrincipalKind({ grantTypes: c.grantTypes, claims: c.claims });
-      await withRecordTransaction(connection, async (session) => {
-        const update = credentialUpdate(c, app.id, now);
-        const principalId = !before && kind ? mintPrincipalId(kind) : undefined;
-        if (principalId) update.$setOnInsert = { ...(update.$setOnInsert ?? {}), principalId };
-        await OAuthClient.updateOne({ _id: c.id }, update, { upsert: true, session }).exec();
-        const acts: Act[] = [];
-        if (principalId && kind) {
-          await Principal.create([{ _id: principalId, kind, status: 'active', subjectType: 'client', subjectId: c.id, createdAt: now, updatedAt: now }], { session });
-          acts.push({ type: 'PrincipalRegistered', subject: principalId, body: { kind, source: 'seed', realm } });
-          acts.push(...seatChanges(principalId, app.id, [], declaredRoles(c.claims), 'O1'));
-        } else if (kind) {
-          const principal = await ensureClientPrincipal(models, { ...(before as { _id: string; principalId?: string }), grantTypes: c.grantTypes, claims: c.claims }, session);
-          if (principal) acts.push(...seatChanges(principal.id, app.id, declaredRoles((before as { claims?: Record<string, unknown> } | null)?.claims), declaredRoles(c.claims), 'O1'));
-        }
-        eventsEmitted += (await recorder.emit(session, acts)).length;
+      const update = credentialUpdate(c, app.id, now);
+      const principalId = !before && kind ? mintPrincipalId(kind) : undefined;
+      const acts: Act[] = [];
+      if (principalId && kind) {
+        acts.push({ type: 'PrincipalRegistered', subject: principalId, body: { kind, source: 'seed', realm } });
+        acts.push(...seatChanges(principalId, app.id, [], declaredRoles(c.claims), 'O1'));
+      } else if (kind && before) {
+        const principal = await ensureClientPrincipal(store, { ...before, grantTypes: c.grantTypes, claims: c.claims });
+        if (principal) acts.push(...seatChanges(principal.id, app.id, declaredRoles(before.claims), declaredRoles(c.claims), 'O1'));
+      }
+      await withRecordTransaction(store, async (tx) => {
+        store.clients.upsert(tx, c.id, update.$set, { ...(update.$setOnInsert ?? {}), ...(principalId ? { principalId } : {}) }, now);
+        if (principalId && kind) store.principals.register(tx, principalRow(principalId, kind, 'active', 'client', c.id, now));
+        eventsEmitted += (await recorder.emit(tx, acts)).length;
       });
       clientsUpserted++;
     }
@@ -240,42 +231,38 @@ export async function runSeed({ config, connection, models, operatorEmail, recor
     // Never clobber an existing account's credentials on re-run, but always reconcile its assignments
     // below (idempotent) — this is what keeps the bootstrap operator's console access guaranteed.
     let userId: string;
-    const existing = await User.findOne({ email }).lean().exec();
+    const existing = await store.users.getByEmail(email);
     if (existing) {
       userId = existing._id;
-      await ensureUserPrincipal(models, existing);
+      await ensureUserPrincipal(store, existing);
       if (!(email === operatorEmail && operatorCreatedHere)) usersSkipped++;
     } else {
       const principalId = mintPrincipalId('human');
-      userId = await withRecordTransaction(connection, async (session) => {
-        const [created] = await User.create([{
-          email, passwordHash: hashSecret(u.password),
-          status: u.status, passwordUpdatedAt: now, principalId
-        }], { session });
-        await Principal.create([{ _id: principalId, kind: 'human', status: u.status === 'disabled' ? 'suspended' : 'active', subjectType: 'user', subjectId: created._id, createdAt: now, updatedAt: now }], { session });
-        eventsEmitted += (await recorder.emit(session, [{ type: 'PrincipalRegistered', subject: principalId, body: { kind: 'human', source: 'seed', realm } }])).length;
-        return created._id;
+      userId = randomUUID();
+      await withRecordTransaction(store, async (tx) => {
+        store.users.put(tx, {
+          _id: userId, email, passwordHash: hashSecret(u.password), identities: [], emailVerified: false,
+          status: u.status ?? 'active', failedAttempts: 0, passwordUpdatedAt: now, principalId, createdAt: now, updatedAt: now
+        });
+        store.principals.register(tx, principalRow(principalId, 'human', u.status === 'disabled' ? 'suspended' : 'active', 'user', userId, now));
+        eventsEmitted += (await recorder.emit(tx, [{ type: 'PrincipalRegistered', subject: principalId, body: { kind: 'human', source: 'seed', realm } }])).length;
       });
       usersCreated++;
     }
-    const principal = await ensureUserPrincipal(models, { _id: userId, principalId: (await User.findById(userId).select('principalId').lean().exec())?.principalId });
+    const principal = await ensureUserPrincipal(store, { _id: userId, principalId: (await store.users.get(userId))?.principalId });
 
     // Application assignments (ADR-0019/0020): entitlement + app-scoped roles. Upserted every run so the
     // seed is the safety net for the operator — the bootstrap operator always keeps its console
     // assignment and thus console access. Each role that changes hands is a seat on the record.
     for (const a of u.assignments ?? []) {
-      await withRecordTransaction(connection, async (session) => {
-        const before = await Assignment.findOne({ userId, applicationId: a.application }, null, { session }).lean().exec();
-        await Assignment.updateOne(
-          { userId, applicationId: a.application },
-          {
-            $set: { roles: a.roles ?? [], status: 'active', updatedAt: now },
-            $setOnInsert: { _id: randomUUID(), userId, applicationId: a.application, createdBy: 'seed', createdAt: now }
-          },
-          { upsert: true, session }
-        ).exec();
+      await withRecordTransaction(store, async (tx) => {
+        const before = await store.assignments.get(userId, a.application);
+        store.assignments.put(tx, {
+          userId, applicationId: a.application, roles: a.roles ?? [], status: 'active',
+          createdBy: before?.createdBy ?? 'seed', createdAt: before?.createdAt ?? now, updatedAt: now
+        });
         const wasActive = before && before.status !== 'suspended' ? (before.roles ?? []) : [];
-        eventsEmitted += (await recorder.emit(session, seatChanges(principal.id, a.application, wasActive, a.roles ?? [], 'O0'))).length;
+        eventsEmitted += (await recorder.emit(tx, seatChanges(principal.id, a.application, wasActive, a.roles ?? [], 'O0'))).length;
       });
       assignmentsUpserted++;
     }
@@ -284,11 +271,9 @@ export async function runSeed({ config, connection, models, operatorEmail, recor
   return { appsUpserted, clientsUpserted, usersCreated, usersSkipped, assignmentsUpserted, eventsEmitted, operatorPrincipalId: operatorPrincipal.id };
 }
 
-// Only hit the database when run as a script — importing the pure helpers (tests) must not connect.
+// Only hit the table when run as a script — importing the pure helpers (tests) must not.
 // Same guard as scripts/dump-seed.ts.
 const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (invokedDirectly) {
-  main()
-    .catch((err) => { console.error(err.message ?? err); process.exitCode = 1; })
-    .finally(() => disconnect());
+  main().catch((err) => { console.error(err.message ?? err); process.exitCode = 1; });
 }

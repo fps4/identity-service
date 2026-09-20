@@ -1,53 +1,40 @@
 /**
- * Run a service's writes and the recorder's emit as one unit (ADR-0022 §1).
+ * Run a service's writes and the recorder's emit as one unit (ADR-0022 §1, ADR-0023 §3).
  *
- * MongoDB transactions need a replica set (Atlas Flex is one; the compose loop's single `mongod` is not).
- * A deployment without them still records — the outbox row lands beside the change, just not atomically
- * with it — so the check is a capability probe, made once: the first transactional command against a
- * standalone server fails with code 20 before anything is written, and from then on the function runs
- * without a session. The probe's outcome is logged once, because "the record is not atomic here" is
- * something an operator should read at boot rather than infer at an audit.
+ * The function reads what it needs and adds its writes to the transaction; the recorder adds the outbox
+ * items and advances the counters on the condition that they have not moved since it read them. The
+ * commit is one `TransactWriteItems`: the change and its record land together or not at all. DynamoDB
+ * transactions always exist, so there is no standalone-server fallback and no "written beside the
+ * change" — an act that cannot be recorded is not performed.
+ *
+ * Two acts that race on one workspace serialise on the counter: the second's condition fails and it is
+ * run again, from its reads, so what it records is what it changed. A caller's own failed condition — an
+ * email taken, an id in use — is not retried; it is the caller's answer.
  */
-import type { ClientSession, Connection } from 'mongoose';
+import type { Store } from '../db/index.js';
+import { Transaction, isRecordConflict } from '../db/index.js';
 import type { Logger } from '../utils/logger.js';
 
-let transactionsSupported: boolean | undefined;
-
-const NO_REPLICA_SET = /Transaction numbers are only allowed on a replica set member or mongos/i;
-
-/** For tests and a process that reconnects elsewhere. */
-export function resetTransactionProbe(): void {
-  transactionsSupported = undefined;
-}
+const MAX_ATTEMPTS = 6;
 
 export async function withRecordTransaction<T>(
-  connection: Connection,
-  fn: (session: ClientSession | undefined) => Promise<T>,
+  store: Store,
+  fn: (tx: Transaction) => Promise<T>,
   logger?: Logger
 ): Promise<T> {
-  if (transactionsSupported === false || typeof connection.startSession !== 'function') {
-    return fn(undefined);
-  }
-  const session = await connection.startSession();
-  try {
-    let result!: T;
-    await session.withTransaction(async () => {
-      result = await fn(session);
-    });
-    if (transactionsSupported === undefined) {
-      transactionsSupported = true;
-      logger?.info?.('record: transactions supported; the outbox is written atomically with each change');
+  for (let attempt = 1; ; attempt += 1) {
+    const tx = new Transaction();
+    const result = await fn(tx);
+    try {
+      await store.commit(tx);
+      return result;
+    } catch (err) {
+      if (attempt < MAX_ATTEMPTS && isRecordConflict(err)) {
+        logger?.debug?.({ attempt, reason: (err as Error).message }, 'record: the workspace sequence moved under this act; retrying from its reads');
+        await new Promise((resolve) => setTimeout(resolve, 5 * attempt * attempt));
+        continue;
+      }
+      throw err;
     }
-    return result;
-  } catch (err) {
-    const code = (err as { code?: number }).code;
-    if (transactionsSupported === undefined && (code === 20 || NO_REPLICA_SET.test((err as Error).message ?? ''))) {
-      transactionsSupported = false;
-      logger?.warn?.('record: this MongoDB is not a replica set, so the outbox is written beside each change rather than atomically with it; use a replica set where the record must be exact');
-      return fn(undefined);
-    }
-    throw err;
-  } finally {
-    await session.endSession();
   }
 }

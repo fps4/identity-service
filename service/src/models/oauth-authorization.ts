@@ -1,13 +1,10 @@
-import { randomUUID } from 'crypto';
-import mongoose, { Connection, Document, Model } from 'mongoose';
-
 /**
  * A single in-flight user login (RQ-0001). Created when the consumer's browser hits
  * `/oauth2/authorize`, carried through whichever IdP authenticates the person, and consumed once at
  * the `authorization_code` token exchange.
  *
  * Lifecycle: `pending` (awaiting the IdP) -> `authenticated` (identity established, our code minted)
- * -> `consumed` (token issued; the code is single-use). A short TTL index sweeps abandoned records.
+ * -> `consumed` (token issued; the code is single-use). The table's TTL sweeps abandoned records.
  *
  * `codeChallenge` is the consumer's PKCE challenge (S256), verified against its `code_verifier`
  * at exchange. `googleState` / `nonce` protect the Google leg against CSRF / replay.
@@ -15,10 +12,13 @@ import mongoose, { Connection, Document, Model } from 'mongoose';
  * `idp` records WHICH provider authenticated this login, because the two legs establish identity
  * differently and the exchange must not confuse them: `google` carries a federated subject that gets
  * JIT-provisioned or linked (RQ-0011), while `local` (RQ-0002) has already authenticated a real user
- * record and its `sub` IS that user's `_id`. Records written before the local IdP existed have no
- * value stored, hence the `google` default.
+ * record and its `sub` IS that user's `_id`.
+ *
+ * Stored as `realm#oauth_authorization` / `<_id>`. Its three handles — `googleState`, `loginToken`,
+ * `code` — are each resolved through a `unique` item written in the same transaction as the handle, so
+ * the exchange that follows a redirect within the second reads its own write (ADR-0023).
  */
-export interface OAuthAuthorizationDocument extends Document<string> {
+export interface OAuthAuthorizationDocument {
   _id: string;                 // internal authorization id
   clientId: string;
   consumerRedirectUri: string; // where we 302 back to the consumer (must be registered on the client)
@@ -39,37 +39,3 @@ export interface OAuthAuthorizationDocument extends Document<string> {
   expiresAt: Date;
   createdAt?: Date;
 }
-
-const oauthAuthorizationSchema = new mongoose.Schema<OAuthAuthorizationDocument>({
-  _id: { type: String, required: true, default: () => randomUUID() },
-  clientId: { type: String, required: true, index: true },
-  consumerRedirectUri: { type: String, required: true },
-  consumerState: { type: String },
-  codeChallenge: { type: String, required: true },
-  codeChallengeMethod: { type: String, enum: ['S256'], default: 'S256' },
-  scope: { type: [String], default: [] },
-  idp: { type: String, enum: ['google', 'local'], default: 'google' },
-  resource: { type: String },
-  loginToken: { type: String, index: true },
-  googleState: { type: String, required: true, index: true },
-  nonce: { type: String, required: true },
-  status: { type: String, enum: ['pending', 'authenticated', 'consumed'], default: 'pending', index: true },
-  code: { type: String, index: true },
-  email: { type: String },
-  sub: { type: String },
-  emailVerified: { type: Boolean },
-  expiresAt: { type: Date, required: true },
-  createdAt: { type: Date, default: Date.now }
-});
-
-// TTL sweep of abandoned/expired login attempts.
-oauthAuthorizationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-
-export function getOAuthAuthorizationModel(connection: Connection): Model<OAuthAuthorizationDocument> {
-  return (connection.models.OAuthAuthorization as Model<OAuthAuthorizationDocument>) ??
-    connection.model<OAuthAuthorizationDocument>('OAuthAuthorization', oauthAuthorizationSchema, 'oauth_authorizations');
-}
-
-export const OAuthAuthorization: Model<OAuthAuthorizationDocument> =
-  (mongoose.models.OAuthAuthorization as Model<OAuthAuthorizationDocument>) ??
-  mongoose.model<OAuthAuthorizationDocument>('OAuthAuthorization', oauthAuthorizationSchema, 'oauth_authorizations');

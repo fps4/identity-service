@@ -11,7 +11,7 @@
  */
 import { uuidv7 } from '@fps4/maestro-spine';
 import type { AdminPrincipal } from '../core/admin-auth.js';
-import type { ModelsBucket } from '../oauth/types.js';
+import type { Store } from '../db/index.js';
 import type { PrincipalKind } from '../models/principal.js';
 import { ensureClientPrincipal, ensureUserPrincipal } from './registry.js';
 import { ActRefused, type Actor } from './outbox.js';
@@ -37,24 +37,24 @@ export function operatorContext(principal: { id: string; kind: PrincipalKind }, 
  * token whose subject the registry cannot find: an operator that no longer exists, a credential that was
  * deleted since the token was minted. The refusal is `403`, like any other act it may not perform.
  */
-export async function actContextFor(models: ModelsBucket, admin: AdminPrincipal, correlation_id = uuidv7()): Promise<ActContext> {
+export async function actContextFor(store: Store, admin: AdminPrincipal, correlation_id = uuidv7()): Promise<ActContext> {
   if (admin.prn) {
-    const known = await models.Principal.findById(admin.prn).select('_id kind status').lean().exec() as { _id: string; kind: PrincipalKind; status: string } | null;
+    const known = await store.principals.get(admin.prn);
     if (known && known.status !== 'retired') {
       return { actor: { principal: known._id, kind: known.kind, seat: 'operator' }, correlation_id };
     }
   }
   if (admin.kind === 'machine' && admin.clientId) {
-    const client = await models.OAuthClient.findById(admin.clientId).lean().exec() as { _id: string; principalId?: string; grantTypes?: string[]; claims?: Record<string, unknown> } | null;
-    const principal = client ? await ensureClientPrincipal(models, client) : null;
+    const client = await store.clients.get(admin.clientId);
+    const principal = client ? await ensureClientPrincipal(store, client) : null;
     if (!principal) throw new ActRefused('The credential behind this token is not a registered principal; it cannot act on the management plane.');
     return { actor: { principal: principal.id, kind: principal.kind, seat: 'operator' }, correlation_id };
   }
   if (admin.subject) {
     // A local login's `sub` is the user id; a federated login's is the provider subject (ADR-0012).
-    const user = await models.User.findOne({ $or: [{ _id: admin.subject }, { 'identities.subject': admin.subject }] }).lean().exec() as { _id: string; principalId?: string; status?: string } | null;
+    const user = await store.users.getBySubject(admin.subject);
     if (user) {
-      const principal = await ensureUserPrincipal(models, user);
+      const principal = await ensureUserPrincipal(store, user);
       return { actor: { principal: principal.id, kind: principal.kind, seat: 'operator' }, correlation_id };
     }
   }

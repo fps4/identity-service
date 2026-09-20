@@ -31,22 +31,30 @@ identity-service/
 
 ## Quick Start
 
-1. Copy `service/.env.example` to `.env` and set values:
-   - `MONGO_URI`, `MONGO_DB_NAME`
+1. Start DynamoDB Local — the table on a laptop ([ADR-0023](docs/design/decisions/0023-the-store-is-dynamodb.md)):
+
+   ```bash
+   docker run -d -p 8000:8000 amazon/dynamodb-local:3.3.1 -jar DynamoDBLocal.jar -sharedDb -inMemory
+   ```
+
+2. Copy `service/.env.example` to `.env` and set values:
+   - `TABLE_NAME`, `DYNAMODB_ENDPOINT` (`http://localhost:8000` for DynamoDB Local; unset in a deployment)
    - `AUTH_JWT_SECRET`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`
    - OAuth settings: token TTLs, deployment limits, optional key passphrase (see comments in `.env.example`)
    - Optionally update `SESSION_TTL_MINUTES`, `CORS_ORIGINS`
-2. Install dependencies & build:
+3. Install dependencies, make the table, build and test (the tests run against DynamoDB Local, each file
+   on a table of its own):
 
    ```bash
    cd service
    npm install
+   npm run db:create
    npm run build
    npm test
    npm start
    ```
 
-3. (Optional) Run with Docker:
+4. (Optional) Run with Docker — DynamoDB Local, the table made from the schema in code, the service:
 
    ```bash
    docker compose -f docker/compose.yaml -f docker/compose.dev.yaml up --build
@@ -159,10 +167,12 @@ Docs follow a two-plane structure — see [`docs/README.md`](docs/README.md) for
 
 ## Deployments
 
-The service is a **stateless container** with **MongoDB** as its only persistent dependency; the
-`docker/` compose stack runs it on a laptop (secrets in a **gitignored `docker/.env`** — never
-committed) and is the development loop, not a deployment target. The service listens on `PORT` (default
-`7305`). The image build runs `npm run build && npm test`, so a red test fails the build.
+The service is a **stateless container** with one **DynamoDB table** as its only persistent dependency
+([ADR-0023](docs/design/decisions/0023-the-store-is-dynamodb.md), maestro ADR-0018); the `docker/`
+compose stack runs it on a laptop against DynamoDB Local (secrets in a **gitignored `docker/.env`** —
+never committed) and is the development loop, not a deployment target. The service listens on `PORT`
+(default `7305`). The image build runs `npm run build`; the tests run in the DoD gate against DynamoDB
+Local, which an image build cannot reach.
 
 Deployment is serverless AWS as the Terraform module in [`terraform/`](terraform/), composed by a
 tenant's private configuration repository (`fps4/maestro-config-<tenant>` —
@@ -177,10 +187,10 @@ earlier self-hosted deploy, seed and migration workflows are gone.
 | Piece | |
 |---|---|
 | Service | the Express server, unchanged, as a Lambda function (Node 22, arm64) behind the [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) layer, behind an HTTP API Gateway with one `$default` route; one realm per deployment. `RECORD_SINK=off`: it writes the outbox and relays nothing in-process — the relay below is the one relay |
-| Database | the tenant's MongoDB Atlas cluster, named by `MONGO_URI` (maestro ADR-0005); the module creates none |
-| Signing keys | generated on first use and kept in the database's `key_store`, AES-256-GCM under `OAUTH_KEY_PASSPHRASE` — nothing on disk, so Lambda needs no change and the function's role is logs only |
-| Relay | a scheduled Lambda (every minute, one invocation at a time) runs the spine's relay handler over this service's outbox ([ADR-0022](docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md) §5) into the archive bucket and the FIFO topic the spine's module owns; its role is its log plus the spine's `relay_policy_json`, attached unchanged; its one secret is `MONGO_URI` |
-| Backups | a scheduled Lambda (02:30 UTC nightly) writes every collection to a versioned, encrypted, never-public S3 bucket; expires by a lifecycle rule; alarms on an error and on silence |
+| Table | one DynamoDB table, made and owned by the module ([`terraform/table.tf`](terraform/table.tf)): on-demand, keyed `pk`/`sk`, indexes `gsi1`, `gsi2` and the sparse `pending`, TTL on `expires_at`, point-in-time recovery, encrypted, `prevent_destroy`. The same shape is declared in [`service/src/db/table.ts`](service/src/db/table.ts), which the tests and the compose loop create their tables from and the service checks its table against at boot; **the two must match**. No database credential exists: each function's role is granted the table |
+| Signing keys | generated on first use and kept in the table (`key_store` items), AES-256-GCM under `OAUTH_KEY_PASSPHRASE` — nothing on disk, nothing in another AWS service |
+| Relay | a scheduled Lambda (every minute, one invocation at a time) runs the spine's relay handler over this service's outbox ([ADR-0022](docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md) §5) into the archive bucket and the FIFO topic the spine's module owns; its role is its log, the table and the spine's `relay_policy_json`, attached unchanged; it holds no secret |
+| Backups | a scheduled Lambda (02:30 UTC nightly) pages the whole table to a versioned, encrypted, never-public S3 bucket, one file per item kind; expires by a lifecycle rule; alarms on an error and on silence. Point-in-time recovery on the table is the second line |
 | Alarms | API 5xx (≥ 5 in 5 min); backup errors (≥ 1 in a day), backup silent (no invocation in a day — missing data breaches); relay errors (≥ 1 in an hour), relay silent (no invocation in 15 min — missing data breaches), relay refused (the spine refused an event — `maestro/spine` `Refused`, `function=relay`, `component=identity`; that workspace's relay is stopped until a person looks) |
 | Console | **not in the module** — see [the console](#the-console) below |
 
@@ -188,8 +198,8 @@ earlier self-hosted deploy, seed and migration workflows are gone.
 `index.mjs` plus `run.sh` for the Web Adapter's zip mode — the backup to `bundle/backup.zip` and the relay
 ([`service/src/relay/lambda.ts`](service/src/relay/lambda.ts)) to `bundle/relay.zip`; reproducibly, so
 `source_code_hash` only changes when the code does. `npm run bundle:smoke` imports the relay bundle and
-checks it exports its `handler`, then boots the service bundle against a port nothing listens on and
-checks it dies of a connection failure and not a missing module; `npm run sbom` writes a CycloneDX SBOM
+checks it exports its `handler`, then boots the service bundle against a DynamoDB endpoint nothing
+listens on and checks it dies of a connection failure and not a missing module; `npm run sbom` writes a CycloneDX SBOM
 per bundle (`bundle/*.cdx.json`, production dependencies only). `bundle/` is gitignored; the tenant's
 pipeline builds it at the tag it deploys.
 
@@ -197,11 +207,12 @@ pipeline builds it at the tag it deploys.
 
 | Input | Default | |
 |---|---|---|
-| `name` | `maestro-identity` | prefix for every named resource |
+| `name` | `maestro-identity` | prefix for every named resource, and the table's name unless `table_name` says otherwise |
+| `table_name` | `null` | the DynamoDB table's name, where a tenant names tables by its own rule |
 | `service_package`, `backup_package`, `relay_package` | required | the zips from `npm run bundle` |
 | `web_adapter_layer_arn` | required | the arm64 Web Adapter layer in the deployment's region: `arn:aws:lambda:<region>:<aws-account>:layer:LambdaAdapterLayerArm64:<version>`, from [the adapter's README](https://github.com/awslabs/aws-lambda-web-adapter#lambda-functions-packaged-as-zip-package-for-aws-managed-runtimes). It carries AWS's account id, which a public repository may not hold — so an input, in the tenant's tfvars |
-| `environment` | `{}` | every non-secret variable the service reads ([`service/.env.example`](service/.env.example)): `MONGO_DB_NAME`, `AUTH_JWT_AUDIENCE`, `CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `ADMIN_OPERATOR_ROLES`, `GOOGLE_CLIENT_ID`, `LOG_LEVEL`, the `OAUTH_*` limits — and the record's: `MAESTRO_WORKSPACE_ID` (this realm's workspace on maestro's record, `ws-<realm slug>`; the service's default `ws-identity-dev` is a laptop's), `MAESTRO_ACCOUNTABLE` (the `prn-h-…` of the human answerable for machine actors' acts; without it an agent or a pipeline acting through the management plane is refused — ADR-0022 §4) and `MAESTRO_CONSEQUENCE_CLASS` (`c1` by default). The relay gets the same map. The module sets `NODE_ENV` and `LOG_PRETTY` (a key here overrides them) and `AUTH_JWT_ISSUER`, `GOOGLE_REDIRECT_URI`, `RECORD_SINK=off` and the adapter's variables (nothing overrides those) |
-| `secrets` | required | variable → Secrets Manager ARN: `MONGO_URI` (required), `AUTH_JWT_SECRET`, `OAUTH_KEY_PASSPHRASE`, `IDENTITY_ADMIN_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET` when Google federates. All reach the service; the backup and the relay get `MONGO_URI` only |
+| `environment` | `{}` | every non-secret variable the service reads ([`service/.env.example`](service/.env.example)): `AUTH_JWT_AUDIENCE`, `CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `ADMIN_OPERATOR_ROLES`, `GOOGLE_CLIENT_ID`, `LOG_LEVEL`, the `OAUTH_*` limits — and the record's: `MAESTRO_WORKSPACE_ID` (this realm's workspace on maestro's record, `ws-<realm slug>`; the service's default `ws-identity-dev` is a laptop's), `MAESTRO_ACCOUNTABLE` (the `prn-h-…` of the human answerable for machine actors' acts; without it an agent or a pipeline acting through the management plane is refused — ADR-0022 §4) and `MAESTRO_CONSEQUENCE_CLASS` (`c1` by default). The relay gets the same map. The module sets `NODE_ENV` and `LOG_PRETTY` (a key here overrides them) and `TABLE_NAME`, `AUTH_JWT_ISSUER`, `GOOGLE_REDIRECT_URI`, `RECORD_SINK=off` and the adapter's variables (nothing overrides those) |
+| `secrets` | required | variable → Secrets Manager ARN: `OAUTH_KEY_PASSPHRASE` (required), `AUTH_JWT_SECRET`, `IDENTITY_ADMIN_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET` when Google federates. All reach the service; the relay and the backup get none — the table is a grant, not a credential |
 | `domain`, `certificate_arn` | `null` | the realm's hostname and its ACM certificate (same region); the root aliases DNS to the `domain_target` output |
 | `archive` | required | `{ relay_environment = module.spine.relay_environment, relay_policy_json = module.spine.relay_policy_json }` — the spine module's outputs, passed through: the three names the relay reads (`ARCHIVE_BUCKET`, `ARCHIVE_PREFIX`, `EVENTS_TOPIC_ARN`) and what its role may do. Required because the record is not optional: without an archive the outbox is never drained |
 | `relay_schedule` | `rate(1 minute)` | EventBridge Scheduler expression; the latency between an act and its record |
@@ -212,13 +223,13 @@ pipeline builds it at the tag it deploys.
 | `backup_schedule` | `cron(30 2 * * ? *)` | EventBridge Scheduler expression, UTC |
 | `backup_passphrase_secret_arn` | `null` | when set, every backup object is also AES-256-GCM encrypted under the passphrase in that secret |
 | `memory_mb`, `timeout_seconds` | `1024`, `29` | the service function; 29 s is the ceiling under the HTTP API's 30 s integration timeout |
-| `backup_memory_mb`, `backup_timeout_seconds` | `1024`, `900` | the backup buffers each collection compressed in memory |
+| `backup_memory_mb`, `backup_timeout_seconds` | `1024`, `900` | the backup holds the whole table in memory, grouped by kind |
 | `log_retention_days` | `90` | |
 | `alarm_actions` | `[]` | ARNs the alarms notify — the tenant's ops-signals topic |
 | `tags` | `{}` | |
 
-Outputs: `api_url`, `issuer`, `domain_target`, `service_function_name`, `backup_function_name`,
-`relay_function_name`, `backup_bucket_name`, `backup_prefix`, `api_id`.
+Outputs: `api_url`, `issuer`, `domain_target`, `table_name`, `table_arn`, `service_function_name`,
+`backup_function_name`, `relay_function_name`, `backup_bucket_name`, `backup_prefix`, `api_id`.
 
 ### A root, composing it
 
@@ -249,7 +260,6 @@ module "identity" {
   certificate_arn = var.identity_certificate_arn    # tfvars
 
   environment = {
-    MONGO_DB_NAME          = "identity-service"
     AUTH_JWT_AUDIENCE      = "maestro"
     CORS_ORIGINS           = "https://maestro.<tenant-domain>"
     AUTH_REGISTRATION_MODE = "invite"
@@ -258,8 +268,7 @@ module "identity" {
     MAESTRO_WORKSPACE_ID   = "ws-<tenant>"          # this realm on maestro's record
     MAESTRO_ACCOUNTABLE    = "prn-h-…"              # who answers for the realm's own automation
   }
-  secrets = {                                       # names from the tenant's secrets.md
-    MONGO_URI                    = aws_secretsmanager_secret.identity_mongo_uri.arn
+  secrets = {                                       # names from the tenant's secrets.md; no database credential
     AUTH_JWT_SECRET              = aws_secretsmanager_secret.identity_jwt_secret.arn
     OAUTH_KEY_PASSPHRASE         = aws_secretsmanager_secret.identity_key_passphrase.arn
     IDENTITY_ADMIN_CLIENT_SECRET = aws_secretsmanager_secret.identity_admin_client_secret.arn
@@ -302,8 +311,8 @@ read the function's configuration or the Terraform state. The state bucket is wh
 (ADR-0017 — versioned, private, the deploy role and break-glass only). The follow-up is the Parameters
 and Secrets Lambda extension with the service reading its configuration through it at boot; that is a
 change to `service/src/config.ts`, and the module then grants `secretsmanager:GetSecretValue` on the
-listed ARNs instead of setting values. `MONGO_URI` is the connection string without a path or query —
-the service appends `/<MONGO_DB_NAME>`.
+listed ARNs instead of setting values. There is no database secret at all: the table is reached by the
+function's role (ADR-0023).
 
 **The record.** The registry emits its lifecycle — `PrincipalRegistered`, `PrincipalSuspended`,
 `PrincipalReinstated`, `SeatOccupancyChanged` — as spine envelopes into a transactional outbox
@@ -317,47 +326,50 @@ required: a deployment without one would write an outbox nothing ever drains.
 
 ### Seeding a realm
 
-Seeding is `npm run seed` from `service/` against the deployment's database (RQ-0004): it reads a YAML
+Seeding is `npm run seed` from `service/` against the deployment's table (RQ-0004): it reads a YAML
 seed and the `${ENV}` secrets it names from the process environment, and it is idempotent. The tenant's
 seed lives in `fps4/maestro-config-<tenant>` (the realm's applications, credentials, operators — the
 [deployment guide](docs/guides/deployment.md) has the shape), and the tenant's pipeline runs it as a step
-after apply, from the checked-out component at its tag:
+after apply, from the checked-out component at its tag, with the deploy role's AWS credentials in the
+environment and the module's `table_name` output:
 
 ```bash
 cd identity-service/service && npm ci
 SEED_FILE=../../maestro-config-<tenant>/identity/seed.yaml \
-  MONGO_URI=$MONGO_URI MONGO_DB_NAME=identity-service \
+  TABLE_NAME=<tenant>-identity AWS_REGION=<region> MAESTRO_WORKSPACE_ID=ws-<tenant> \
   IDENTITY_ADMIN_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… npm run seed
 ```
 
-The runner's egress address must be on the Atlas cluster's IP access list (fps4's own tenant runs on
-the ds1 runner, which is). Not a Lambda: the seed is a rare operator step that takes a file and a
-handful of secrets that are the seed's, not the service's — packaging both per tenant into a third
-bundle and a second secrets path buys nothing over the one command the compose stack already documents,
-and a person holding the role runs the same command from a laptop (ADR-0004).
+The role that runs it needs the table's item actions (the same grant the service has); nothing else
+has to be reachable. Not a Lambda: the seed is a rare operator step that takes a file and a handful of
+secrets that are the seed's, not the service's — packaging both per tenant into a third bundle and a
+second secrets path buys nothing over the one command the compose stack already documents, and a person
+holding the role runs the same command from a laptop (ADR-0004).
 
 ### Backups and restore
 
-The backup Lambda ([`service/lambda/backup.ts`](service/lambda/backup.ts)) connects with the driver and
-writes every collection as gzipped **canonical Extended JSON lines** — one object per collection under
-`<prefix>/<yyyy-mm-dd>/<collection>.jsonl.gz`, plus `manifest.json` (document counts, sizes, SHA-256s).
-Canonical means every BSON type is kept as it was, so a restore is the same documents. It replaces
-`docker/backup.sh`'s `mongodump` for a deployment: a Lambda has no `mongodump`, and `mongoimport` reads
-this format. With `backup_passphrase_secret_arn` each object is additionally AES-256-GCM encrypted under
-the passphrase (scrypt-derived key, the construction the signing keys use) and named `.jsonl.gz.enc`;
-without it the bucket — SSE, versioned, never public, TLS-only, written by a role that can only
-`PutObject` under the prefix — is the protection, as the plaintext path of ADR-0008 was. Restore:
+The backup Lambda ([`service/lambda/backup.ts`](service/lambda/backup.ts)) pages the whole table (a
+consistent `Scan` — the only function granted one) and writes every item as gzipped **canonical JSON
+lines**, one object per item kind under `<prefix>/<yyyy-mm-dd>/<kind>.jsonl.gz` (`user`, `oauth_client`,
+`outbox`, `unique`, …), plus `manifest.json` (item counts, sizes, SHA-256s). A line is the item exactly as
+the table holds it, keys and index attributes included, its object keys sorted — so a restore is a
+`PutItem` per line and the same item is always the same bytes. With `backup_passphrase_secret_arn` each
+object is additionally AES-256-GCM encrypted under the passphrase (scrypt-derived key, the construction
+the signing keys use) and named `.jsonl.gz.enc`; without it the bucket — SSE, versioned, never public,
+TLS-only, written by a role that can only `PutObject` under the prefix — is the protection, as the
+plaintext path of ADR-0008 was. Restore, with credentials that may write the table:
 
 ```bash
 aws s3 sync s3://<bucket>/backups/<yyyy-mm-dd>/ ./restore/ && cd restore
-BACKUP_PASSPHRASE=… npm --prefix ../identity-service/service run backup:decrypt -- users.jsonl.gz.enc users.jsonl.gz   # .enc only
+BACKUP_PASSPHRASE=… npm --prefix ../identity-service/service run backup:decrypt -- user.jsonl.gz.enc user.jsonl.gz   # .enc only
 gunzip *.jsonl.gz
-for c in *.jsonl; do mongoimport --uri "$MONGO_URI/identity-service" --collection "${c%.jsonl}" --drop --file "$c"; done
+TABLE_NAME=<tenant>-identity npm --prefix ../identity-service/service run backup:restore -- *.jsonl
 ```
 
-`key_store` holds the signing keys encrypted under `OAUTH_KEY_PASSPHRASE`: restore with the same
-passphrase or the realm cannot sign. Backups are recovery points, not the record — the bucket has no
-Object Lock and a lifecycle rule expires them.
+Point-in-time recovery on the table, which the module turns on, is the second line: any second of the
+last 35 days, restored by AWS to a new table. `key_store` items hold the signing keys encrypted under
+`OAUTH_KEY_PASSPHRASE`: restore with the same passphrase or the realm cannot sign. Backups are recovery
+points, not the record — the bucket has no Object Lock and a lifecycle rule expires them.
 
 ### The console
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync, createPublicKey } from 'crypto';
 import { SignJWT } from 'jose';
 
@@ -20,128 +20,40 @@ import { requireAdmin, ADMIN_SCOPES } from '../src/core/admin-auth.js';
 import { CONFIG } from '../src/config.js';
 import { verifySecret } from '../src/utils/hash.js';
 
-// --- A compact in-memory mongoose-ish collection supporting the methods admin.ts uses ---
+import { testStore, type TestStore } from './helpers/store.js';
+import type { Store } from '../src/db/index.js';
 
-const match = (doc: any, filter: Record<string, any>): boolean =>
-  Object.entries(filter ?? {}).every(([k, v]) => {
-    if (v && typeof v === 'object' && !Array.isArray(v) && '$gt' in v) return doc[k] != null && doc[k] > v.$gt;
-    if (v && typeof v === 'object' && !Array.isArray(v) && '$in' in v) return Array.isArray(v.$in) && v.$in.includes(doc[k]);
-    // Dotted path into the identities[] array (e.g. 'identities.subject').
-    if (k.startsWith('identities.')) {
-      const field = k.slice('identities.'.length);
-      return Array.isArray(doc.identities) && doc.identities.some((i: any) => i[field] === v);
-    }
-    return doc[k] === v;
-  });
-
-function fakeCollection(items: any[]) {
-  const exec = <T>(v: T) => ({ exec: async () => v, lean: function () { return this; }, select: function () { return this; } });
-  return {
-    _items: items,
-    find: (filter: any = {}) => exec(items.filter((d) => match(d, filter))),
-    findById: (id: string) => exec(items.find((d) => d._id === id) ?? null),
-    findOne: (filter: any) => exec(items.find((d) => match(d, filter)) ?? null),
-    countDocuments: (filter: any = {}) => ({ exec: async () => items.filter((d) => match(d, filter)).length }),
-    create: async (doc: any) => {
-      if (doc._id != null && items.some((d) => d._id === doc._id)) {
-        throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
-      }
-      items.push({ ...doc });
-      return doc;
-    },
-    findByIdAndDelete: (id: string) => {
-      const i = items.findIndex((d) => d._id === id);
-      const removed = i >= 0 ? items.splice(i, 1)[0] : null;
-      return exec(removed);
-    },
-    findByIdAndUpdate: (id: string, update: any, opts: any = {}) => {
-      let doc = items.find((d) => d._id === id);
-      const set = update.$set ?? {};
-      const onInsert = update.$setOnInsert ?? {};
-      if (!doc) {
-        if (!opts.upsert) return exec(null); // mongoose returns null when not found and not upserting
-        doc = { _id: id, ...onInsert, ...set }; items.push(doc);
-      } else { Object.assign(doc, set); }
-      return exec(doc);
-    },
-    // The assignment upsert path (ADR-0019): match by filter, apply $set, create from $setOnInsert on miss.
-    findOneAndUpdate: (filter: any, update: any, opts: any = {}) => {
-      let doc = items.find((d) => match(d, filter));
-      const set = update.$set ?? {};
-      const onInsert = update.$setOnInsert ?? {};
-      if (!doc) {
-        if (!opts.upsert) return exec(null);
-        doc = { ...onInsert, ...set }; items.push(doc);
-      } else { Object.assign(doc, set); }
-      return exec(doc);
-    },
-    deleteOne: (filter: any) => ({
-      exec: async () => {
-        const i = items.findIndex((d) => match(d, filter));
-        if (i < 0) return { deletedCount: 0 };
-        items.splice(i, 1);
-        return { deletedCount: 1 };
-      }
-    }),
-    deleteMany: (filter: any = {}) => ({
-      exec: async () => {
-        let deletedCount = 0;
-        for (let i = items.length - 1; i >= 0; i--) {
-          if (match(items[i], filter)) { items.splice(i, 1); deletedCount++; }
-        }
-        return { deletedCount };
-      }
-    }),
-    updateOne: (filter: any, update: any) => ({
-      exec: async () => {
-        const doc = items.find((d) => match(d, filter));
-        if (!doc) return { matchedCount: 0 };
-        Object.assign(doc, update.$set ?? {});
-        for (const [k, v] of Object.entries(update.$push ?? {})) {
-          doc[k] = doc[k] ?? []; doc[k].push(v);
-        }
-        for (const [k, cond] of Object.entries(update.$pull ?? {})) {
-          if (Array.isArray(doc[k])) doc[k] = doc[k].filter((el: any) => !match(el, cond as any));
-        }
-        return { matchedCount: 1 };
-      }
-    })
-  };
+// A table of the test's own on DynamoDB Local, with a default application (ADR-0020) so credentials —
+// which require an applicationId — can be created against it (its catalogue serves the assign/roles
+// tests), and one active signing key for the stats.
+async function makeState(): Promise<TestStore> {
+  const db = await testStore();
+  await db.store.applications.create({ _id: 'default-app', name: 'Default App', audience: 'default-ws', roles: [{ key: 'member' }, { key: 'lead' }], resources: [] });
+  await db.store.signingKeys.create({ kid: 'k1', privateKey: 'pem', publicKey: 'pem', algorithm: 'RS256', status: 'active', createdAt: new Date(), rotatedAt: null });
+  return db;
 }
 
-function makeState() {
-  return {
-    // A default application (ADR-0020) so credentials — which now require an applicationId — can be
-    // created against it. Its catalogue is used by the assign/roles tests.
-    Application: fakeCollection([{ _id: 'default-app', name: 'Default App', audience: 'default-ws', roles: [{ key: 'member' }, { key: 'lead' }] }]),
-    OAuthClient: fakeCollection([]),
-    User: fakeCollection([]),
-    Assignment: fakeCollection([]),
-    OAuthToken: fakeCollection([]),
-    KeyStore: fakeCollection([{ _id: 'k1', status: 'active' }])
-  };
-}
-
-function makeAdmin(state: ReturnType<typeof makeState>) {
-  return createAdminService({
-    getMasterConnection: async () => ({}) as any,
-    makeModels: () => state as any
-  });
+function makeAdmin(store: Store) {
+  return createAdminService({ store });
 }
 
 describe('admin service', () => {
-  let state: ReturnType<typeof makeState>;
-  beforeEach(() => { state = makeState(); });
+  let db: TestStore;
+  let state: Store;
+  beforeEach(async () => { db = await makeState(); state = db.store; });
+  afterEach(() => db.drop());
 
   it('creates a credential under an application, returns the secret once, and stores only its hash', async () => {
     const admin = makeAdmin(state);
     const { clientId, secret } = await admin.createClient({ applicationId: 'default-app', name: 'svc', grantTypes: ['client_credentials'], scopes: ['admin'] });
     expect(secret).toBeTruthy();
-    const stored = state.OAuthClient._items.find((c) => c._id === clientId);
+    const stored = (await state.clients.get(clientId))!;
     expect(stored.applicationId).toBe('default-app');
     expect(stored.secretHash).not.toContain(secret);
     expect(verifySecret(secret, stored.secretHash)).toBe(true);
     expect(stored).not.toHaveProperty('roles'); // the catalogue lives on the application now (ADR-0020)
+    // A listing never carries the hash.
+    expect((await admin.listClients('default-app')).find((c) => c._id === clientId)).not.toHaveProperty('secretHash');
   });
 
   it('refuses to create a credential against an unknown application', async () => {
@@ -161,7 +73,7 @@ describe('admin service', () => {
       subject: 'runtime@skills-coach.fps4.nl',
       claims: { role: 'product_runtime', email: 'runtime@skills-coach.fps4.nl' }
     });
-    const stored = state.OAuthClient._items.find((c) => c._id === clientId);
+    const stored = (await state.clients.get(clientId))!;
     expect(stored.claims).toEqual({ role: 'product_runtime', email: 'runtime@skills-coach.fps4.nl' });
   });
 
@@ -175,7 +87,7 @@ describe('admin service', () => {
     const admin = makeAdmin(state);
     const { clientId } = await admin.createClient({ applicationId: 'default-app', id: 'coach-web', name: 'Coach Web', grantTypes: ['password'], audience: 'coach-workspace' });
     expect(clientId).toBe('coach-web');
-    expect(state.OAuthClient._items.find((c) => c._id === 'coach-web')).toBeTruthy();
+    expect(await state.clients.get('coach-web')).toBeTruthy();
     await expect(admin.createClient({ applicationId: 'default-app', id: 'coach-web', name: 'dupe', grantTypes: ['password'] }))
       .rejects.toMatchObject({ status: 409, code: 'client_exists' });
   });
@@ -183,9 +95,9 @@ describe('admin service', () => {
   it('rotates a client secret and 404s on an unknown client', async () => {
     const admin = makeAdmin(state);
     const { clientId } = await admin.createClient({ applicationId: 'default-app', name: 'svc', grantTypes: ['client_credentials'] });
-    const before = state.OAuthClient._items.find((c) => c._id === clientId).secretHash;
+    const before = (await state.clients.get(clientId))!.secretHash;
     const { secret } = await admin.rotateClientSecret(clientId);
-    const after = state.OAuthClient._items.find((c) => c._id === clientId).secretHash;
+    const after = (await state.clients.get(clientId))!.secretHash;
     expect(after).not.toBe(before);
     expect(verifySecret(secret, after)).toBe(true);
     await expect(admin.rotateClientSecret('nope')).rejects.toBeInstanceOf(AdminServiceError);
@@ -196,7 +108,7 @@ describe('admin service', () => {
     const { clientId } = await admin.createClient({ applicationId: 'default-app', id: 'gone', name: 'tmp', grantTypes: ['password'] });
     const res = await admin.deleteClient(clientId);
     expect(res).toEqual({ clientId: 'gone', deleted: true });
-    expect(state.OAuthClient._items.find((c) => c._id === 'gone')).toBeUndefined();
+    expect(await state.clients.get('gone')).toBeNull();
     await expect(admin.deleteClient('gone')).rejects.toMatchObject({ status: 404, code: 'client_not_found' });
   });
 
@@ -215,17 +127,21 @@ describe('admin service', () => {
     const res = await admin.linkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1', emailVerified: true });
     expect(res).toMatchObject({ email: 'op@acme.test', provider: 'google', subject: 'g-1', linked: true });
 
-    const user = state.User._items.find((u) => u.email === 'op@acme.test');
+    const user = (await state.users.getByEmail('op@acme.test'))!;
     expect(user.identities).toHaveLength(1);
     expect(user.identities[0]).toMatchObject({ provider: 'google', subject: 'g-1', emailVerified: true });
+    expect(user.identities[0].linkedAt).toBeInstanceOf(Date);
+    // The identity resolves to the person (RQ-0011): the lookup a federated login makes.
+    expect(await state.users.getByIdentity('google', 'g-1')).toMatchObject({ _id: user._id });
 
     // Idempotent: linking the same identity again does not duplicate it.
     await admin.linkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1' });
-    expect(user.identities).toHaveLength(1);
+    expect((await state.users.getByEmail('op@acme.test'))!.identities).toHaveLength(1);
 
     // listUsers surfaces identities and never the password hash.
-    const listed = (await admin.listUsers()).find((u: any) => u.email === 'op@acme.test');
+    const listed = (await admin.listUsers()).find((u) => u.email === 'op@acme.test')!;
     expect(listed.identities[0].subject).toBe('g-1');
+    expect(listed).not.toHaveProperty('passwordHash');
   });
 
   it('refuses to link an identity already owned by another user', async () => {
@@ -243,7 +159,9 @@ describe('admin service', () => {
     await admin.linkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1' });
     const res = await admin.unlinkUserIdentity('op@acme.test', { provider: 'google', subject: 'g-1' });
     expect(res).toMatchObject({ unlinked: true });
-    expect(state.User._items.find((u) => u.email === 'op@acme.test').identities).toHaveLength(0);
+    expect((await state.users.getByEmail('op@acme.test'))!.identities).toHaveLength(0);
+    // Released: another user may now link it.
+    expect(await state.users.getByIdentity('google', 'g-1')).toBeNull();
     await expect(admin.unlinkUserIdentity('nobody@acme.test', { provider: 'google', subject: 'g-1' }))
       .rejects.toMatchObject({ status: 404, code: 'user_not_found' });
   });
@@ -265,7 +183,7 @@ describe('admin service', () => {
     const admin = makeAdmin(state);
     const u = await admin.createUser({ email: 'u@x.test', password: 'secret-pass' });
     expect(u).toEqual({ id: expect.any(String), email: 'u@x.test' });
-    expect(state.User._items[0]).not.toHaveProperty('roles');
+    expect(await state.users.get(u.id)).not.toHaveProperty('roles');
   });
 
   // --- Applications (ADR-0020): the product-level registration ---
@@ -288,7 +206,7 @@ describe('admin service', () => {
 
     const del = await admin.deleteApplication('coach');
     expect(del).toEqual({ applicationId: 'coach', deleted: true });
-    expect(state.Application._items.find((a) => a._id === 'coach')).toBeUndefined();
+    expect(await state.applications.get('coach')).toBeNull();
     await expect(admin.deleteApplication('coach')).rejects.toMatchObject({ status: 404, code: 'application_not_found' });
   });
 
@@ -345,12 +263,12 @@ describe('admin service', () => {
 
     const assigned = await admin.assignUser({ email: 'u@x.test', applicationId, roles: ['member'] });
     expect(assigned).toMatchObject({ email: 'u@x.test', applicationId, roles: ['member'], status: 'active' });
-    expect(state.Assignment._items).toHaveLength(1);
+    expect(await state.assignments.listByApplication(applicationId)).toHaveLength(1);
 
     // Idempotent upsert: re-assigning updates the roles in place, never a second row.
     const reassigned = await admin.assignUser({ email: 'u@x.test', applicationId, roles: ['member', 'lead'] });
     expect(reassigned.roles).toEqual(['member', 'lead']);
-    expect(state.Assignment._items).toHaveLength(1);
+    expect(await state.assignments.listByApplication(applicationId)).toHaveLength(1);
 
     // Both directions of the entitlement graph.
     const members = await admin.listApplicationMembers(applicationId);
@@ -362,7 +280,7 @@ describe('admin service', () => {
     const suspended = await admin.updateAssignment('u@x.test', applicationId, { status: 'suspended' });
     expect(suspended.status).toBe('suspended');
     expect(await admin.revokeAssignment('u@x.test', applicationId)).toMatchObject({ email: 'u@x.test', applicationId, revoked: true });
-    expect(state.Assignment._items).toHaveLength(0);
+    expect(await state.assignments.listByApplication(applicationId)).toHaveLength(0);
     await expect(admin.updateAssignment('u@x.test', applicationId, { status: 'active' }))
       .rejects.toMatchObject({ status: 404, code: 'assignment_not_found' });
     await expect(admin.revokeAssignment('u@x.test', applicationId))
@@ -374,9 +292,10 @@ describe('admin service', () => {
     await admin.createApplication({ id: 'app-cascade', name: 'Cascade', audience: 'cascade-ws', roles: [{ key: 'member' }] });
     await admin.createUser({ email: 'u@x.test', password: 'secret-pass' });
     await admin.assignUser({ email: 'u@x.test', applicationId: 'app-cascade', roles: ['member'] });
-    expect(state.Assignment._items).toHaveLength(1);
+    expect(await state.assignments.listByApplication('app-cascade')).toHaveLength(1);
     await admin.deleteApplication('app-cascade');
-    expect(state.Assignment._items).toHaveLength(0);
+    expect(await state.assignments.listByApplication('app-cascade')).toHaveLength(0);
+    expect(await admin.listUserAssignments('u@x.test')).toEqual([]);
   });
 
   it('refuses to assign a user against an unknown application', async () => {

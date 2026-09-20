@@ -10,7 +10,6 @@
  */
 import { createInterface } from 'readline';
 import { verifyAdminToken, type AdminPrincipal } from '../core/admin-auth.js';
-import { disconnect } from '../utils/db.js';
 import logger from '../utils/logger.js';
 import { handleRpc } from './handler.js';
 
@@ -45,7 +44,7 @@ async function main(): Promise<void> {
     if (response) send(response);
   });
 
-  const shutdown = async () => { await disconnect().catch(() => {}); process.exit(0); };
+  const shutdown = () => { process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

@@ -1,6 +1,10 @@
-import mongoose, { Connection, Document, Model } from 'mongoose';
-
-export interface OAuthTokenDocument extends Document<string> {
+/**
+ * An issued token's metadata: an access token by its `jti`, or a refresh token by an internal id with
+ * only the hash of its value. Stored as `realm#oauth_token` / `<_id>`; a refresh token is found by its
+ * hash through `gsi1`, and the day's issuance is counted per type through `gsi2` (ADR-0023). The table's
+ * TTL removes a token a day after it expired.
+ */
+export interface OAuthTokenDocument {
   _id: string; // access token id (jti) or refresh token id
   clientId: string;
   subject?: string;
@@ -20,30 +24,3 @@ export interface OAuthTokenDocument extends Document<string> {
    */
   resource?: string;
 }
-
-const oauthTokenSchema = new mongoose.Schema<OAuthTokenDocument>({
-  _id: { type: String, required: true },
-  clientId: { type: String, required: true, index: true },
-  subject: { type: String },
-  sessionId: { type: String },
-  type: { type: String, enum: ['access', 'refresh'], required: true },
-  scope: { type: [String], default: [] },
-  expiresAt: { type: Date, required: true, index: true },
-  issuedAt: { type: Date, required: true },
-  refreshTokenId: { type: String },
-  status: { type: String, enum: ['active', 'revoked', 'expired'], default: 'active', index: true },
-  hashedToken: { type: String },
-  resource: { type: String }
-}, { timestamps: false });
-
-oauthTokenSchema.index({ clientId: 1, status: 1 });
-oauthTokenSchema.index({ type: 1, issuedAt: 1 });
-
-export function getOAuthTokenModel(connection: Connection): Model<OAuthTokenDocument> {
-  return (connection.models.OAuthToken as Model<OAuthTokenDocument>) ??
-    connection.model<OAuthTokenDocument>('OAuthToken', oauthTokenSchema, 'oauth_tokens');
-}
-
-export const OAuthToken: Model<OAuthTokenDocument> =
-  (mongoose.models.OAuthToken as Model<OAuthTokenDocument>) ??
-  mongoose.model<OAuthTokenDocument>('OAuthToken', oauthTokenSchema, 'oauth_tokens');

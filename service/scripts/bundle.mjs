@@ -6,7 +6,7 @@
 //   service  the Express server, unchanged, behind the Lambda Web Adapter in zip mode: the handler is
 //            run.sh, which execs node on the bundle; the adapter (a layer) proxies API Gateway events
 //            to the port the service listens on.
-//   backup   the scheduled backup (lambda/backup.ts): every collection to S3 as Extended JSON lines.
+//   backup   the scheduled backup (lambda/backup.ts): every item of the table to S3 as JSON lines.
 //   relay    the scheduled relay (src/relay/lambda.ts, ADR-0022 §5): the spine's relayHandler over this
 //            service's outbox, into the archive and the events topic the spine's module names.
 import { build } from 'esbuild';
@@ -20,19 +20,6 @@ const FUNCTIONS = {
   relay: { entry: 'src/relay/lambda.ts', webAdapter: false }
 };
 
-// The MongoDB driver's optional native and cloud-auth dependencies. None is installed here and none is
-// used (SCRAM over TLS to Atlas); left external so esbuild does not try to resolve them. Requiring one at
-// runtime would fail — which is what an unsupported option should do.
-const DRIVER_OPTIONALS = [
-  'kerberos',
-  '@mongodb-js/zstd',
-  'snappy',
-  'mongodb-client-encryption',
-  'gcp-metadata',
-  'aws4',
-  'socks',
-  '@aws-sdk/credential-providers'
-];
 // pino loads its pretty transport by name at runtime when LOG_PRETTY=true; the module sets it false.
 const RUNTIME_OPTIONALS = ['pino-pretty'];
 
@@ -53,9 +40,9 @@ for (const [name, { entry, webAdapter }] of Object.entries(FUNCTIONS)) {
     sourcemap: false,
     minify: false,
     legalComments: 'none',
-    external: [...DRIVER_OPTIONALS, ...RUNTIME_OPTIONALS],
+    external: RUNTIME_OPTIONALS,
     banner: {
-      // CommonJS dependencies (mongoose, pino, express) keep their require()/__dirname; give them both.
+      // CommonJS dependencies (the AWS SDK, pino, express) keep their require()/__dirname; give them both.
       js: [
         "import { createRequire } from 'node:module';",
         "import { fileURLToPath } from 'node:url';",

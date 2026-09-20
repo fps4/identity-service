@@ -1,11 +1,10 @@
 import { randomUUID, randomBytes } from 'crypto';
-import type { ClientSession, Connection } from 'mongoose';
 import { hashSecret } from '../utils/hash.js';
 import { rotateSigningKey, listPublicKeys } from '../utils/key-store.js';
 import { generateInviteCode, inviteCodeDigest, deriveInviteStatus } from './invites.js';
-import type { ModelsBucket } from '../oauth/types.js';
 import type { Logger } from '../utils/logger.js';
-import type { AppRole } from '../models/index.js';
+import type { AppRole, AssignmentDocument, OAuthClientDocument, UserDocument } from '../models/index.js';
+import { ConditionFailed, type Store, type Transaction } from '../db/index.js';
 import {
   ActRefused,
   clientPrincipalKind,
@@ -14,6 +13,7 @@ import {
   ensureUserPrincipal,
   isBodyToken,
   mintPrincipalId,
+  principalRow,
   realmOf,
   setPrincipalStatus,
   withRecordTransaction,
@@ -34,8 +34,8 @@ export class AdminServiceError extends Error {
 }
 
 export interface AdminServiceDependencies {
-  getMasterConnection: () => Promise<Connection>;
-  makeModels: (connection: Connection) => ModelsBucket;
+  /** The table (ADR-0023). Injectable so tests drive the service over a table of their own. */
+  store: Store;
   now?: () => Date;
   logger?: Logger;
   /**
@@ -62,7 +62,7 @@ export interface CreateApplicationInput {
 /** A credential under an application (ADR-0020) — an OAuth client (web / machine-runtime / CI). */
 export interface CreateClientInput {
   applicationId: string;   // REQUIRED: the application this credential belongs to (ADR-0020)
-  /** Optional stable client id (becomes the OAuth `client_id` / Mongo `_id`). Omit to generate a UUID. */
+  /** Optional stable client id (becomes the OAuth `client_id` / the document `_id`). Omit to generate a UUID. */
   id?: string;
   name: string;
   grantTypes: string[];
@@ -169,23 +169,20 @@ function assertRolesInCatalogue(roles: string[], catalogue: AppRole[], applicati
 
 export function createAdminService(deps: AdminServiceDependencies) {
   const nowFn = deps.now ?? (() => new Date());
-  const models = async (): Promise<ModelsBucket> => deps.makeModels(await deps.getMasterConnection());
+  const { store } = deps;
 
   // --- maestro's record (ADR-0022) ---
 
   /** The recorder for this act, or null when the record is not wired. With it wired, an act without a
    *  known actor is refused: there is nobody to attribute it to, so it is not performed. */
-  function recorderFor(m: ModelsBucket, ctx: ActContext | undefined): Recorder | null {
+  function recorderFor(ctx: ActContext | undefined): Recorder | null {
     if (!deps.record) return null;
     if (!ctx) throw new ActRefused('This act has no acting principal and cannot be recorded; it is not performed.', 403, 'unattributed_act');
-    return createRecorder({ models: m, config: deps.record, actor: ctx.actor, correlation_id: ctx.correlation_id, logger: deps.logger, now: () => nowFn().toISOString() });
+    return createRecorder({ store, config: deps.record, actor: ctx.actor, correlation_id: ctx.correlation_id, logger: deps.logger, now: () => nowFn().toISOString() });
   }
 
-  /** Run the act's writes and its emit as one unit where the database allows it. */
-  async function transact<T>(fn: (session: ClientSession | undefined) => Promise<T>): Promise<T> {
-    if (!deps.record) return fn(undefined);
-    return withRecordTransaction(await deps.getMasterConnection(), fn, deps.logger);
-  }
+  /** Run the act's writes and its emit as one unit (ADR-0023 §3). */
+  const transact = <T>(fn: (tx: Transaction) => Promise<T>): Promise<T> => withRecordTransaction(store, fn, deps.logger);
 
   const realm = () => realmOf(deps.record?.workspaceId ?? 'ws-identity-dev');
 
@@ -203,49 +200,53 @@ export function createAdminService(deps: AdminServiceDependencies) {
   const effectiveRoles = (a: { roles?: string[]; status?: string } | null | undefined): string[] =>
     a && a.status !== 'suspended' ? (a.roles ?? []) : [];
 
-  /** Revoke every seat a set of assignments confers — what a deletion cascades to. Principals are
-   *  backfilled on the way, so a pool that predates the registry still records its revocations. */
-  async function revokeAllSeats(m: ModelsBucket, assignments: Array<{ userId: string; applicationId: string; roles?: string[]; status?: string }>, session: ClientSession | undefined): Promise<Act[]> {
-    const acts: Act[] = [];
+  /**
+   * Revoke a set of assignments, each with the seats it conferred, one transaction per assignment — what
+   * a deletion cascades to. A transaction holds at most a hundred writes and an application may have more
+   * members than that; each step is atomic on its own, the counter serialises them, and a run cut short
+   * leaves the rest to the next call. Events chain by causation to the first of the whole act.
+   */
+  async function revokeAssignments(assignments: AssignmentDocument[], recorder: Recorder | null): Promise<string | null> {
+    let causation: string | null = null;
     for (const a of assignments) {
       const roles = effectiveRoles(a);
-      if (roles.length === 0) continue;
-      const user = await m.User.findById(a.userId, null, { session }).select('_id principalId status').lean().exec() as { _id: string; principalId?: string; status?: string } | null;
-      if (!user) continue;
-      const principal = await ensureUserPrincipal(m, user, session);
-      acts.push(...seatChanges(principal.id, a.applicationId, roles, []));
+      // The principal is backfilled before the transaction, so a pool that predates the registry still records its revocations.
+      const user = recorder && roles.length > 0 ? await store.users.get(a.userId) : null;
+      const principal = user ? await ensureUserPrincipal(store, user) : null;
+      const emitted = await transact(async (tx) => {
+        store.assignments.delete(tx, a.userId, a.applicationId);
+        return recorder && principal ? recorder.emit(tx, seatChanges(principal.id, a.applicationId, roles, []), causation) : [];
+      });
+      causation ??= emitted[0]?.event_id ?? null;
     }
-    return acts;
+    return causation;
   }
 
   // --- Applications (ADR-0020): the product-level registration ---
 
   async function listApplications() {
-    const m = await models();
-    return m.Application.find().lean().exec();
+    return store.applications.list();
   }
 
   async function getApplication(id: string) {
-    const m = await models();
-    const app = await m.Application.findById(id).lean().exec();
+    const app = await store.applications.get(id);
     if (!app) throw new AdminServiceError('Application not found', 404, 'application_not_found');
     return app;
   }
 
-  /** Create (or upsert with an explicit id) an application. */
+  /** Create an application. */
   async function createApplication(input: CreateApplicationInput): Promise<{ applicationId: string }> {
     if (!input.name?.trim()) throw new AdminServiceError('name is required', 400, 'invalid_input');
     const roles = normalizeRoleCatalogue(input.roles);
     const resources = normalizeResources(input.resources);
-    const m = await models();
     const applicationId = input.id?.trim() || randomUUID();
     // An application id names the application on maestro's record (ADR-0022, `SeatOccupancyChanged`)
     // and must be a body token there; refused here rather than at the first assignment.
     if (!isBodyToken(applicationId)) throw new AdminServiceError(`application id "${applicationId}" must be an identifier (letters, digits, . _ : @ / + = # -), not free text`, 400, 'invalid_input');
     try {
-      await m.Application.create({ _id: applicationId, name: input.name, audience: input.audience, roles, resources });
+      await store.applications.create({ _id: applicationId, name: input.name, audience: input.audience, roles, resources }, nowFn());
     } catch (err) {
-      if ((err as { code?: number }).code === 11000) throw new AdminServiceError(`Application '${applicationId}' already exists`, 409, 'application_exists');
+      if (err instanceof ConditionFailed) throw new AdminServiceError(`Application '${applicationId}' already exists`, 409, 'application_exists');
       throw err;
     }
     deps.logger?.info?.({ applicationId }, 'admin created application');
@@ -255,47 +256,40 @@ export function createAdminService(deps: AdminServiceDependencies) {
   /** Delete an application. Refuses while it still has credentials (delete or move those first). Every
    *  seat its assignments conferred is revoked on the record (ADR-0022). */
   async function deleteApplication(applicationId: string, ctx?: ActContext): Promise<{ applicationId: string; deleted: true }> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
-    const credentials = await m.OAuthClient.countDocuments({ applicationId }).exec();
+    const recorder = recorderFor(ctx);
+    const credentials = await store.clients.countByApplication(applicationId);
     if (credentials > 0) throw new AdminServiceError(`Application still has ${credentials} credential(s); delete them first`, 409, 'application_has_credentials');
-    const exists = await m.Application.findById(applicationId).select('_id').lean().exec();
+    const exists = await store.applications.get(applicationId);
     if (!exists) throw new AdminServiceError('Application not found', 404, 'application_not_found');
-    await transact(async (session) => {
-      const assignments = await m.Assignment.find({ applicationId }, null, { session }).lean().exec() as Array<{ userId: string; applicationId: string; roles?: string[]; status?: string }>;
-      const acts = recorder ? await revokeAllSeats(m, assignments, session) : [];
-      const deleted = await m.Application.findByIdAndDelete(applicationId, { session }).lean().exec();
-      if (!deleted) throw new AdminServiceError('Application not found', 404, 'application_not_found');
-      await m.Assignment.deleteMany({ applicationId }, { session }).exec();
-      if (recorder) await recorder.emit(session, acts);
-    });
+    await revokeAssignments(await store.assignments.listByApplication(applicationId), recorder);
+    try {
+      await transact(async (tx) => { store.applications.delete(tx, applicationId); });
+    } catch (err) {
+      if (err instanceof ConditionFailed) throw new AdminServiceError('Application not found', 404, 'application_not_found');
+      throw err;
+    }
     deps.logger?.info?.({ applicationId }, 'admin deleted application');
     return { applicationId, deleted: true };
   }
 
   async function getApplicationRoles(applicationId: string): Promise<AppRole[]> {
     const app = await getApplication(applicationId);
-    return (app as { roles?: AppRole[] }).roles ?? [];
+    return app.roles ?? [];
   }
 
   /** Replace an application's role catalogue. Roles already granted to users that are no longer in the
    *  catalogue are NOT retroactively pruned — surface that in the console and re-assign as needed. */
   async function setApplicationRoles(applicationId: string, roles: AppRole[]): Promise<AppRole[]> {
     const catalogue = normalizeRoleCatalogue(roles);
-    const m = await models();
-    const updated = await m.Application.findByIdAndUpdate(
-      applicationId,
-      { $set: { roles: catalogue, updatedAt: nowFn() } },
-      { new: true }
-    ).select('roles').lean().exec();
+    const updated = await store.applications.update(applicationId, { roles: catalogue, updatedAt: nowFn() });
     if (!updated) throw new AdminServiceError('Application not found', 404, 'application_not_found');
     deps.logger?.info?.({ applicationId, roles: catalogue.length }, 'admin set application role catalogue');
-    return (updated as { roles?: AppRole[] }).roles ?? [];
+    return updated.roles ?? [];
   }
 
   async function getApplicationResources(applicationId: string): Promise<string[]> {
     const app = await getApplication(applicationId);
-    return (app as { resources?: string[] }).resources ?? [];
+    return app.resources ?? [];
   }
 
   /** Replace an application's protected-resource registry (ADR-0009 Phase 2). Tokens already bound to a
@@ -303,24 +297,17 @@ export function createAdminService(deps: AdminServiceDependencies) {
    *  refresh re-mints against the same resource, so revoke the session to cut an in-flight chain off. */
   async function setApplicationResources(applicationId: string, resources: string[]): Promise<string[]> {
     const registry = normalizeResources(resources);
-    const m = await models();
-    const updated = await m.Application.findByIdAndUpdate(
-      applicationId,
-      { $set: { resources: registry, updatedAt: nowFn() } },
-      { new: true }
-    ).select('resources').lean().exec();
+    const updated = await store.applications.update(applicationId, { resources: registry, updatedAt: nowFn() });
     if (!updated) throw new AdminServiceError('Application not found', 404, 'application_not_found');
     deps.logger?.info?.({ applicationId, resources: registry.length }, 'admin set application resource registry');
-    return (updated as { resources?: string[] }).resources ?? [];
+    return updated.resources ?? [];
   }
 
   // --- Credentials (OAuth clients under an application) ---
 
   /** List credentials — all, or (with applicationId) just one application's. Never exposes secretHash. */
   async function listClients(applicationId?: string) {
-    const m = await models();
-    const filter = applicationId ? { applicationId } : {};
-    return m.OAuthClient.find(filter).select('-secretHash').lean().exec();
+    return store.clients.list(applicationId);
   }
 
   /** Register a credential under an application. Returns the generated secret ONCE (only its hash stored).
@@ -335,16 +322,16 @@ export function createAdminService(deps: AdminServiceDependencies) {
     if (input.claims !== undefined && (typeof input.claims !== 'object' || input.claims === null || Array.isArray(input.claims))) {
       throw new AdminServiceError('claims must be an object', 400, 'invalid_input');
     }
-    const m = await models();
-    const application = await m.Application.findById(input.applicationId).lean().exec();
+    const application = await store.applications.get(input.applicationId);
     if (!application) throw new AdminServiceError('Application not found', 404, 'application_not_found');
 
     const clientId = input.id?.trim() || randomUUID();
     const secret = newSecret();
-    const recorder = recorderFor(m, ctx);
+    const recorder = recorderFor(ctx);
     const kind = clientPrincipalKind({ grantTypes: input.grantTypes, claims: input.claims });
     const principalId = recorder && kind ? mintPrincipalId(kind) : undefined;
-    const client = {
+    const now = nowFn();
+    const client: OAuthClientDocument = {
       _id: clientId,
       applicationId: input.applicationId,
       name: input.name,
@@ -356,25 +343,24 @@ export function createAdminService(deps: AdminServiceDependencies) {
       subject: input.subject,
       isConfidential: input.isConfidential ?? true,
       claims: input.claims,
-      ...(principalId ? { principalId } : {})
+      ...(principalId ? { principalId } : {}),
+      createdAt: now,
+      updatedAt: now
     };
     try {
-      if (recorder && principalId && kind) {
-        const now = nowFn();
-        const acts: Act[] = [{ type: 'PrincipalRegistered', subject: principalId, body: { kind, source: 'client_credentials', realm: realm() } }];
-        for (const seat of declaredRoles(input.claims)) {
-          acts.push({ type: 'SeatOccupancyChanged', subject: principalId, body: { seat, application: input.applicationId, change: 'granted', oversight_level: 'O1' } });
+      await transact(async (tx) => {
+        store.clients.put(tx, client);
+        if (recorder && principalId && kind) {
+          const acts: Act[] = [{ type: 'PrincipalRegistered', subject: principalId, body: { kind, source: 'client_credentials', realm: realm() } }];
+          for (const seat of declaredRoles(input.claims)) {
+            acts.push({ type: 'SeatOccupancyChanged', subject: principalId, body: { seat, application: input.applicationId, change: 'granted', oversight_level: 'O1' } });
+          }
+          store.principals.register(tx, principalRow(principalId, kind, 'active', 'client', clientId, now));
+          await recorder.emit(tx, acts);
         }
-        await transact(async (session) => {
-          await m.OAuthClient.create([client], { session });
-          await m.Principal.create([{ _id: principalId, kind, status: 'active', subjectType: 'client', subjectId: clientId, createdAt: now, updatedAt: now }], { session });
-          await recorder.emit(session, acts);
-        });
-      } else {
-        await m.OAuthClient.create(client);
-      }
+      });
     } catch (err) {
-      if ((err as { code?: number }).code === 11000) {
+      if (err instanceof ConditionFailed) {
         throw new AdminServiceError(`Client '${clientId}' already exists`, 409, 'client_exists');
       }
       throw err;
@@ -385,13 +371,8 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   /** Rotate a credential secret. Returns the new secret ONCE. */
   async function rotateClientSecret(clientId: string): Promise<{ clientId: string; secret: string }> {
-    const m = await models();
     const secret = newSecret();
-    const updated = await m.OAuthClient.findByIdAndUpdate(
-      clientId,
-      { $set: { secretHash: hashSecret(secret), updatedAt: nowFn() } },
-      { new: true }
-    ).lean().exec();
+    const updated = await store.clients.update(clientId, { secretHash: hashSecret(secret), updatedAt: nowFn() });
     if (!updated) throw new AdminServiceError('Client not found', 404, 'client_not_found');
     deps.logger?.info?.({ clientId }, 'admin rotated client secret');
     return { clientId, secret };
@@ -400,26 +381,27 @@ export function createAdminService(deps: AdminServiceDependencies) {
   /** Delete a credential by id. 404 if it does not exist. A machine principal is retired on the record
    *  (ADR-0022): suspended for deletion, its declared seats revoked; the registry row stays. */
   async function deleteClient(clientId: string, ctx?: ActContext): Promise<{ clientId: string; deleted: true }> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
-    const client = await m.OAuthClient.findById(clientId).lean().exec() as { _id: string; applicationId?: string; principalId?: string; grantTypes?: string[]; claims?: Record<string, unknown> } | null;
+    const recorder = recorderFor(ctx);
+    const client = await store.clients.get(clientId);
     if (!client) throw new AdminServiceError('Client not found', 404, 'client_not_found');
-    await transact(async (session) => {
-      const acts: Act[] = [];
-      if (recorder) {
-        const principal = await ensureClientPrincipal(m, client, session);
-        if (principal) {
+    const principal = recorder ? await ensureClientPrincipal(store, client) : null;
+    try {
+      await transact(async (tx) => {
+        const acts: Act[] = [];
+        if (recorder && principal) {
           for (const seat of declaredRoles(client.claims)) {
             acts.push({ type: 'SeatOccupancyChanged', subject: principal.id, body: { seat, application: client.applicationId ?? 'unknown', change: 'revoked', oversight_level: 'O1' } });
           }
           acts.push({ type: 'PrincipalSuspended', subject: principal.id, body: { reason: 'deleted' } });
-          await setPrincipalStatus(m, principal.id, 'retired', session);
+          setPrincipalStatus(store, tx, principal.id, 'retired', nowFn());
         }
-      }
-      const deleted = await m.OAuthClient.findByIdAndDelete(clientId, { session }).lean().exec();
-      if (!deleted) throw new AdminServiceError('Client not found', 404, 'client_not_found');
-      if (recorder) await recorder.emit(session, acts);
-    });
+        store.clients.delete(tx, clientId);
+        if (recorder) await recorder.emit(tx, acts);
+      });
+    } catch (err) {
+      if (err instanceof ConditionFailed) throw new AdminServiceError('Client not found', 404, 'client_not_found');
+      throw err;
+    }
     deps.logger?.info?.({ clientId }, 'admin deleted credential');
     return { clientId, deleted: true };
   }
@@ -428,8 +410,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   /** List the deployment's local-credential users. Never exposes passwordHash. */
   async function listUsers() {
-    const m = await models();
-    return m.User.find().select('-passwordHash').lean().exec();
+    return store.users.list();
   }
 
   /** Create a local-credential user. The person is registered as a HUMAN principal on maestro's record
@@ -439,32 +420,39 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const email = (input.email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) throw new AdminServiceError('A valid email is required', 400, 'invalid_email');
     if (!input.password || input.password.length < 1) throw new AdminServiceError('password is required', 400, 'invalid_input');
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
+    const recorder = recorderFor(ctx);
 
-    const existing = await m.User.findOne({ email }).lean().exec();
+    const existing = await store.users.getByEmail(email);
     if (existing) throw new AdminServiceError('An account with this email already exists', 409, 'email_taken');
 
     const id = randomUUID();
     const now = nowFn();
     const principalId = recorder ? mintPrincipalId('human') : undefined;
-    const user = {
+    const user: UserDocument = {
       _id: id,
       email,
       passwordHash: hashSecret(input.password),
-      status: 'active' as const,
+      status: 'active',
       emailVerified: false,
+      identities: [],
+      failedAttempts: 0,
       passwordUpdatedAt: now,
+      createdAt: now,
+      updatedAt: now,
       ...(principalId ? { principalId } : {})
     };
-    if (recorder && principalId) {
-      await transact(async (session) => {
-        await m.User.create([user], { session });
-        await m.Principal.create([{ _id: principalId, kind: 'human', status: 'active', subjectType: 'user', subjectId: id, createdAt: now, updatedAt: now }], { session });
-        await recorder.emit(session, [{ type: 'PrincipalRegistered', subject: principalId, body: { kind: 'human', source: 'local', realm: realm() } }]);
+    try {
+      await transact(async (tx) => {
+        store.users.put(tx, user);
+        if (recorder && principalId) {
+          store.principals.register(tx, principalRow(principalId, 'human', 'active', 'user', id, now));
+          await recorder.emit(tx, [{ type: 'PrincipalRegistered', subject: principalId, body: { kind: 'human', source: 'local', realm: realm() } }]);
+        }
       });
-    } else {
-      await m.User.create(user);
+    } catch (err) {
+      // The email was taken between the check and the commit: the same answer, from the transaction.
+      if (err instanceof ConditionFailed && err.label === 'email') throw new AdminServiceError('An account with this email already exists', 409, 'email_taken');
+      throw err;
     }
     deps.logger?.info?.({ userId: id, principalId }, 'admin created user');
     return { id, email, ...(principalId ? { principalId } : {}) };
@@ -472,34 +460,30 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   async function resetUserPassword(email: string, password: string): Promise<void> {
     if (!password) throw new AdminServiceError('password is required', 400, 'invalid_input');
-    const m = await models();
-    const result = await m.User.updateOne(
-      { email: email.trim().toLowerCase() },
-      { $set: { passwordHash: hashSecret(password), passwordUpdatedAt: nowFn(), failedAttempts: 0, lockedUntil: null, updatedAt: nowFn() } }
-    ).exec();
-    if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
+    const user = await store.users.getByEmail(email.trim().toLowerCase());
+    if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
+    const updated = await store.users.update(user._id, { passwordHash: hashSecret(password), passwordUpdatedAt: nowFn(), failedAttempts: 0, lockedUntil: null, updatedAt: nowFn() });
+    if (!updated) throw new AdminServiceError('User not found', 404, 'user_not_found');
     deps.logger?.info?.({ email }, 'admin reset user password');
   }
 
   /** Disable or re-enable a user. On the record (ADR-0022) that is `PrincipalSuspended` / `PrincipalReinstated`
    *  — emitted only when the status actually changes, so a repeated call records nothing twice. */
   async function setUserStatus(email: string, status: 'active' | 'disabled', ctx?: ActContext): Promise<void> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
+    const recorder = recorderFor(ctx);
     const normalized = email.trim().toLowerCase();
-    const user = await m.User.findOne({ email: normalized }).select('_id status principalId').lean().exec() as { _id: string; status?: string; principalId?: string } | null;
+    const user = await store.users.getByEmail(normalized);
     if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    await transact(async (session) => {
-      const result = await m.User.updateOne({ email: normalized }, { $set: { status, updatedAt: nowFn() } }, { session }).exec();
-      if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-      if (!recorder) return;
-      const principal = await ensureUserPrincipal(m, user, session);
+    const principal = recorder ? await ensureUserPrincipal(store, user) : null;
+    await transact(async (tx) => {
+      store.users.updateIn(tx, user._id, { status, updatedAt: nowFn() });
+      if (!recorder || !principal) return;
       const acts: Act[] = [];
       if (status === 'disabled' && user.status !== 'disabled') acts.push({ type: 'PrincipalSuspended', subject: principal.id, body: { reason: 'disabled' } });
       if (status === 'active' && user.status !== 'active') acts.push({ type: 'PrincipalReinstated', subject: principal.id, body: { reason: user.status === 'locked' ? 'unlocked' : 'enabled' } });
       if (acts.length === 0) return;
-      await setPrincipalStatus(m, principal.id, status === 'disabled' ? 'suspended' : 'active', session);
-      await recorder.emit(session, acts);
+      setPrincipalStatus(store, tx, principal.id, status === 'disabled' ? 'suspended' : 'active', nowFn());
+      await recorder.emit(tx, acts);
     });
     deps.logger?.info?.({ email, status }, 'admin set user status');
   }
@@ -507,22 +491,17 @@ export function createAdminService(deps: AdminServiceDependencies) {
   /** Clear a brute-force lockout (and reactivate if locked). A user that was disabled or locked is
    *  reinstated on the record (ADR-0022); clearing counters on an active user records nothing. */
   async function unlockUser(email: string, ctx?: ActContext): Promise<void> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
+    const recorder = recorderFor(ctx);
     const normalized = email.trim().toLowerCase();
-    const user = await m.User.findOne({ email: normalized }).select('_id status principalId').lean().exec() as { _id: string; status?: string; principalId?: string } | null;
+    const user = await store.users.getByEmail(normalized);
     if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    await transact(async (session) => {
-      const result = await m.User.updateOne(
-        { email: normalized },
-        { $set: { failedAttempts: 0, lockedUntil: null, status: 'active', updatedAt: nowFn() } },
-        { session }
-      ).exec();
-      if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
-      if (!recorder || user.status === 'active' || user.status === undefined) return;
-      const principal = await ensureUserPrincipal(m, user, session);
-      await setPrincipalStatus(m, principal.id, 'active', session);
-      await recorder.emit(session, [{ type: 'PrincipalReinstated', subject: principal.id, body: { reason: 'unlocked' } }]);
+    const reinstates = Boolean(recorder) && user.status !== 'active' && user.status !== undefined;
+    const principal = reinstates ? await ensureUserPrincipal(store, user) : null;
+    await transact(async (tx) => {
+      store.users.updateIn(tx, user._id, { failedAttempts: 0, lockedUntil: null, status: 'active', updatedAt: nowFn() });
+      if (!recorder || !principal) return;
+      setPrincipalStatus(store, tx, principal.id, 'active', nowFn());
+      await recorder.emit(tx, [{ type: 'PrincipalReinstated', subject: principal.id, body: { reason: 'unlocked' } }]);
     });
     deps.logger?.info?.({ email }, 'admin unlocked user');
   }
@@ -534,31 +513,29 @@ export function createAdminService(deps: AdminServiceDependencies) {
   ): Promise<{ email: string; provider: string; subject: string; linked: true }> {
     if (identity?.provider !== 'google') throw new AdminServiceError("provider must be 'google'", 400, 'invalid_input');
     if (!identity.subject?.trim()) throw new AdminServiceError('subject is required', 400, 'invalid_input');
-    const m = await models();
     const normalized = email.trim().toLowerCase();
-    const user = await m.User.findOne({ email: normalized }).lean().exec() as { _id: string; identities?: { provider: string; subject: string }[] } | null;
+    const user = await store.users.getByEmail(normalized);
     if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
 
-    const owner = await m.User.findOne({ 'identities.provider': 'google', 'identities.subject': identity.subject }).lean().exec() as { _id?: string } | null;
+    const owner = await store.users.getByIdentity('google', identity.subject);
     if (owner && owner._id !== user._id) {
       throw new AdminServiceError('Identity is already linked to another user', 409, 'identity_linked');
     }
 
     const already = (user.identities ?? []).some((i) => i.provider === 'google' && i.subject === identity.subject);
     if (!already) {
-      await m.User.updateOne(
-        { email: normalized },
-        {
-          $push: { identities: {
-            provider: 'google',
-            subject: identity.subject,
-            email: identity.identityEmail?.trim().toLowerCase(),
-            emailVerified: identity.emailVerified ?? false,
-            linkedAt: nowFn()
-          } },
-          $set: { updatedAt: nowFn() }
-        }
-      ).exec();
+      try {
+        await store.users.linkIdentity(user, {
+          provider: 'google',
+          subject: identity.subject,
+          email: identity.identityEmail?.trim().toLowerCase(),
+          emailVerified: identity.emailVerified ?? false,
+          linkedAt: nowFn()
+        }, nowFn());
+      } catch (err) {
+        if (err instanceof ConditionFailed && err.label === 'identity') throw new AdminServiceError('Identity is already linked to another user', 409, 'identity_linked');
+        throw err;
+      }
     }
     deps.logger?.info?.({ email: normalized, subject: identity.subject }, 'admin linked user identity');
     return { email: normalized, provider: 'google', subject: identity.subject, linked: true };
@@ -571,13 +548,11 @@ export function createAdminService(deps: AdminServiceDependencies) {
   ): Promise<{ email: string; provider: string; subject: string; unlinked: true }> {
     if (identity?.provider !== 'google') throw new AdminServiceError("provider must be 'google'", 400, 'invalid_input');
     if (!identity.subject?.trim()) throw new AdminServiceError('subject is required', 400, 'invalid_input');
-    const m = await models();
     const normalized = email.trim().toLowerCase();
-    const result = await m.User.updateOne(
-      { email: normalized },
-      { $pull: { identities: { provider: 'google', subject: identity.subject } }, $set: { updatedAt: nowFn() } }
-    ).exec();
-    if (result.matchedCount === 0) throw new AdminServiceError('User not found', 404, 'user_not_found');
+    const user = await store.users.getByEmail(normalized);
+    if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
+    const remaining = (user.identities ?? []).filter((i) => !(i.provider === 'google' && i.subject === identity.subject));
+    await store.users.setIdentities(user, remaining, nowFn());
     deps.logger?.info?.({ email: normalized, subject: identity.subject }, 'admin unlinked user identity');
     return { email: normalized, provider: 'google', subject: identity.subject, unlinked: true };
   }
@@ -586,23 +561,20 @@ export function createAdminService(deps: AdminServiceDependencies) {
    *  (ADR-0022) every seat they held is revoked and the principal is suspended for deletion; the registry
    *  row is retired, never removed, so the archive can still say a human acted. */
   async function deleteUser(email: string, ctx?: ActContext): Promise<{ email: string; deleted: true }> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
+    const recorder = recorderFor(ctx);
     const normalized = email.trim().toLowerCase();
-    const user = await m.User.findOne({ email: normalized }).select('_id status principalId').lean().exec() as { _id: string; status?: string; principalId?: string } | null;
+    const user = await store.users.getByEmail(normalized);
     if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
-    await transact(async (session) => {
+    const principal = recorder ? await ensureUserPrincipal(store, user) : null;
+    const causation = await revokeAssignments(await store.assignments.listByUser(user._id), recorder);
+    await transact(async (tx) => {
       const acts: Act[] = [];
-      if (recorder) {
-        const principal = await ensureUserPrincipal(m, user, session);
-        const assignments = await m.Assignment.find({ userId: user._id }, null, { session }).lean().exec() as Array<{ applicationId: string; roles?: string[]; status?: string }>;
-        for (const a of assignments) acts.push(...seatChanges(principal.id, a.applicationId, effectiveRoles(a), []));
+      if (recorder && principal) {
         acts.push({ type: 'PrincipalSuspended', subject: principal.id, body: { reason: 'deleted' } });
-        await setPrincipalStatus(m, principal.id, 'retired', session);
+        setPrincipalStatus(store, tx, principal.id, 'retired', nowFn());
       }
-      await m.User.deleteOne({ _id: user._id }, { session }).exec();
-      await m.Assignment.deleteMany({ userId: user._id }, { session }).exec();
-      if (recorder) await recorder.emit(session, acts);
+      store.users.delete(tx, user);
+      if (recorder) await recorder.emit(tx, acts, causation);
     });
     deps.logger?.info?.({ email: normalized }, 'admin deleted user');
     return { email: normalized, deleted: true };
@@ -610,14 +582,14 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   // --- Assignments (ADR-0019/0020): a user's entitlement + app-scoped roles for an application ---
 
-  async function resolveUserByEmail(m: ModelsBucket, email: string): Promise<{ _id: string; principalId?: string; status?: string }> {
-    const user = await m.User.findOne({ email: email.trim().toLowerCase() }).select('_id principalId status').lean().exec() as { _id: string; principalId?: string; status?: string } | null;
+  async function resolveUserByEmail(email: string): Promise<UserDocument> {
+    const user = await store.users.getByEmail(email.trim().toLowerCase());
     if (!user) throw new AdminServiceError('User not found', 404, 'user_not_found');
     return user;
   }
 
-  async function requireApplicationDoc(m: ModelsBucket, applicationId: string): Promise<{ _id: string; roles?: AppRole[]; name?: string }> {
-    const app = await m.Application.findById(applicationId).lean().exec() as { _id: string; roles?: AppRole[]; name?: string } | null;
+  async function requireApplicationDoc(applicationId: string): Promise<{ _id: string; roles?: AppRole[]; name?: string }> {
+    const app = await store.applications.get(applicationId);
     if (!app) throw new AdminServiceError('Application not found', 404, 'application_not_found');
     return app;
   }
@@ -628,32 +600,31 @@ export function createAdminService(deps: AdminServiceDependencies) {
   async function assignUser(input: AssignUserInput, ctx?: ActContext): Promise<{ email: string; applicationId: string; roles: string[]; status: string }> {
     const email = (input.email ?? '').trim().toLowerCase();
     if (!input.applicationId?.trim()) throw new AdminServiceError('applicationId is required', 400, 'invalid_input');
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
-    const user = await resolveUserByEmail(m, email);
-    const application = await requireApplicationDoc(m, input.applicationId);
+    const recorder = recorderFor(ctx);
+    const user = await resolveUserByEmail(email);
+    const application = await requireApplicationDoc(input.applicationId);
     const roles = input.roles ?? [];
     assertRolesInCatalogue(roles, application.roles ?? [], input.applicationId);
+    const principal = recorder ? await ensureUserPrincipal(store, user) : null;
 
     const now = nowFn();
-    const assignment = await transact(async (session) => {
-      const before = await m.Assignment.findOne({ userId: user._id, applicationId: input.applicationId }, null, { session }).lean().exec() as { roles?: string[]; status?: string } | null;
-      const updated = await m.Assignment.findOneAndUpdate(
-        { userId: user._id, applicationId: input.applicationId },
-        {
-          $set: { roles, status: 'active', updatedAt: now },
-          $setOnInsert: { _id: randomUUID(), userId: user._id, applicationId: input.applicationId, createdBy: input.createdBy, createdAt: now }
-        },
-        { upsert: true, new: true, session }
-      ).lean().exec();
-      if (recorder) {
-        const principal = await ensureUserPrincipal(m, user, session);
-        await recorder.emit(session, seatChanges(principal.id, input.applicationId, effectiveRoles(before), roles));
-      }
+    const assignment = await transact(async (tx) => {
+      const before = await store.assignments.get(user._id, input.applicationId);
+      const updated: AssignmentDocument = {
+        userId: user._id,
+        applicationId: input.applicationId,
+        roles,
+        status: 'active',
+        createdBy: before?.createdBy ?? input.createdBy,
+        createdAt: before?.createdAt ?? now,
+        updatedAt: now
+      };
+      store.assignments.put(tx, updated);
+      if (recorder && principal) await recorder.emit(tx, seatChanges(principal.id, input.applicationId, effectiveRoles(before), roles));
       return updated;
     });
     deps.logger?.info?.({ email, applicationId: input.applicationId, roles }, 'admin assigned user to application');
-    return { email, applicationId: input.applicationId, roles: assignment?.roles ?? roles, status: assignment?.status ?? 'active' };
+    return { email, applicationId: input.applicationId, roles: assignment.roles, status: assignment.status };
   }
 
   /** Change an existing assignment's roles and/or status (suspend/reactivate). A suspended assignment
@@ -664,33 +635,27 @@ export function createAdminService(deps: AdminServiceDependencies) {
     changes: { roles?: string[]; status?: 'active' | 'suspended' },
     ctx?: ActContext
   ): Promise<{ email: string; applicationId: string; roles: string[]; status: string }> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
-    const user = await resolveUserByEmail(m, email);
-    const set: Record<string, unknown> = { updatedAt: nowFn() };
+    const recorder = recorderFor(ctx);
+    const user = await resolveUserByEmail(email);
     if (changes.roles !== undefined) {
-      const application = await requireApplicationDoc(m, applicationId);
+      const application = await requireApplicationDoc(applicationId);
       assertRolesInCatalogue(changes.roles, application.roles ?? [], applicationId);
-      set.roles = changes.roles;
     }
-    if (changes.status !== undefined) {
-      if (changes.status !== 'active' && changes.status !== 'suspended') {
-        throw new AdminServiceError("status must be 'active' or 'suspended'", 400, 'invalid_input');
-      }
-      set.status = changes.status;
+    if (changes.status !== undefined && changes.status !== 'active' && changes.status !== 'suspended') {
+      throw new AdminServiceError("status must be 'active' or 'suspended'", 400, 'invalid_input');
     }
-    const updated = await transact(async (session) => {
-      const before = await m.Assignment.findOne({ userId: user._id, applicationId }, null, { session }).lean().exec() as { roles?: string[]; status?: string } | null;
-      const after = await m.Assignment.findOneAndUpdate(
-        { userId: user._id, applicationId },
-        { $set: set },
-        { new: true, session }
-      ).lean().exec();
-      if (!after) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
-      if (recorder) {
-        const principal = await ensureUserPrincipal(m, user, session);
-        await recorder.emit(session, seatChanges(principal.id, applicationId, effectiveRoles(before), effectiveRoles(after)));
-      }
+    const principal = recorder ? await ensureUserPrincipal(store, user) : null;
+    const updated = await transact(async (tx) => {
+      const before = await store.assignments.get(user._id, applicationId);
+      if (!before) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
+      const after: AssignmentDocument = {
+        ...before,
+        ...(changes.roles !== undefined ? { roles: changes.roles } : {}),
+        ...(changes.status !== undefined ? { status: changes.status } : {}),
+        updatedAt: nowFn()
+      };
+      store.assignments.put(tx, after);
+      if (recorder && principal) await recorder.emit(tx, seatChanges(principal.id, applicationId, effectiveRoles(before), effectiveRoles(after)));
       return after;
     });
     deps.logger?.info?.({ email, applicationId }, 'admin updated assignment');
@@ -700,29 +665,30 @@ export function createAdminService(deps: AdminServiceDependencies) {
   /** Revoke a user's entitlement to an application (deletes the assignment); every seat it conferred is
    *  revoked on the record (ADR-0022). */
   async function revokeAssignment(email: string, applicationId: string, ctx?: ActContext): Promise<{ email: string; applicationId: string; revoked: true }> {
-    const m = await models();
-    const recorder = recorderFor(m, ctx);
-    const user = await resolveUserByEmail(m, email);
-    await transact(async (session) => {
-      const before = await m.Assignment.findOne({ userId: user._id, applicationId }, null, { session }).lean().exec() as { roles?: string[]; status?: string } | null;
-      const result = await m.Assignment.deleteOne({ userId: user._id, applicationId }, { session }).exec();
-      if (result.deletedCount === 0) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
-      if (recorder) {
-        const principal = await ensureUserPrincipal(m, user, session);
-        await recorder.emit(session, seatChanges(principal.id, applicationId, effectiveRoles(before), []));
-      }
-    });
+    const recorder = recorderFor(ctx);
+    const user = await resolveUserByEmail(email);
+    const principal = recorder ? await ensureUserPrincipal(store, user) : null;
+    try {
+      await transact(async (tx) => {
+        const before = await store.assignments.get(user._id, applicationId);
+        if (!before) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
+        store.assignments.delete(tx, user._id, applicationId);
+        if (recorder && principal) await recorder.emit(tx, seatChanges(principal.id, applicationId, effectiveRoles(before), []));
+      });
+    } catch (err) {
+      if (err instanceof ConditionFailed) throw new AdminServiceError('Assignment not found', 404, 'assignment_not_found');
+      throw err;
+    }
     deps.logger?.info?.({ email, applicationId }, 'admin revoked assignment');
     return { email, applicationId, revoked: true };
   }
 
   /** List the users assigned to an application (its "members"), with their app-scoped roles. */
   async function listApplicationMembers(applicationId: string) {
-    const m = await models();
-    await requireApplicationDoc(m, applicationId);
-    const assignments = await m.Assignment.find({ applicationId }).lean().exec();
-    const users = await m.User.find({ _id: { $in: assignments.map((a) => a.userId) } }).select('_id email status').lean().exec();
-    const byId = new Map(users.map((u) => [u._id, u as { email: string; status: string }]));
+    await requireApplicationDoc(applicationId);
+    const assignments = await store.assignments.listByApplication(applicationId);
+    const users = await store.users.getMany(assignments.map((a) => a.userId));
+    const byId = new Map(users.map((u) => [u._id, u]));
     return assignments.map((a) => ({
       userId: a.userId,
       email: byId.get(a.userId)?.email,
@@ -734,11 +700,10 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   /** List the applications a user is assigned to, with their app-scoped roles. */
   async function listUserAssignments(email: string) {
-    const m = await models();
-    const user = await resolveUserByEmail(m, email);
-    const assignments = await m.Assignment.find({ userId: user._id }).lean().exec();
-    const apps = await m.Application.find({ _id: { $in: assignments.map((a) => a.applicationId) } }).select('_id name').lean().exec();
-    const byId = new Map(apps.map((a) => [a._id, a as { name: string }]));
+    const user = await resolveUserByEmail(email);
+    const assignments = await store.assignments.listByUser(user._id);
+    const apps = await store.applications.getMany(assignments.map((a) => a.applicationId));
+    const byId = new Map(apps.map((a) => [a._id, a]));
     return assignments.map((a) => ({
       applicationId: a.applicationId,
       applicationName: byId.get(a.applicationId)?.name,
@@ -752,9 +717,8 @@ export function createAdminService(deps: AdminServiceDependencies) {
   /** Mint a registration invite entitling the redeemer to an application. Returns the code ONCE. */
   async function createInvite(input: CreateInviteInput): Promise<{ inviteId: string; code: string; expiresAt: Date }> {
     if (!input.applicationId?.trim()) throw new AdminServiceError('applicationId is required', 400, 'invalid_input');
-    const m = await models();
 
-    const application = await requireApplicationDoc(m, input.applicationId);
+    const application = await requireApplicationDoc(input.applicationId);
     const roles = input.roles ?? [];
     assertRolesInCatalogue(roles, application.roles ?? [], input.applicationId);
 
@@ -773,15 +737,16 @@ export function createAdminService(deps: AdminServiceDependencies) {
     const inviteId = randomUUID();
     const code = generateInviteCode();
     const expiresAt = new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
-    await m.Invite.create({
+    await store.invites.create({
       _id: inviteId,
       applicationId: input.applicationId,
       codeDigest: inviteCodeDigest(code),
-      email,
+      email: email ?? null,
       roles,
       maxUses,
       usesRemaining: maxUses,
       expiresAt,
+      revokedAt: null,
       createdBy: input.createdBy,
       note: input.note,
       createdAt: now,
@@ -793,11 +758,10 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   /** List the deployment's invites with derived status. Never exposes the code or its digest. */
   async function listInvites() {
-    const m = await models();
     const now = nowFn();
-    const invites = await m.Invite.find().sort({ createdAt: -1 }).lean().exec();
+    const invites = await store.invites.list();
     return invites.map((invite) => {
-      const { codeDigest: _digest, usesRemaining, ...rest } = invite as typeof invite & { codeDigest?: string };
+      const { codeDigest: _digest, usesRemaining: _usesRemaining, ...rest } = invite;
       return {
         ...rest,
         usedCount: invite.maxUses - invite.usesRemaining,
@@ -808,12 +772,7 @@ export function createAdminService(deps: AdminServiceDependencies) {
 
   /** Revoke an invite so no further redemptions succeed. Idempotent on an already-revoked invite. */
   async function revokeInvite(inviteId: string): Promise<{ inviteId: string; revoked: true }> {
-    const m = await models();
-    const updated = await m.Invite.findByIdAndUpdate(
-      inviteId,
-      { $set: { revokedAt: nowFn(), updatedAt: nowFn() } },
-      { new: true }
-    ).lean().exec();
+    const updated = await store.invites.revoke(inviteId, nowFn());
     if (!updated) throw new AdminServiceError('Invite not found', 404, 'invite_not_found');
     deps.logger?.info?.({ inviteId }, 'admin revoked invite');
     return { inviteId, revoked: true };
@@ -834,7 +793,6 @@ export function createAdminService(deps: AdminServiceDependencies) {
   // --- Statistics (feeds the console dashboards) ---
 
   async function getStats() {
-    const m = await models();
     const now = nowFn();
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -843,16 +801,16 @@ export function createAdminService(deps: AdminServiceDependencies) {
       applications, clients, users, lockedUsers, disabledUsers, assignments,
       tokensLastHour, tokensLastDay, activeRefresh, activeKeys
     ] = await Promise.all([
-      m.Application.countDocuments({}).exec(),
-      m.OAuthClient.countDocuments({}).exec(),
-      m.User.countDocuments({}).exec(),
-      m.User.countDocuments({ lockedUntil: { $gt: now } }).exec(),
-      m.User.countDocuments({ status: 'disabled' }).exec(),
-      m.Assignment.countDocuments({ status: 'active' }).exec(),
-      m.OAuthToken.countDocuments({ type: 'access', issuedAt: { $gte: hourAgo } }).exec(),
-      m.OAuthToken.countDocuments({ type: 'access', issuedAt: { $gte: dayAgo } }).exec(),
-      m.OAuthToken.countDocuments({ type: 'refresh', status: 'active' }).exec(),
-      m.KeyStore.countDocuments({ status: 'active' }).exec()
+      store.applications.count(),
+      store.clients.count(),
+      store.users.count(),
+      store.users.countLocked(now),
+      store.users.countByStatus('disabled'),
+      store.assignments.countActive(),
+      store.tokens.countIssuedSince('access', hourAgo),
+      store.tokens.countIssuedSince('access', dayAgo),
+      store.tokens.countActiveRefresh(),
+      store.signingKeys.countActive()
     ]);
 
     return {

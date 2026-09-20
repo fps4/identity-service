@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from 'http';
 import { CONFIG } from './config.js';
-import { getMasterConnection, disconnect } from './utils/db.js';
+import { connectStore } from './db/index.js';
 import logger from './utils/logger.js';
 import { metricsRecorder, relay } from './container.js';
 import { startRelayLoop } from './record/index.js';
@@ -49,7 +49,9 @@ async function bootstrap() {
   // rollup on demand; nothing is pushed anywhere.
   app.use(metricsRecorder.middleware);
 
-  await getMasterConnection();
+  // The table must answer before the server listens: a wrong name or an unreachable endpoint fails the
+  // start, not the first request (and the bundle smoke reads this failure as the database step).
+  await connectStore();
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
@@ -114,7 +116,6 @@ async function bootstrap() {
         process.exit(1);
         return;
       }
-      await disconnect();
       process.exit(0);
     });
   };

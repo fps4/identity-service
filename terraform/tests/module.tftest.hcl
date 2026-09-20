@@ -1,9 +1,11 @@
 # Module tests with a mocked provider: no account, no credentials. What they check is the shape the
-# design promises — the service behind the Web Adapter on Node 22 / arm64 with the environment the
-# service reads and RECORD_SINK=off, the secrets present by name, the issuer, the backup on its schedule
-# with an alarm that treats silence as failure, a backup bucket that expires and never locks, the relay
-# carrying the spine's names under the spine's policy on its schedule, one at a time — not whether AWS
-# accepts it. That is proven by the first real tenant (maestro ADR-0017).
+# design promises — the table keyed pk/sk with its indexes, TTL and point-in-time recovery, granted to
+# each function and named on it; the service behind the Web Adapter on Node 22 / arm64 with the
+# environment the service reads and RECORD_SINK=off, the secrets present by name and no database
+# credential among them, the issuer, the backup on its schedule with an alarm that treats silence as
+# failure, a backup bucket that expires and never locks, the relay carrying the spine's names under the
+# spine's policy on its schedule, one at a time — not whether AWS accepts it. That is proven by the
+# first real tenant (maestro ADR-0017).
 
 # Terraform >= 1.11 (override_during). ARNs are mocked without an account — the layer's included: the
 # public-repository guards forbid one, and the policies only need the shape.
@@ -17,6 +19,12 @@ mock_provider "aws" {
     override_during = plan
     defaults = {
       arn = "arn:aws:s3:::example-identity-backups"
+    }
+  }
+  mock_resource "aws_dynamodb_table" {
+    override_during = plan
+    defaults = {
+      arn = "arn:aws:dynamodb:eu-west-1::table/maestro-identity"
     }
   }
   mock_resource "aws_cloudwatch_log_group" {
@@ -55,7 +63,6 @@ variables {
   web_adapter_layer_arn = "arn:aws:lambda:eu-west-1::layer:LambdaAdapterLayerArm64:25"
   backup_bucket_name    = "example-identity-backups"
   environment = {
-    MONGO_DB_NAME             = "identity-service"
     AUTH_JWT_AUDIENCE         = "maestro"
     CORS_ORIGINS              = "https://console.aannemer-x.example"
     AUTH_REGISTRATION_MODE    = "invite"
@@ -67,7 +74,6 @@ variables {
     MAESTRO_CONSEQUENCE_CLASS = "c1"
   }
   secrets = {
-    MONGO_URI                    = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/mongo-uri"
     AUTH_JWT_SECRET              = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/jwt-secret"
     OAUTH_KEY_PASSPHRASE         = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/key-passphrase"
     IDENTITY_ADMIN_CLIENT_SECRET = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/admin-client-secret"
@@ -116,8 +122,12 @@ run "defaults" {
     error_message = "the tenant's environment reaches the service"
   }
   assert {
-    condition     = alltrue([for k in ["MONGO_URI", "AUTH_JWT_SECRET", "OAUTH_KEY_PASSPHRASE", "IDENTITY_ADMIN_CLIENT_SECRET"] : contains(keys(nonsensitive(aws_lambda_function.service.environment[0].variables)), k)])
+    condition     = alltrue([for k in ["AUTH_JWT_SECRET", "OAUTH_KEY_PASSPHRASE", "IDENTITY_ADMIN_CLIENT_SECRET"] : contains(keys(nonsensitive(aws_lambda_function.service.environment[0].variables)), k)])
     error_message = "every secret appears as the environment variable it is mapped to"
+  }
+  assert {
+    condition     = !contains(keys(nonsensitive(aws_lambda_function.service.environment[0].variables)), "MONGO_URI") && nonsensitive(aws_lambda_function.service.environment[0].variables["TABLE_NAME"]) == "maestro-identity"
+    error_message = "no database credential: the service is told its table's name, and reaches it by its role"
   }
   assert {
     condition     = aws_lambda_function.service.timeout == 29 && aws_lambda_function.service.memory_size == 1024
@@ -125,7 +135,37 @@ run "defaults" {
   }
   assert {
     condition     = !strcontains(aws_iam_role_policy.service.policy, "s3:") && !strcontains(aws_iam_role_policy.service.policy, "secretsmanager:") && !strcontains(aws_iam_role_policy.service.policy, "sns:")
-    error_message = "the service's role is logs only: its keys live in the database, the archive is the relay's"
+    error_message = "the service's role is its table and its logs: its keys live in the table, the archive is the relay's"
+  }
+  assert {
+    condition     = strcontains(aws_iam_role_policy.service.policy, "dynamodb:TransactWriteItems") && strcontains(aws_iam_role_policy.service.policy, "dynamodb:Query") && strcontains(aws_iam_role_policy.service.policy, "/index/*") && !strcontains(aws_iam_role_policy.service.policy, "dynamodb:Scan")
+    error_message = "the service transacts and queries its table and its indexes; it never scans"
+  }
+
+  # --- the table ---
+  assert {
+    condition     = aws_dynamodb_table.records.name == "maestro-identity" && aws_dynamodb_table.records.billing_mode == "PAY_PER_REQUEST" && aws_dynamodb_table.records.hash_key == "pk" && aws_dynamodb_table.records.range_key == "sk"
+    error_message = "one on-demand table per deployment, named after the module, keyed pk/sk (maestro ADR-0018)"
+  }
+  assert {
+    condition     = toset([for i in aws_dynamodb_table.records.global_secondary_index : i.name]) == toset(["gsi1", "gsi2", "pending"]) && alltrue([for i in aws_dynamodb_table.records.global_secondary_index : i.projection_type == "ALL"])
+    error_message = "gsi1, gsi2 and the sparse pending index, projecting everything — the shape service/src/db/table.ts declares"
+  }
+  assert {
+    condition     = alltrue([for i in aws_dynamodb_table.records.global_secondary_index : i.hash_key == "${i.name == "pending" ? "pending_pk" : "${i.name}pk"}" && i.range_key == "${i.name == "pending" ? "pending_sk" : "${i.name}sk"}"])
+    error_message = "each index is keyed <name>pk/<name>sk (pending_pk/pending_sk for the relay's)"
+  }
+  assert {
+    condition     = aws_dynamodb_table.records.ttl[0].attribute_name == "expires_at" && aws_dynamodb_table.records.ttl[0].enabled == true
+    error_message = "expiry is the table's TTL on expires_at"
+  }
+  assert {
+    condition     = aws_dynamodb_table.records.point_in_time_recovery[0].enabled == true && aws_dynamodb_table.records.server_side_encryption[0].enabled == true
+    error_message = "point-in-time recovery on, encrypted"
+  }
+  assert {
+    condition     = output.table_name == aws_dynamodb_table.records.name
+    error_message = "the module outputs its table's name for the tenant's seed run"
   }
   assert {
     condition     = nonsensitive(aws_lambda_function.service.environment[0].variables["RECORD_SINK"]) == "off"
@@ -194,12 +234,16 @@ run "defaults" {
     error_message = "the backup writes to the bucket under the prefix"
   }
   assert {
-    condition     = contains(keys(nonsensitive(aws_lambda_function.backup.environment[0].variables)), "MONGO_URI") && !contains(keys(nonsensitive(aws_lambda_function.backup.environment[0].variables)), "BACKUP_PASSPHRASE")
-    error_message = "the backup gets the database secret and, without one configured, no passphrase"
+    condition     = nonsensitive(aws_lambda_function.backup.environment[0].variables["TABLE_NAME"]) == "maestro-identity" && !contains(keys(nonsensitive(aws_lambda_function.backup.environment[0].variables)), "MONGO_URI") && !contains(keys(nonsensitive(aws_lambda_function.backup.environment[0].variables)), "BACKUP_PASSPHRASE")
+    error_message = "the backup is told the table and holds no database secret; without one configured, no passphrase either"
   }
   assert {
     condition     = strcontains(aws_iam_role_policy.backup.policy, "s3:PutObject") && !strcontains(aws_iam_role_policy.backup.policy, "s3:GetObject") && !strcontains(aws_iam_role_policy.backup.policy, "Delete")
     error_message = "the backup writes; it never reads or deletes a backup"
+  }
+  assert {
+    condition     = strcontains(aws_iam_role_policy.backup.policy, "dynamodb:Scan") && strcontains(aws_iam_role_policy.backup.policy, "dynamodb:DescribeTable") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:PutItem") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:UpdateItem") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:Query")
+    error_message = "the backup reads the whole table and nothing else: Scan and DescribeTable only"
   }
 
   # --- the backup bucket ---
@@ -242,12 +286,16 @@ run "defaults" {
     error_message = "the relay carries the spine's three names as the spine's module output them"
   }
   assert {
-    condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["MONGO_URI"]) == "mocked-secret-value" && nonsensitive(aws_lambda_function.relay.environment[0].variables["MONGO_DB_NAME"]) == "identity-service" && nonsensitive(aws_lambda_function.relay.environment[0].variables["MAESTRO_WORKSPACE_ID"]) == "ws-aannemer-x"
-    error_message = "the relay reads the same database and configuration as the service"
+    condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["TABLE_NAME"]) == "maestro-identity" && nonsensitive(aws_lambda_function.relay.environment[0].variables["MAESTRO_WORKSPACE_ID"]) == "ws-aannemer-x"
+    error_message = "the relay reads the same table and configuration as the service"
   }
   assert {
-    condition     = !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "OAUTH_KEY_PASSPHRASE") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "AUTH_JWT_SECRET") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "IDENTITY_ADMIN_CLIENT_SECRET")
-    error_message = "the database is the relay's one secret: a relay cannot sign tokens"
+    condition     = !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "OAUTH_KEY_PASSPHRASE") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "AUTH_JWT_SECRET") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "IDENTITY_ADMIN_CLIENT_SECRET") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "MONGO_URI")
+    error_message = "the relay holds no secret at all: a relay cannot sign tokens, and the table is a grant"
+  }
+  assert {
+    condition     = strcontains(aws_iam_role_policy.relay_table.policy, "dynamodb:Query") && strcontains(aws_iam_role_policy.relay_table.policy, "dynamodb:UpdateItem") && strcontains(aws_iam_role_policy.relay_table.policy, "/index/*") && !strcontains(aws_iam_role_policy.relay_table.policy, "dynamodb:Scan")
+    error_message = "the relay reads the pending index and acknowledges under the component's grant; it never scans"
   }
   assert {
     condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["NODE_ENV"]) == "production" && nonsensitive(aws_lambda_function.relay.environment[0].variables["LOG_PRETTY"]) == "false"
@@ -387,7 +435,7 @@ run "rejects_a_domain_without_a_certificate" {
   expect_failures = [aws_apigatewayv2_domain_name.this]
 }
 
-run "rejects_secrets_without_the_database" {
+run "rejects_secrets_without_the_key_passphrase" {
   command = plan
 
   variables {
@@ -397,6 +445,23 @@ run "rejects_secrets_without_the_database" {
   }
 
   expect_failures = [var.secrets]
+}
+
+run "the_tenant_may_name_the_table" {
+  command = plan
+
+  variables {
+    table_name = "aannemer-x-identity-records"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.records.name == "aannemer-x-identity-records" && output.table_name == "aannemer-x-identity-records"
+    error_message = "table_name overrides the default, and every function is told the same name"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.service.environment[0].variables["TABLE_NAME"]) == "aannemer-x-identity-records" && nonsensitive(aws_lambda_function.relay.environment[0].variables["TABLE_NAME"]) == "aannemer-x-identity-records" && nonsensitive(aws_lambda_function.backup.environment[0].variables["TABLE_NAME"]) == "aannemer-x-identity-records"
+    error_message = "the service, the relay and the backup all name the one table"
+  }
 }
 
 run "rejects_a_layer_that_is_not_the_adapter" {
