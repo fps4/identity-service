@@ -1,6 +1,6 @@
 ---
 title: Deployment
-summary: How identity-service is deployed — a Terraform module applied by the tenant's pipeline (maestro ADR-0016/0017; nothing here deploys), what a deployment needs, the compose stack for a laptop, nightly backups & recovery, and provisioning the management-plane admin client + MCP server.
+summary: How identity-service is deployed — the Terraform module in terraform/ (service on Lambda behind an HTTP API, a backup Lambda to S3), applied by the tenant's pipeline (maestro ADR-0016/0017; nothing here deploys); what a deployment needs, the compose stack for a laptop, seeding, backups & recovery, and provisioning the management-plane admin client + MCP server.
 status: current
 last_updated: 2026-09-20
 owners: [architect]
@@ -14,64 +14,78 @@ related:
 
 # Deployment
 
-How identity-service is deployed. The service is a **stateless container** driven entirely by environment
-variables, with **MongoDB** as its only persistent dependency. It can run anywhere Docker runs, which is
-what the `docker/` compose stack is for on a laptop; a deployment is the Terraform module below.
+How identity-service is deployed. The service is **stateless**, driven entirely by environment variables,
+with **MongoDB** as its only persistent dependency. A deployment is the Terraform module below; the
+`docker/` compose stack runs the same container on a laptop and is the development loop, not a
+deployment target (maestro ADR-0002).
 
-## Deployment: a Terraform module, applied by the tenant's pipeline
+## The Terraform module, applied by the tenant's pipeline
 
-Deployment is serverless AWS as a Terraform module this repository will ship (`terraform/`): the service
-as Lambda behind an HTTP API Gateway, the console through OpenNext, Atlas Flex as the database, the
-backup job as a scheduled Lambda ([`../maestro/docs/components/identity-service.md`](../../../maestro/docs/components/identity-service.md)).
-A tenant's private configuration repository (`fps4/maestro-config-<tenant>` —
-[`../maestro/docs/tenancy-and-config.md`](../../../maestro/docs/tenancy-and-config.md)) composes the module
-with its own values and **applies it from its own pipeline** — maestro's ADR-0016 (Terraform) and ADR-0017
-(the tenant repository runs the pipeline: its runner, its targets, its state). The module is M1 of
-maestro's roadmap.
+[`terraform/`](../../terraform/) deploys the service as a Lambda function (Node 22, arm64) behind the
+[Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) layer and an HTTP API Gateway
+with one `$default` route, and the backup as a scheduled Lambda writing to an S3 bucket; the database
+is the tenant's Atlas cluster (ADR-0005), named by `MONGO_URI`. The README's
+[Deployments](../../README.md#deployments) section is the reference: the inputs table, a root that
+composes the module, the issuer, secrets, seeding, backups and the console's status. The short form:
 
+- **The code** is `npm run bundle` in `service/` (Node 22): `bundle/service.zip` (the server plus
+  `run.sh` for the adapter's zip mode) and `bundle/backup.zip`; `npm run sbom` adds a CycloneDX SBOM per
+  bundle. The tenant's pipeline builds them at the tag it deploys.
+- **`environment`** is every non-secret variable in [`service/.env.example`](../../service/.env.example);
+  **`secrets`** maps `MONGO_URI`, `AUTH_JWT_SECRET`, `OAUTH_KEY_PASSPHRASE`,
+  `IDENTITY_ADMIN_CLIENT_SECRET` and, when Google federates, `GOOGLE_CLIENT_SECRET` to Secrets Manager
+  ARNs. Their values land on the function and in the state — the state bucket protects them (ADR-0017);
+  reading them at boot through the Secrets Lambda extension is the follow-up.
+- **The issuer** (`AUTH_JWT_ISSUER`, the `iss` of every token) is set by the module and output as
+  `issuer`: `https://<domain>` with a `domain` + `certificate_arn`, else the API's default endpoint.
+  Use a domain: the default endpoint changes if the API is ever recreated, and every consumer's
+  verifier with it. `GOOGLE_REDIRECT_URI` is `<issuer>/oauth2/callback` and `MCP_RESOURCE_URL` defaults
+  to `<issuer>/mcp`.
+- **The signing keys** are generated on first use and stored in the database's `key_store`, encrypted
+  under `OAUTH_KEY_PASSPHRASE` (`src/utils/key-store.ts`) — nothing on disk, so the function's role is
+  logs only. Set the passphrase before the first request and never change it without re-encrypting.
+- **The web adapter layer** is an input (`web_adapter_layer_arn`): its ARN carries AWS's account id,
+  which a public repository may not hold.
+- **The console** is not in the module — the README says why and what follows.
+
+The tenant's private repository (`fps4/maestro-config-<tenant>` —
+[`maestro/docs/tenancy-and-config.md`](https://github.com/fps4/maestro/blob/main/docs/tenancy-and-config.md)) composes the
+module with its own values and **applies it from its own pipeline** (ADR-0016, ADR-0017).
 **Nothing in this repository deploys anywhere.** Its CI runs on GitHub-hosted runners and ends at the
-Definition of Done; a self-hosted runner on a public repository would run a fork's code (ADR-0017). The
-earlier ds1 deploy (`deploy-ds1`), seed (`seed-ds1`), snapshot (`dump-ds1`) and one-shot migration
-(`migrate-*-ds1`) workflows, and the committed `config/ds1/.env.base` they assembled a deploy env from,
-are gone: the deploy is the module, the realm's values are the tenant's, and a seed or a migration is
-run from `service/` against the deployment's database by whoever holds its credentials (below).
+gate: [`terraform.yml`](../../.github/workflows/terraform.yml) formats, validates and tests the module
+against a mocked provider and builds, boots and SBOMs the bundles; a self-hosted runner on a public
+repository would run a fork's code (ADR-0017). The earlier ds1 deploy (`deploy-ds1`), seed
+(`seed-ds1`), snapshot (`dump-ds1`) and one-shot migration (`migrate-*-ds1`) workflows, and the
+committed `config/ds1/.env.base` they assembled a deploy env from, are gone: the deploy is the module,
+the realm's values are the tenant's, and a seed or a migration is run from `service/` against the
+deployment's database by whoever holds its credentials (below).
 
-## Prerequisites on the host
+## What a deployment needs
 
-- **Docker** with Compose v2.
-- A reachable **MongoDB** (provisioned by the compose stack, or external — set `MONGO_URI`).
-- An **external Docker network** the service attaches to, if you front it with a shared reverse proxy
-  (create it once: `docker network create <network-name>`; reference it from the compose overlay).
-- A **public HTTPS endpoint** (reverse proxy, ingress, or tunnel) terminating TLS in front of the
-  service. HTTPS is required for any consumer's verifier configuration (issuer + JWKS URL), and for
-  Google's OAuth redirect URI when the deployment federates. The service itself listens on `PORT`
-  (default `7305`).
-
-## Secrets
-
-Secrets live in a **gitignored `docker/.env`** and are **never committed**:
-
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — the Google OIDC app (service-level, one per deployment).
+- A reachable **MongoDB** — the tenant's Atlas cluster, `MONGO_URI` as a secret (a connection string
+  without a path or query; the service appends `/<MONGO_DB_NAME>`). On a laptop the compose stack
+  provisions one.
+- A **public HTTPS issuer**: the module's domain (or its default endpoint). HTTPS is required for any
+  consumer's verifier configuration (issuer + JWKS URL), and for Google's OAuth redirect URI when the
+  deployment federates.
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — the Google OIDC app (one per deployment).
   **Optional.** With no Google app configured, the browser login leg at `/oauth2/authorize` is served by
   this service's own local-credential IdP (RQ-0002) instead of redirecting to Google; setting these
   switches the same endpoint over to federation. A deployment needs one or the other — no Google app
   *and* `AUTH_LOCAL_IDP_ENABLED=false` means no interactive login at all, and `/oauth2/authorize` says so.
-- `OAUTH_KEY_PASSPHRASE` — optional AES-256-GCM encryption of signing keys at rest.
-- `AUTH_JWT_ISSUER` — the public HTTPS issuer URL; becomes the token `iss`.
-- `MONGO_URI` and the rest of the knobs documented in `service/.env.example`.
+- `OAUTH_KEY_PASSPHRASE` — encrypts the signing keys at rest (AES-256-GCM). Required in a deployment.
+- `AUTH_JWT_SECRET`, `IDENTITY_ADMIN_CLIENT_SECRET` (below), and the rest of the knobs documented in
+  `service/.env.example`.
 
-Build context (`../service`) and `${VAR}` interpolation resolve **locally** before the build is sent to
-the remote daemon, so the gitignored `docker/.env` never leaves the operator's machine.
+## The compose stack (a laptop)
 
-## The compose stack
-
-The compose stack is the development loop, not a deployment target (maestro ADR-0002). It also runs
-against a remote Docker daemon over SSH, by pointing `DOCKER_HOST` at the host:
+Secrets live in a **gitignored `docker/.env`** and are **never committed**. Build context (`../service`)
+and `${VAR}` interpolation resolve **locally** before the build is sent to a daemon, so the file never
+leaves the operator's machine — the stack also runs against a remote Docker daemon over SSH by
+pointing `DOCKER_HOST` at the host. If you front it with a shared reverse proxy, create the external
+network it attaches to once (`docker network create <network-name>`).
 
 ```bash
-# Run from a workstation against a remote daemon over SSH
-export DOCKER_HOST=ssh://<docker-host>
-
 # Dev overlay
 docker compose --env-file docker/.env \
   -f docker/compose.yaml -f docker/compose.dev.yaml up -d --build
@@ -96,11 +110,14 @@ git, and no `age` master key.
   is never wiped. Day-2 changes go through the **management plane** (`/admin/v1` + MCP + console — ADR-0007),
   not a re-seed.
 - **Bootstrap seed** (rare — empty DB only): supply the `${ENV}` values from the environment (an operator
-  shell, or the tenant pipeline's secrets), from `service/`, against the deployment's Mongo — the compose
-  stack publishes it on port `27019`:
+  shell, or the tenant pipeline's secrets), from `service/`, against the deployment's Mongo — a tenant's
+  seed file lives in its `maestro-config-<tenant>` repository and its pipeline runs this as a step after
+  apply, from the checked-out component at its tag, on a runner whose egress address is on the Atlas
+  cluster's access list; the compose stack publishes its Mongo on port `27019`:
 
   ```bash
   IDENTITY_ADMIN_CLIENT_SECRET=… MAESTRO_RUNTIME_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… \
+    SEED_FILE=../../maestro-config-<tenant>/identity/seed.yaml \
     MONGO_URI=mongodb://localhost:27019 MONGO_DB_NAME=identity-service npm run seed
   ```
 
@@ -119,10 +136,21 @@ git, and no `age` master key.
 ### Nightly backups & point-in-time recovery — ADR-0008
 
 The **primary recovery path is a restore from a nightly backup** (it recovers the full runtime state —
-issued tokens, authorizations, lockouts, signing-key history, audit log — which a re-seed cannot). Backups
-are **plaintext** (`docker/backup.sh`), written to a controlled off-container path whose access control is
-the protection. `docker/backup.sh` dumps the DB via the mongo container and prunes by retention. Schedule
-it from the host crontab (nightly at 02:30, 30-day retention):
+issued tokens, authorizations, lockouts, signing-key history, audit log — which a re-seed cannot).
+
+**In a deployment** the module's backup Lambda ([`service/lambda/backup.ts`](../../service/lambda/backup.ts))
+runs at 02:30 UTC and writes every collection to the backup bucket as gzipped canonical Extended JSON
+lines — `<prefix>/<yyyy-mm-dd>/<collection>.jsonl.gz` plus a `manifest.json` — into a versioned,
+SSE-encrypted, never-public bucket that a lifecycle rule expires after `backup_retention_days` (35).
+With `backup_passphrase_secret_arn` each object is also AES-256-GCM encrypted under that passphrase
+(`.jsonl.gz.enc`; `npm run backup:decrypt` undoes it). Two alarms: the backup errored; the backup did
+not run. Restore with `mongoimport`, collection by collection (`--drop`), and with the **same
+`OAUTH_KEY_PASSPHRASE`** the backed-up `key_store` was encrypted under — the README's
+[Backups and restore](../../README.md#backups-and-restore) has the commands.
+
+**On a laptop** `docker/backup.sh` dumps the DB via the mongo container (`mongodump --archive --gzip`,
+plaintext, ADR-0008 — the path's access control is the protection) and prunes by retention; schedule it
+from the host crontab (nightly at 02:30, 30-day retention):
 
 ```cron
 30 2 * * *  /home/<user>/identity-service/docker/backup.sh backup >> ~/is-backup.log 2>&1
@@ -134,9 +162,6 @@ collections; confirm when prompted):
 ```bash
 docker/backup.sh restore /mnt/backup/identity-service/identity-service-20260623-023000.archive.gz
 ```
-
-> Backups contain plaintext data — treat the backup path as sensitive (rely on its filesystem access
-> control / disk encryption).
 
 ## Rename cutover: component-auth → identity-service (one-time) — ADR-0007
 

@@ -11,9 +11,12 @@ admin console. It owns **authentication** (who you are); consuming products keep
 
 ```
 identity-service/
- ├── docker/           # Docker Compose base + overrides; backup.sh (nightly encrypted backups)
+ ├── docker/           # Docker Compose base + overrides (the development loop); backup.sh (nightly backups)
+ ├── terraform/        # The deployment: a Terraform module — service on Lambda behind an HTTP API, backups
  ├── service/          # REST API + Docker assets
  │    ├── src/         # Express app, OAuth + session cores, admin plane, MCP server, models
+ │    ├── lambda/      # The backup Lambda (outside src/: it is the deployment's, not the service's)
+ │    ├── scripts/     # Operator CLIs (seed, manage-users) and bundle.mjs (the Lambda bundles)
  │    ├── Dockerfile   # Container build
  ├── sdk/              # Headless TypeScript client for the API
  │    └── src/
@@ -158,15 +161,184 @@ Docs follow a two-plane structure — see [`docs/README.md`](docs/README.md) for
 
 The service is a **stateless container** with **MongoDB** as its only persistent dependency; the
 `docker/` compose stack runs it on a laptop (secrets in a **gitignored `docker/.env`** — never
-committed). A public HTTPS endpoint fronts a real deployment; the service listens on `PORT` (default
+committed) and is the development loop, not a deployment target. The service listens on `PORT` (default
 `7305`). The image build runs `npm run build && npm test`, so a red test fails the build.
 
-Deployment is serverless AWS as a Terraform module this repository will ship (`terraform/`), composed
-by a tenant's private configuration repository (`fps4/maestro-config-<tenant>` —
-[`../maestro/docs/tenancy-and-config.md`](../maestro/docs/tenancy-and-config.md)) and applied by the
-tenant's own pipeline; maestro's ADR-0016 and ADR-0017. The module is M1 of maestro's roadmap. Nothing
-in this repository deploys anywhere — its CI runs on GitHub-hosted runners and ends at the gate — and
-the earlier self-hosted deploy, seed and migration workflows are gone.
+Deployment is serverless AWS as the Terraform module in [`terraform/`](terraform/), composed by a
+tenant's private configuration repository (`fps4/maestro-config-<tenant>` —
+[`maestro/docs/tenancy-and-config.md`](https://github.com/fps4/maestro/blob/main/docs/tenancy-and-config.md)) and applied by the
+tenant's own pipeline; maestro's ADR-0016 and ADR-0017. Nothing in this repository deploys anywhere —
+its CI runs on GitHub-hosted runners and ends at the gate ([`terraform.yml`](.github/workflows/terraform.yml):
+`fmt`, `validate`, `terraform test` against a mocked provider, the bundles built and booted) — and the
+earlier self-hosted deploy, seed and migration workflows are gone.
 
-See [`docs/guides/deployment.md`](docs/guides/deployment.md) for what a deployment needs, seeding,
-backups & recovery, and how a consumer's verifier env lines up with what the service mints.
+### What the module deploys
+
+| Piece | |
+|---|---|
+| Service | the Express server, unchanged, as a Lambda function (Node 22, arm64) behind the [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) layer, behind an HTTP API Gateway with one `$default` route; one realm per deployment |
+| Database | the tenant's MongoDB Atlas cluster, named by `MONGO_URI` (maestro ADR-0005); the module creates none |
+| Signing keys | generated on first use and kept in the database's `key_store`, AES-256-GCM under `OAUTH_KEY_PASSPHRASE` — nothing on disk, so Lambda needs no change and the function's role is logs only |
+| Backups | a scheduled Lambda (02:30 UTC nightly) writes every collection to a versioned, encrypted, never-public S3 bucket; expires by a lifecycle rule; alarms on an error and on silence |
+| Alarms | API 5xx (≥ 5 in 5 min), backup errors (≥ 1 in a day), backup silent (no invocation in a day — missing data breaches) |
+| Console | **not in the module** — see [the console](#the-console) below |
+
+**Bundles.** `npm run bundle` in `service/` (Node 22) esbuilds the server to `bundle/service.zip` — one
+`index.mjs` plus `run.sh` for the Web Adapter's zip mode — and the backup to `bundle/backup.zip`;
+reproducibly, so `source_code_hash` only changes when the code does. `npm run bundle:smoke` boots the
+service bundle against a port nothing listens on and checks it dies of a connection failure and not a
+missing module; `npm run sbom` writes a CycloneDX SBOM per bundle (`bundle/*.cdx.json`, production
+dependencies only). `bundle/` is gitignored; the tenant's pipeline builds it at the tag it deploys.
+
+### Inputs
+
+| Input | Default | |
+|---|---|---|
+| `name` | `maestro-identity` | prefix for every named resource |
+| `service_package`, `backup_package` | required | the zips from `npm run bundle` |
+| `web_adapter_layer_arn` | required | the arm64 Web Adapter layer in the deployment's region: `arn:aws:lambda:<region>:<aws-account>:layer:LambdaAdapterLayerArm64:<version>`, from [the adapter's README](https://github.com/awslabs/aws-lambda-web-adapter#lambda-functions-packaged-as-zip-package-for-aws-managed-runtimes). It carries AWS's account id, which a public repository may not hold — so an input, in the tenant's tfvars |
+| `environment` | `{}` | every non-secret variable the service reads ([`service/.env.example`](service/.env.example)): `MONGO_DB_NAME`, `AUTH_JWT_AUDIENCE`, `CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `ADMIN_OPERATOR_ROLES`, `GOOGLE_CLIENT_ID`, `LOG_LEVEL`, the `OAUTH_*` limits… The module sets `NODE_ENV` and `LOG_PRETTY` (a key here overrides them) and `AUTH_JWT_ISSUER`, `GOOGLE_REDIRECT_URI` and the adapter's variables (nothing overrides those) |
+| `secrets` | required | variable → Secrets Manager ARN: `MONGO_URI` (required), `AUTH_JWT_SECRET`, `OAUTH_KEY_PASSPHRASE`, `IDENTITY_ADMIN_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET` when Google federates |
+| `domain`, `certificate_arn` | `null` | the realm's hostname and its ACM certificate (same region); the root aliases DNS to the `domain_target` output |
+| `backup_bucket_name` | required | globally unique; the tenant's to choose |
+| `backup_prefix` | `backups` | key prefix; a day's backup is `<prefix>/<yyyy-mm-dd>/` |
+| `backup_retention_days` | `35` | lifecycle expiry of backups and their noncurrent versions |
+| `backup_schedule` | `cron(30 2 * * ? *)` | EventBridge Scheduler expression, UTC |
+| `backup_passphrase_secret_arn` | `null` | when set, every backup object is also AES-256-GCM encrypted under the passphrase in that secret |
+| `memory_mb`, `timeout_seconds` | `1024`, `29` | the service function; 29 s is the ceiling under the HTTP API's 30 s integration timeout |
+| `backup_memory_mb`, `backup_timeout_seconds` | `1024`, `900` | the backup buffers each collection compressed in memory |
+| `log_retention_days` | `90` | |
+| `alarm_actions` | `[]` | ARNs the alarms notify — the tenant's ops-signals topic |
+| `tags` | `{}` | |
+
+Outputs: `api_url`, `issuer`, `domain_target`, `service_function_name`, `backup_function_name`,
+`backup_bucket_name`, `backup_prefix`, `api_id`.
+
+### A root, composing it
+
+The tenant's `deploy/aws/` root, with placeholders ([`terraform/examples/demo`](terraform/examples/demo)
+is the same with the demo tenant's values):
+
+```hcl
+module "identity" {
+  source = "../../../identity-service/terraform"   # the component, checked out at its tag
+
+  name                  = "<tenant>-identity"
+  service_package       = "../../../identity-service/service/bundle/service.zip"
+  backup_package        = "../../../identity-service/service/bundle/backup.zip"
+  web_adapter_layer_arn = var.web_adapter_layer_arn # tfvars
+
+  domain          = "id.<tenant-domain>"
+  certificate_arn = var.identity_certificate_arn    # tfvars
+
+  environment = {
+    MONGO_DB_NAME          = "identity-service"
+    AUTH_JWT_AUDIENCE      = "maestro"
+    CORS_ORIGINS           = "https://maestro.<tenant-domain>"
+    AUTH_REGISTRATION_MODE = "invite"
+    AUTH_LOCAL_IDP_ENABLED = "true"
+    ADMIN_OPERATOR_ROLES   = "platform_admin"
+  }
+  secrets = {                                       # names from the tenant's secrets.md
+    MONGO_URI                    = aws_secretsmanager_secret.identity_mongo_uri.arn
+    AUTH_JWT_SECRET              = aws_secretsmanager_secret.identity_jwt_secret.arn
+    OAUTH_KEY_PASSPHRASE         = aws_secretsmanager_secret.identity_key_passphrase.arn
+    IDENTITY_ADMIN_CLIENT_SECRET = aws_secretsmanager_secret.identity_admin_client_secret.arn
+  }
+
+  backup_bucket_name = "<tenant>-identity-backups"
+  alarm_actions      = [module.spine.digests_topic_arn]
+}
+
+resource "aws_route53_record" "identity" {
+  zone_id = var.zone_id
+  name    = "id.<tenant-domain>"
+  type    = "A"
+  alias {
+    name                   = module.identity.domain_target.name
+    zone_id                = module.identity.domain_target.zone_id
+    evaluate_target_health = false
+  }
+}
+```
+
+**The issuer.** `AUTH_JWT_ISSUER` is the `iss` of every token and what every consumer's verifier is
+configured with, so it must not change. The module sets it itself and outputs it as `issuer`: with a
+`domain`, `https://<domain>`; without one, the API's default endpoint
+(`https://<api-id>.execute-api.<region>.amazonaws.com`, the `$default` stage has no path) — the API
+resource is created before the function, so the function's environment can carry the endpoint without a
+cycle, and a root need not feed it back. But that endpoint is an id AWS assigns: recreate the API and
+it, `iss`, and every verifier change with it. Use a domain for anything past a trial. `MCP_RESOURCE_URL`
+defaults to `<issuer>/mcp` in the service and `GOOGLE_REDIRECT_URI` to `<issuer>/oauth2/callback` in
+the module.
+
+**Secrets.** The module reads each secret at plan time (`data.aws_secretsmanager_secret_version`) and
+sets it on the function, which is what any secret in a Lambda environment is: readable by whoever can
+read the function's configuration or the Terraform state. The state bucket is what protects it
+(ADR-0017 — versioned, private, the deploy role and break-glass only). The follow-up is the Parameters
+and Secrets Lambda extension with the service reading its configuration through it at boot; that is a
+change to `service/src/config.ts`, and the module then grants `secretsmanager:GetSecretValue` on the
+listed ARNs instead of setting values. `MONGO_URI` is the connection string without a path or query —
+the service appends `/<MONGO_DB_NAME>`.
+
+### Seeding a realm
+
+Seeding is `npm run seed` from `service/` against the deployment's database (RQ-0004): it reads a YAML
+seed and the `${ENV}` secrets it names from the process environment, and it is idempotent. The tenant's
+seed lives in `fps4/maestro-config-<tenant>` (the realm's applications, credentials, operators — the
+[deployment guide](docs/guides/deployment.md) has the shape), and the tenant's pipeline runs it as a step
+after apply, from the checked-out component at its tag:
+
+```bash
+cd identity-service/service && npm ci
+SEED_FILE=../../maestro-config-<tenant>/identity/seed.yaml \
+  MONGO_URI=$MONGO_URI MONGO_DB_NAME=identity-service \
+  IDENTITY_ADMIN_CLIENT_SECRET=… SEED_ADMIN_PASSWORD=… npm run seed
+```
+
+The runner's egress address must be on the Atlas cluster's IP access list (fps4's own tenant runs on
+the ds1 runner, which is). Not a Lambda: the seed is a rare operator step that takes a file and a
+handful of secrets that are the seed's, not the service's — packaging both per tenant into a third
+bundle and a second secrets path buys nothing over the one command the compose stack already documents,
+and a person holding the role runs the same command from a laptop (ADR-0004).
+
+### Backups and restore
+
+The backup Lambda ([`service/lambda/backup.ts`](service/lambda/backup.ts)) connects with the driver and
+writes every collection as gzipped **canonical Extended JSON lines** — one object per collection under
+`<prefix>/<yyyy-mm-dd>/<collection>.jsonl.gz`, plus `manifest.json` (document counts, sizes, SHA-256s).
+Canonical means every BSON type is kept as it was, so a restore is the same documents. It replaces
+`docker/backup.sh`'s `mongodump` for a deployment: a Lambda has no `mongodump`, and `mongoimport` reads
+this format. With `backup_passphrase_secret_arn` each object is additionally AES-256-GCM encrypted under
+the passphrase (scrypt-derived key, the construction the signing keys use) and named `.jsonl.gz.enc`;
+without it the bucket — SSE, versioned, never public, TLS-only, written by a role that can only
+`PutObject` under the prefix — is the protection, as the plaintext path of ADR-0008 was. Restore:
+
+```bash
+aws s3 sync s3://<bucket>/backups/<yyyy-mm-dd>/ ./restore/ && cd restore
+BACKUP_PASSPHRASE=… npm --prefix ../identity-service/service run backup:decrypt -- users.jsonl.gz.enc users.jsonl.gz   # .enc only
+gunzip *.jsonl.gz
+for c in *.jsonl; do mongoimport --uri "$MONGO_URI/identity-service" --collection "${c%.jsonl}" --drop --file "$c"; done
+```
+
+`key_store` holds the signing keys encrypted under `OAUTH_KEY_PASSPHRASE`: restore with the same
+passphrase or the realm cannot sign. Backups are recovery points, not the record — the bucket has no
+Object Lock and a lifecycle rule expires them.
+
+### The console
+
+The operator console (`console/`, Next.js 15) is **not deployed by this module**. It builds with
+OpenNext (`npx @opennextjs/aws build` produces a server function, an image optimiser, a revalidation
+queue and a DynamoDB tag cache), but the community Terraform module for it
+(`RJPearson94/open-next/aws`, v3.7) documents OpenNext v2 and v3 while `@opennextjs/aws` is at 4.x,
+needs the AWS provider ≥ 6.29 configured five times (`server_function`, `iam`, `dns`, `global`) plus
+the `archive` and `local` providers, and uploads assets and mutates resources through bash + AWS CLI
+`local-exec` scripts — outside `plan` as the review artefact (ADR-0016) and beyond what a mocked provider
+or LocalStack can prove. Its `NEXT_PUBLIC_*` values are also baked at build time, so it is built per
+tenant after the issuer is fixed. The console is a surface; the API and JWKS are what M1 needs. It
+follows as its own module once a tenant can apply it against a real account — a single Lambda behind
+CloudFront is likely enough for a console with no ISR and no images.
+
+See [`docs/guides/deployment.md`](docs/guides/deployment.md) for the short form, provisioning the
+management-plane admin client and MCP server, and how a consumer's verifier env lines up with what the
+service mints.
