@@ -3,8 +3,7 @@ import { createAuthorizer, createSessionJwtSigner } from './core/index.js';
 import { createOAuthServer } from './oauth/server.js';
 import { createUserService } from './services/users.js';
 import { createAdminService } from './services/admin.js';
-import { getMasterConnection, masterConnectionReadyState } from './utils/db.js';
-import { makeModels } from './models/index.js';
+import { getStore, storeReady } from './db/index.js';
 import { MetricsRecorder } from './observability/metrics.js';
 import logger from './utils/logger.js';
 import { createRelay, sinkFor, validateRecordConfig, type RecordConfig, type Relay } from './record/index.js';
@@ -12,8 +11,11 @@ import { createRelay, sinkFor, validateRecordConfig, type RecordConfig, type Rel
 // Shared golden-signal recorder: the HTTP layer feeds it via middleware, /admin/v1/stats reads it.
 export const metricsRecorder = new MetricsRecorder({
   windowMs: CONFIG.observability.metricsWindowMs,
-  dependencyHealthy: () => masterConnectionReadyState() === 1
+  dependencyHealthy: storeReady
 });
+
+// The table (ADR-0023): one store for the process, from TABLE_NAME / DYNAMODB_ENDPOINT / AWS_REGION.
+export const store = getStore();
 
 const sessionJwtSigner = createSessionJwtSigner(() => ({
   secret: CONFIG.auth.jwtSecret,
@@ -22,8 +24,7 @@ const sessionJwtSigner = createSessionJwtSigner(() => ({
 }));
 
 export const authorizer = createAuthorizer({
-  getMasterConnection,
-  makeModels,
+  store,
   signJwt: sessionJwtSigner,
   sessionTtlMinutes: CONFIG.auth.sessionTtlMinutes,
   logger
@@ -38,22 +39,19 @@ export const recordConfig: RecordConfig = validateRecordConfig({
 });
 
 export const oauthServer = createOAuthServer({
-  getMasterConnection,
-  makeModels,
+  store,
   logger,
   record: recordConfig
 });
 
 export const userService = createUserService({
-  getMasterConnection,
-  makeModels,
+  store,
   logger,
   record: recordConfig
 });
 
 export const adminService = createAdminService({
-  getMasterConnection,
-  makeModels,
+  store,
   logger,
   record: recordConfig
 });
@@ -62,5 +60,5 @@ export const adminService = createAdminService({
 // Lambda drains the outbox instead — `relay/lambda.ts`).
 const sink = sinkFor(CONFIG.record);
 export const relay: Relay | null = sink
-  ? createRelay(async () => makeModels(await getMasterConnection()), sink)
+  ? createRelay(async () => store, sink)
   : null;

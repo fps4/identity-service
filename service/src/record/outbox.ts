@@ -8,7 +8,6 @@
  * service's transaction aborts, and the caller gets a refusal naming why — an unrecordable act is not an
  * act with a missing event, it is an act that did not happen (maestro, docs/components/spine.md).
  */
-import type { ClientSession } from 'mongoose';
 import {
   AppendRefused,
   PRINCIPAL_ID,
@@ -21,9 +20,9 @@ import {
   type SpineEvent,
   type TypeSchemas
 } from '@fps4/maestro-spine';
-import type { ModelsBucket } from '../oauth/types.js';
 import type { PrincipalKind } from '../models/principal.js';
 import type { Logger } from '../utils/logger.js';
+import { OUTBOX_COUNTER, subjectCounter, type Store, type Transaction } from '../db/index.js';
 import { loadKinds } from './registry.js';
 import { RECORD_TYPES, type RecordType } from './types.js';
 
@@ -114,7 +113,7 @@ export function attributionFor(actor: Actor, config: Pick<RecordConfig, 'account
 }
 
 export interface RecorderDeps {
-  models: ModelsBucket;
+  store: Store;
   config: RecordConfig;
   actor: Actor;
   /** One per request, minted at the edge. */
@@ -128,52 +127,52 @@ export interface Recorder {
   readonly actor: Actor;
   readonly correlation_id: string;
   /**
-   * Append inside the caller's transaction. Returns what was written, in order. Events of one call chain
-   * by `causation_id` to the first of them; `causation` links the first to what triggered the call.
+   * Append inside the caller's transaction. Returns what will be written, in order, once the transaction
+   * commits. Events of one call chain by `causation_id` to the first of them; `causation` links the
+   * first to what triggered the call — or, when an act is split over several transactions, to the first
+   * event of the one before.
    */
-  emit(session: ClientSession | undefined, acts: Act[], causation?: string | null): Promise<SpineEvent[]>;
+  emit(tx: Transaction, acts: Act[], causation?: string | null): Promise<SpineEvent[]>;
 }
 
 /**
  * A recorder bound to one request: one workspace, one actor, one correlation id.
  *
- * `seq` is allocated from the workspace counter in the same transaction, so ordering is a property of the
- * stream rather than of when a relay happened to read it; `subject_seq` likewise, per principal.
+ * `seq` is allocated from the workspace counter, advanced in the same transaction on the condition that it
+ * has not moved since it was read (ADR-0023 §3), so ordering is a property of the stream rather than of
+ * when a relay happened to read it; `subject_seq` likewise, per principal. A counter that moved fails the
+ * commit, and `withRecordTransaction` runs the act again from its reads.
  */
 export function createRecorder(deps: RecorderDeps): Recorder {
   const now = deps.now ?? (() => new Date().toISOString());
   const types = deps.types ?? RECORD_TYPES;
-  const { models, config, actor } = deps;
+  const { store, config, actor } = deps;
   // Attribution depends on the actor and the configuration alone, so it is settled — or refused — here,
-  // before the act's transaction opens: a machine actor with no answerable human never writes anything,
-  // whether or not the database can roll it back.
+  // before the act's transaction opens: a machine actor with no answerable human never writes anything.
   const attribution = attributionFor(actor, config);
 
   return {
     actor,
     correlation_id: deps.correlation_id,
-    async emit(session, acts, causation = null) {
+    async emit(tx, acts, causation = null) {
       if (acts.length === 0) return [];
 
-      const known = await loadKinds(models, [attribution.accountable, attribution.acting], session);
+      const known = await loadKinds(store, [attribution.accountable, attribution.acting], tx);
       const resolve: PrincipalResolver = (id) => known.get(id);
 
-      const counter = await models.Counter.findOneAndUpdate(
-        { _id: `outbox:${config.workspaceId}` },
-        { $inc: { value: acts.length } },
-        { session, upsert: true, new: true }
-      ).lean().exec() as { value: number } | null;
-      const end = counter?.value ?? acts.length;
-      const start = end - acts.length;
+      // The workspace sequence and each subject's, as they are now; advanced below on the condition that
+      // they still are when the transaction commits.
+      const start = await store.counters.read(OUTBOX_COUNTER);
+      const subjects = [...new Set(acts.map((act) => act.subject))];
+      const subjectStart = new Map<string, number>();
+      for (const subject of subjects) subjectStart.set(subject, await store.counters.read(subjectCounter(subject)));
+      const subjectNext = new Map(subjectStart);
 
       const events: SpineEvent[] = [];
       for (let i = 0; i < acts.length; i += 1) {
         const act = acts[i];
-        const subject = await models.Counter.findOneAndUpdate(
-          { _id: `subject:${act.subject}` },
-          { $inc: { value: 1 } },
-          { session, upsert: true, new: true }
-        ).lean().exec() as { value: number } | null;
+        const subjectSeq = (subjectNext.get(act.subject) ?? 0) + 1;
+        subjectNext.set(act.subject, subjectSeq);
         const recordedAt = now();
         const candidate = {
           event_id: uuidv7(),
@@ -181,7 +180,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
           seq: start + i + 1,
           subject_type: 'principal',
           subject_id: act.subject,
-          subject_seq: subject?.value ?? 1,
+          subject_seq: subjectSeq,
           type: act.type,
           type_version: 1,
           occurred_at: act.occurred_at ?? recordedAt,
@@ -205,10 +204,11 @@ export function createRecorder(deps: RecorderDeps): Recorder {
         }
       }
 
-      await models.Outbox.insertMany(
-        events.map((event) => ({ ...event, _id: event.event_id, delivered: false, attempts: 0 })),
-        { session }
-      );
+      store.counters.advance(tx, OUTBOX_COUNTER, start, acts.length);
+      for (const subject of subjects) {
+        store.counters.advance(tx, subjectCounter(subject), subjectStart.get(subject) ?? 0, (subjectNext.get(subject) ?? 0) - (subjectStart.get(subject) ?? 0));
+      }
+      for (const event of events) store.outbox.put(tx, event);
       return events;
     }
   };

@@ -5,7 +5,6 @@ import type {
   OAuthServerDependencies,
   ClientCredentialsInput,
   TokenResponse,
-  ModelsBucket,
   StartAuthorizationInput,
   StartAuthorizationResult,
   LocalLoginInput,
@@ -34,9 +33,10 @@ import { verifyPkceS256 } from './pkce.js';
 import { createGoogleIdp, type GoogleIdp } from './google.js';
 import type { OAuthClientDocument } from '../models/oauth-client.js';
 import type { UserDocument } from '../models/user.js';
-import type { AssignmentDocument } from '../models/assignment.js';
 import type { ApplicationDocument } from '../models/application.js';
-import { ensureClientPrincipal, ensureUserPrincipal, mintPrincipalId, realmOf, selfContext, createRecorder, withRecordTransaction } from '../record/index.js';
+import type { OAuthAuthorizationDocument } from '../models/oauth-authorization.js';
+import { ConditionFailed, type Store } from '../db/index.js';
+import { ensureClientPrincipal, ensureUserPrincipal, mintPrincipalId, principalRow, realmOf, selfContext, createRecorder, withRecordTransaction } from '../record/index.js';
 
 const GRANT_CLIENT_CREDENTIALS = 'client_credentials';
 const GRANT_AUTHORIZATION_CODE = 'authorization_code';
@@ -49,6 +49,7 @@ function randomToken(): string {
 
 export function createOAuthServer(deps: OAuthServerDependencies) {
   const nowFn = deps.now ?? (() => new Date());
+  const { store } = deps;
   // Built lazily so client-credentials-only deployments (no Google config) never construct it.
   let googleIdpInstance: GoogleIdp | undefined = deps.googleIdp;
   const isGoogleConfigured = (): boolean =>
@@ -108,10 +109,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidRequestError('client_id and client_secret are required');
     }
 
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-
-    const client = await models.OAuthClient.findById(input.clientId).lean().exec();
+    const client = await store.clients.get(input.clientId);
     if (!client) {
       throw new InvalidClientError('Client not found');
     }
@@ -147,7 +145,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     }
 
     const issuedAt = nowFn();
-    await enforceRateLimit(models, issuedAt, CONFIG.oauth.limits.maxAccessTokensPerMinute);
+    await enforceRateLimit(store, issuedAt, CONFIG.oauth.limits.maxAccessTokensPerMinute);
     const expiresIn = CONFIG.oauth.accessTokenTtlSec;
     const expDate = new Date(issuedAt.getTime() + expiresIn * 1000);
     const jti = randomUUID();
@@ -173,7 +171,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // and backfilled on first use. `principal_kind` stays as consumers read it today — the credential's
     // own declaration passes through; a machine credential that declares none is a `workload`.
     if (deps.record) {
-      const principal = await ensureClientPrincipal(models, client);
+      const principal = await ensureClientPrincipal(store, client);
       if (principal) {
         payload.prn = principal.id;
         if (typeof payload.principal_kind !== 'string') payload.principal_kind = principal.kind;
@@ -189,7 +187,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // resource. An unrecognized resource is rejected rather than silently issuing a broadly-scoped token.
     // Audience: a credential override wins, else the application default, else the service-wide default.
     const application = client.applicationId
-      ? await models.Application.findById(client.applicationId).lean().exec() as ApplicationDocument | null
+      ? await store.applications.get(client.applicationId)
       : null;
     let audience = effectiveAudience(client, application) ?? CONFIG.auth.jwtAudience;
     if (input.resource) {
@@ -206,10 +204,10 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       .setExpirationTime(Math.floor(expDate.getTime() / 1000))
       .sign(privateKey);
 
-    await models.OAuthToken.create({
+    await store.tokens.create({
       _id: jti,
       clientId: client._id,
-      subject: payload.sub,
+      subject: payload.sub as string,
       sessionId: input.sessionId,
       type: 'access',
       scope: effectiveScopes,
@@ -234,10 +232,10 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    * Load + validate a client for a user-token grant (`authorization_code` or `password`). The client's
    * own `grantTypes` is the sole gate (ADR-0018: no tenant layer above the client).
    */
-  async function loadFlowClient(models: ModelsBucket, clientId: string, grantType: string): Promise<{
+  async function loadFlowClient(clientId: string, grantType: string): Promise<{
     client: OAuthClientDocument;
   }> {
-    const client = await models.OAuthClient.findById(clientId).lean().exec() as OAuthClientDocument | null;
+    const client = await store.clients.get(clientId);
     if (!client) {
       throw new InvalidClientError('Client not found');
     }
@@ -267,9 +265,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidRequestError('No interactive login is configured on this service');
     }
 
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-    const { client } = await loadFlowClient(models, input.clientId, GRANT_AUTHORIZATION_CODE);
+    const { client } = await loadFlowClient(input.clientId, GRANT_AUTHORIZATION_CODE);
 
     // The redirect_uri MUST be pre-registered on the client (open-redirect / token-theft guard).
     if (!client.redirectUris?.includes(input.redirectUri)) {
@@ -277,7 +273,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     }
     // Resolve the audience now, so a request naming an unknown resource — or a client whose
     // application has no audience — fails before a login prompt is ever shown.
-    const application = await requireApplication(models, client);
+    const application = await requireApplication(store, client);
     resolveUserAudience(client, application, input.resource);
 
     const requestedScope = input.scope ?? [];
@@ -290,7 +286,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const loginToken = idpKind === 'local' ? randomToken() : undefined;
     const expiresAt = new Date(issuedAt.getTime() + CONFIG.oauth.authorizationTtlSec * 1000);
 
-    await models.OAuthAuthorization.create({
+    await store.authorizations.create({
       _id: randomUUID(),
       clientId: client._id,
       consumerRedirectUri: input.redirectUri,
@@ -304,7 +300,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       googleState,
       nonce,
       status: 'pending',
-      expiresAt
+      expiresAt,
+      createdAt: issuedAt
     });
 
     deps.logger?.info?.({ clientId: client._id, idp: idpKind }, 'started user authorization');
@@ -325,10 +322,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    */
   async function getLoginContext(loginToken: string): Promise<{ redirectUri: string } | null> {
     if (!loginToken) return null;
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-    const record = await models.OAuthAuthorization.findOne({ loginToken, status: 'pending' }).lean().exec() as
-      { consumerRedirectUri?: string; expiresAt?: Date } | null;
+    const record = await pendingByLoginToken(loginToken);
     if (!record?.consumerRedirectUri) return null;
     if (record.expiresAt && record.expiresAt.getTime() < nowFn().getTime()) return null;
     return { redirectUri: record.consumerRedirectUri };
@@ -345,10 +339,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!input.loginToken) {
       throw new InvalidRequestError('login_token is required');
     }
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-
-    const record = await models.OAuthAuthorization.findOne({ loginToken: input.loginToken, status: 'pending' }).exec();
+    const record = await pendingByLoginToken(input.loginToken);
     if (!record || record.expiresAt.getTime() < nowFn().getTime()) {
       throw new AccessDeniedError('Login session is invalid or expired');
     }
@@ -360,18 +351,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new AccessDeniedError('Local login is disabled on this service');
     }
 
-    const user = await authenticateLocalUser(models, input.email, input.password);
+    const user = await authenticateLocalUser(input.email, input.password);
 
-    record.status = 'authenticated';
-    record.code = randomToken();
-    record.loginToken = undefined; // single-use: the form handle dies with the login it authorized
-    record.email = user.email;
-    record.sub = user._id; // a local login's subject IS the user record id
-    record.emailVerified = user.emailVerified === true;
-    await record.save();
+    // Single-use: the form handle dies with the login it authorized; a local login's subject IS the user
+    // record id. A form submitted twice finds the login no longer pending.
+    const code = randomToken();
+    const authenticated = await store.authorizations.authenticate(record, { code, email: user.email, sub: user._id, emailVerified: user.emailVerified === true });
+    if (!authenticated) {
+      throw new AccessDeniedError('Login session is invalid or expired');
+    }
 
     const sep = record.consumerRedirectUri.includes('?') ? '&' : '?';
-    const params = new URLSearchParams({ code: record.code });
+    const params = new URLSearchParams({ code });
     if (record.consumerState) params.set('state', record.consumerState);
     deps.logger?.info?.({ clientId: record.clientId, userId: user._id }, 'local authentication succeeded');
     return { redirectTo: `${record.consumerRedirectUri}${sep}${params.toString()}` };
@@ -382,10 +373,9 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new AccessDeniedError('Missing code or state on callback');
     }
     const idp = getGoogleIdp();
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
 
-    const record = await models.OAuthAuthorization.findOne({ googleState: input.state, status: 'pending' }).exec();
+    const found = await store.authorizations.getByState(input.state);
+    const record = found && found.status === 'pending' ? found : null;
     // No trusted redirect target without a matching, unexpired record — deny outright.
     if (!record || record.expiresAt.getTime() < nowFn().getTime()) {
       throw new AccessDeniedError('Authorization state is invalid or expired');
@@ -407,23 +397,21 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       // failure; `provisionFederatedUser` re-enforces this at exchange as the authoritative gate.
       const registration = CONFIG.auth.registrationMode;
       if (registration !== 'open') {
-        const existing = await models.User.findOne({
-          $or: [{ 'identities.subject': identity.sub }, { email: identity.email.trim().toLowerCase() }]
-        }).lean().exec();
+        const existing = (await store.users.getByIdentity('google', identity.sub))
+          ?? (await store.users.getByEmail(identity.email.trim().toLowerCase()));
         if (!existing) {
           throw new AccessDeniedError('Sign-up is not open');
         }
       }
 
-      record.status = 'authenticated';
-      record.code = randomToken();
-      record.email = identity.email;
-      record.sub = identity.sub;
-      record.emailVerified = identity.emailVerified;
-      await record.save();
+      const code = randomToken();
+      const authenticated = await store.authorizations.authenticate(record, { code, email: identity.email, sub: identity.sub, emailVerified: identity.emailVerified });
+      if (!authenticated) {
+        throw new AccessDeniedError('Authorization state is invalid or expired');
+      }
 
       const sep = record.consumerRedirectUri.includes('?') ? '&' : '?';
-      const params = new URLSearchParams({ code: record.code });
+      const params = new URLSearchParams({ code });
       if (record.consumerState) params.set('state', record.consumerState);
       const redirectTo = `${record.consumerRedirectUri}${sep}${params.toString()}`;
       deps.logger?.info?.({ clientId: record.clientId }, 'google authentication succeeded');
@@ -440,10 +428,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!input.code || !input.codeVerifier) {
       throw new InvalidRequestError('code and code_verifier are required');
     }
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-
-    const record = await models.OAuthAuthorization.findOne({ code: input.code, status: 'authenticated' }).exec();
+    const found = await store.authorizations.getByCode(input.code);
+    const record = found && found.status === 'authenticated' && found.code === input.code ? found : null;
     if (!record || record.expiresAt.getTime() < nowFn().getTime()) {
       throw new InvalidGrantError('Authorization code is invalid or expired');
     }
@@ -460,7 +446,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidGrantError('Authorization has no established identity');
     }
 
-    const { client } = await loadFlowClient(models, record.clientId, GRANT_AUTHORIZATION_CODE);
+    const { client } = await loadFlowClient(record.clientId, GRANT_AUTHORIZATION_CODE);
 
     // RFC 8707: a resource repeated at the exchange must be the one the authorization named. Silently
     // honouring a different one would let the exchange re-target a token the person never approved.
@@ -468,10 +454,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidTargetError('resource does not match the authorization request');
     }
 
-    // Single-use: consume the code before issuing, so a replay cannot mint a second token.
-    record.status = 'consumed';
-    record.code = undefined;
-    await record.save();
+    // Single-use: consume the code before issuing, so a replay cannot mint a second token. The consume
+    // is conditional on the code still being unconsumed — two exchanges racing get one token between them.
+    if (!(await store.authorizations.consume(record._id))) {
+      throw new InvalidGrantError('Authorization code is invalid or expired');
+    }
 
     // Resolve the person behind the login. A local login (RQ-0002) already authenticated a real user
     // record, so there is nothing to provision — only to re-check, since status/lockout may have
@@ -480,8 +467,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // `provisionFederatedUser` throws if the account is disabled/locked, an unverified email would
     // collide, or the deployment's registration policy forbids creating a new user (RQ-0013).
     const user = record.idp === 'local'
-      ? await requireLocalUser(models, record.sub)
-      : await provisionFederatedUser(models, {
+      ? await requireLocalUser(record.sub)
+      : await provisionFederatedUser({
         provider: 'google',
         subject: record.sub,
         email: record.email,
@@ -491,13 +478,13 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     // Entitlement gate (ADR-0019/0020): even a freshly JIT-provisioned federated user needs an active
     // assignment for this credential's application (created by an invite or an operator) before a token.
-    const application = await requireApplication(models, client);
-    const assignment = await findActiveAssignment(models, user._id, application._id);
+    const application = await requireApplication(store, client);
+    const assignment = await store.assignments.getActive(user._id, application._id);
     if (!assignment) {
       throw new AccessDeniedError('User is not assigned to this application');
     }
 
-    return issueUserTokens(models, {
+    return issueUserTokens({
       client,
       audience: resolveUserAudience(client, application, record.resource),
       // Token claims are unchanged from RQ-0001: the email + stable `sub` the IdP asserted. The user
@@ -505,18 +492,24 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       // (ADR-0022) is additive: the person's maestro principal id, whichever IdP asserted the `sub`.
       email: record.email,
       sub: record.sub,
-      prn: await principalClaimFor(models, user),
+      prn: await principalClaimFor(user),
       scope: record.scope ?? [],
       roles: assignment.roles ?? [],
       resource: record.resource
     });
   }
 
+  /** A pending login by its form handle, or null when unknown, expired-by-status, or already used. */
+  async function pendingByLoginToken(loginToken: string): Promise<OAuthAuthorizationDocument | null> {
+    const found = await store.authorizations.getByLoginToken(loginToken);
+    return found && found.status === 'pending' && found.loginToken === loginToken ? found : null;
+  }
+
   /** Re-read the person behind a completed local login. Unlike the federated leg there is nothing to
    *  provision — but status/lockout is re-enforced, so an account disabled between login and exchange
    *  still gets no token (RQ-0011 US-3). */
-  async function requireLocalUser(models: ModelsBucket, sub: string): Promise<UserDocument> {
-    const user = await models.User.findOne({ _id: sub }).exec();
+  async function requireLocalUser(sub: string): Promise<UserDocument> {
+    const user = await store.users.get(sub);
     if (!user) {
       throw new InvalidGrantError('User no longer exists');
     }
@@ -532,9 +525,9 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    * Failure is uniform — an unknown email, a federated-only account (no `passwordHash`, RQ-0011), and a
    * wrong password are indistinguishable to the caller, so neither path enumerates users.
    */
-  async function authenticateLocalUser(models: ModelsBucket, username: string, password: string): Promise<UserDocument> {
+  async function authenticateLocalUser(username: string, password: string): Promise<UserDocument> {
     const email = username.trim().toLowerCase();
-    const user = await models.User.findOne({ email }).exec();
+    const user = await store.users.getByEmail(email);
     const now = nowFn();
 
     const genericDenied = () => new InvalidGrantError('Invalid credentials');
@@ -547,21 +540,22 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     }
 
     if (!verifySecret(password, user.passwordHash)) {
-      user.failedAttempts = (user.failedAttempts ?? 0) + 1;
-      if (user.failedAttempts >= CONFIG.auth.password.maxFailedAttempts) {
-        user.lockedUntil = new Date(now.getTime() + CONFIG.auth.password.lockoutMinutes * 60 * 1000);
-        user.failedAttempts = 0;
+      let failedAttempts = (user.failedAttempts ?? 0) + 1;
+      let lockedUntil = user.lockedUntil ?? null;
+      if (failedAttempts >= CONFIG.auth.password.maxFailedAttempts) {
+        lockedUntil = new Date(now.getTime() + CONFIG.auth.password.lockoutMinutes * 60 * 1000);
+        failedAttempts = 0;
         deps.logger?.info?.({ userId: user._id }, 'user locked after failed logins');
       }
-      await user.save();
+      await store.users.update(user._id, { failedAttempts, lockedUntil, updatedAt: now });
       throw genericDenied();
     }
 
     // Success: clear the brute-force counters.
     if (user.failedAttempts || user.lockedUntil) {
+      await store.users.update(user._id, { failedAttempts: 0, lockedUntil: null, updatedAt: now });
       user.failedAttempts = 0;
       user.lockedUntil = null;
-      await user.save();
     }
 
     return user;
@@ -571,26 +565,24 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!input.username || !input.password) {
       throw new InvalidRequestError('username and password are required');
     }
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-    const { client } = await loadFlowClient(models, input.clientId, GRANT_PASSWORD);
+    const { client } = await loadFlowClient(input.clientId, GRANT_PASSWORD);
 
-    const user = await authenticateLocalUser(models, input.username, input.password);
+    const user = await authenticateLocalUser(input.username, input.password);
 
     // Entitlement gate (ADR-0019/0020): the user must hold an active assignment for this credential's
     // application; the token's roles are the app-scoped roles from that assignment.
-    const application = await requireApplication(models, client);
-    const assignment = await findActiveAssignment(models, user._id, application._id);
+    const application = await requireApplication(store, client);
+    const assignment = await store.assignments.getActive(user._id, application._id);
     if (!assignment) {
       throw new AccessDeniedError('User is not assigned to this application');
     }
 
-    return issueUserTokens(models, {
+    return issueUserTokens({
       client,
       audience: effectiveAudience(client, application),
       email: user.email,
       sub: user._id, // the stable subject id
-      prn: await principalClaimFor(models, user),
+      prn: await principalClaimFor(user),
       scope: [],
       roles: assignment.roles ?? []
     });
@@ -600,11 +592,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (!input.refreshToken) {
       throw new InvalidRequestError('refresh_token is required');
     }
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-
     const hashed = sha256Hex(input.refreshToken);
-    const tokenDoc = await models.OAuthToken.findOne({ hashedToken: hashed, type: 'refresh' }).exec();
+    const tokenDoc = await store.tokens.getRefreshByHash(hashed);
     const now = nowFn();
     if (!tokenDoc || tokenDoc.status !== 'active' || tokenDoc.expiresAt.getTime() < now.getTime()) {
       throw new InvalidGrantError('Refresh token is invalid, expired, or revoked');
@@ -615,7 +604,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     // A refresh MUST NOT outlive a revoked session (RQ-0001 AC6).
     const session = tokenDoc.sessionId
-      ? await models.Session.findById(tokenDoc.sessionId).exec()
+      ? await store.sessions.get(tokenDoc.sessionId)
       : null;
     if (!session || session.status !== 'active' || session.expiresAt.getTime() < now.getTime()) {
       throw new InvalidGrantError('Session is revoked or expired');
@@ -623,7 +612,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     // Refresh is grant-agnostic — the client was already vetted at the original login. Just confirm
     // it still exists (audience needed to re-mint); don't require a specific login grant here.
-    const client = await models.OAuthClient.findById(tokenDoc.clientId).lean().exec() as OAuthClientDocument | null;
+    const client = await store.clients.get(tokenDoc.clientId);
     if (!client) {
       throw new InvalidGrantError('Client no longer exists');
     }
@@ -636,30 +625,29 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // A refresh must honour a user disabled/locked since login (RQ-0011 US-3) and re-check the
     // application assignment (ADR-0019) — a suspended/revoked assignment kills further tokens, and the
     // current app-scoped roles are re-read from it.
-    const user = await resolveUserBySubject(models, sub);
+    const user = await store.users.getBySubject(sub);
     if (!user) {
       throw new InvalidGrantError('User no longer exists');
     }
     assertUserActive(user);
-    const application = await requireApplication(models, client);
-    const assignment = await findActiveAssignment(models, user._id, application._id);
+    const application = await requireApplication(store, client);
+    const assignment = await store.assignments.getActive(user._id, application._id);
     if (!assignment) {
       throw new InvalidGrantError('Access to this application was revoked');
     }
 
     // Rotate: the presented refresh token is single-use.
-    tokenDoc.status = 'revoked';
-    await tokenDoc.save();
+    await store.tokens.setStatus(tokenDoc._id, 'revoked');
 
     // Re-mint against the SAME resource the chain was bound to (ADR-0009 Phase 2). Dropping it here
     // would hand back a token audienced at the application instead, which the resource server must
     // reject — and because that only bites at the first refresh, the login itself looks perfectly fine.
-    return issueUserTokens(models, {
+    return issueUserTokens({
       client,
       audience: resolveUserAudience(client, application, tokenDoc.resource),
       email,
       sub,
-      prn: await principalClaimFor(models, user),
+      prn: await principalClaimFor(user),
       scope: tokenDoc.scope ?? [],
       roles: assignment.roles ?? [],
       session,
@@ -669,22 +657,15 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
   async function revokeUserToken(input: RevokeTokenInput): Promise<void> {
     if (!input.token) return; // RFC 7009: revocation is idempotent; unknown tokens succeed silently.
-    const connection = await deps.getMasterConnection();
-    const models = deps.makeModels(connection);
-
     const hashed = sha256Hex(input.token);
-    const tokenDoc = await models.OAuthToken.findOne({ hashedToken: hashed, type: 'refresh' }).exec();
+    const tokenDoc = await store.tokens.getRefreshByHash(hashed);
     if (!tokenDoc) return;
 
-    tokenDoc.status = 'revoked';
-    await tokenDoc.save();
+    await store.tokens.setStatus(tokenDoc._id, 'revoked');
 
     // Cascade to the session so any sibling refresh token is also dead (AC6).
     if (tokenDoc.sessionId) {
-      await models.Session.updateOne(
-        { _id: tokenDoc.sessionId },
-        { $set: { status: 'revoked', updatedAt: nowFn() } }
-      ).exec();
+      await store.sessions.update(tokenDoc.sessionId, { status: 'revoked', updatedAt: nowFn() });
     }
     deps.logger?.info?.({ clientId: tokenDoc.clientId, sessionId: tokenDoc.sessionId }, 'revoked user session');
   }
@@ -692,9 +673,9 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   /** Deny issuance for a person an operator has disabled or who is inside a brute-force lockout window.
    *  Enforced on every user grant so the guarantee holds regardless of provider (RQ-0011 US-3). */
   /** The person's `prn` claim (ADR-0022) — minted on first use for a record that predates the registry. */
-  async function principalClaimFor(models: ModelsBucket, user: { _id: string; principalId?: string; status?: string }): Promise<string | undefined> {
+  async function principalClaimFor(user: { _id: string; principalId?: string; status?: string }): Promise<string | undefined> {
     if (!deps.record) return undefined;
-    return (await ensureUserPrincipal(models, user)).id;
+    return (await ensureUserPrincipal(store, user)).id;
   }
 
   function assertUserActive(user: { status?: string; lockedUntil?: Date | null }): void {
@@ -704,14 +685,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (user.lockedUntil && user.lockedUntil.getTime() > nowFn().getTime()) {
       throw new InvalidGrantError('Account is temporarily locked');
     }
-  }
-
-  /** Resolve the person behind a token subject: a federated `sub` matches a linked identity, a local
-   *  `sub` matches the user `_id` (RQ-0011 US-3). Read-only; used to re-read roles/status on refresh. */
-  async function resolveUserBySubject(models: ModelsBucket, sub: string): Promise<UserDocument | null> {
-    return models.User.findOne({
-      $or: [{ _id: sub }, { 'identities.subject': sub }]
-    }).lean().exec() as Promise<UserDocument | null>;
   }
 
   /**
@@ -726,7 +699,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    * concurrent-first-login race via the unique identity index.
    */
   async function provisionFederatedUser(
-    models: ModelsBucket,
     args: { provider: 'google'; subject: string; email: string; emailVerified: boolean; registration?: 'open' | 'invite' | 'closed' }
   ): Promise<UserDocument> {
     const now = nowFn();
@@ -734,31 +706,26 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     const { provider, subject } = args;
 
     // 1) Identity already linked.
-    const linked = await models.User.findOne({ 'identities.provider': provider, 'identities.subject': subject }).exec();
+    const linked = await store.users.getByIdentity(provider, subject);
     if (linked) {
       assertUserActive(linked);
-      const identity = linked.identities?.find((i) => i.provider === provider && i.subject === subject);
-      if (identity) {
-        identity.email = emailNorm;
-        identity.emailVerified = args.emailVerified;
-      }
-      linked.lastLoginAt = now;
-      await linked.save();
-      return linked;
+      const identities = (linked.identities ?? []).map((i) =>
+        i.provider === provider && i.subject === subject ? { ...i, email: emailNorm, emailVerified: args.emailVerified } : i
+      );
+      await store.users.setIdentities(linked, identities, now, { lastLoginAt: now });
+      return { ...linked, identities, lastLoginAt: now };
     }
 
     // 2) An account with this email exists — link only on a verified email (account-takeover guard).
-    const byEmail = await models.User.findOne({ email: emailNorm }).exec();
+    const byEmail = await store.users.getByEmail(emailNorm);
     if (byEmail) {
       if (!args.emailVerified) {
         throw new AccessDeniedError('Cannot link an unverified email to an existing account');
       }
       assertUserActive(byEmail);
-      byEmail.identities = byEmail.identities ?? [];
-      byEmail.identities.push({ provider, subject, email: emailNorm, emailVerified: true, linkedAt: now });
-      byEmail.lastLoginAt = now;
-      await byEmail.save();
-      return byEmail;
+      const identity = { provider, subject, email: emailNorm, emailVerified: true, linkedAt: now };
+      await store.users.linkIdentity(byEmail, identity, now);
+      return { ...byEmail, identities: [...(byEmail.identities ?? []), identity], lastLoginAt: now };
     }
 
     // 3) First sighting of this person — create a federated-only user. On an invite-only/closed
@@ -766,46 +733,41 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if ((args.registration ?? 'open') !== 'open') {
       throw new AccessDeniedError('Sign-up is not open');
     }
+    const record = deps.record;
+    const userId = randomUUID();
+    const principalId = record ? mintPrincipalId('human') : undefined;
+    const user: UserDocument = {
+      _id: userId,
+      email: emailNorm,
+      emailVerified: args.emailVerified,
+      status: 'active',
+      failedAttempts: 0,
+      identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
+      lastLoginAt: now,
+      createdAt: now,
+      updatedAt: now,
+      ...(principalId ? { principalId } : {})
+    };
     try {
-      const record = deps.record;
-      if (!record) {
-        return await models.User.create({
-          _id: randomUUID(),
-          email: emailNorm,
-          emailVerified: args.emailVerified,
-          status: 'active',
-          identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
-          lastLoginAt: now
-        });
-      }
       // A first sighting registers a HUMAN principal on maestro's record (ADR-0022): the person acts for
       // themselves, in the `self` seat, and the event lands in the same transaction as the account.
-      const userId = randomUUID();
-      const principalId = mintPrincipalId('human');
-      const connection = await deps.getMasterConnection();
-      return await withRecordTransaction(connection, async (session) => {
-        const [created] = await models.User.create([{
-          _id: userId,
-          email: emailNorm,
-          emailVerified: args.emailVerified,
-          status: 'active',
-          identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
-          lastLoginAt: now,
-          principalId
-        }], { session });
-        await models.Principal.create([{ _id: principalId, kind: 'human', status: 'active', subjectType: 'user', subjectId: userId, createdAt: now, updatedAt: now }], { session });
-        const recorder = createRecorder({ models, config: record, ...selfContext({ id: principalId, kind: 'human' }), logger: deps.logger, now: () => nowFn().toISOString() });
-        await recorder.emit(session, [{
-          type: 'PrincipalRegistered',
-          subject: principalId,
-          body: { kind: 'human', source: 'google', realm: realmOf(record.workspaceId) }
-        }]);
-        return created as UserDocument;
+      await withRecordTransaction(store, async (tx) => {
+        store.users.put(tx, user);
+        if (record && principalId) {
+          store.principals.register(tx, principalRow(principalId, 'human', 'active', 'user', userId, now));
+          const recorder = createRecorder({ store, config: record, ...selfContext({ id: principalId, kind: 'human' }), logger: deps.logger, now: () => nowFn().toISOString() });
+          await recorder.emit(tx, [{
+            type: 'PrincipalRegistered',
+            subject: principalId,
+            body: { kind: 'human', source: 'google', realm: realmOf(record.workspaceId) }
+          }]);
+        }
       }, deps.logger);
+      return user;
     } catch (err) {
-      // Concurrent first login: the unique identity index rejected the duplicate insert — re-read it.
-      if ((err as { code?: number }).code === 11000) {
-        const raced = await models.User.findOne({ 'identities.provider': provider, 'identities.subject': subject }).exec();
+      // Concurrent first login: the identity was claimed by the other request — re-read it.
+      if (err instanceof ConditionFailed) {
+        const raced = await store.users.getByIdentity(provider, subject);
         if (raced) {
           assertUserActive(raced);
           return raced;
@@ -820,7 +782,6 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
    * metadata and (on first issue) the session. Reused by the authorization-code and refresh grants.
    */
   async function issueUserTokens(
-    models: ModelsBucket,
     args: {
       client: OAuthClientDocument;
       audience?: string; // resolved from the resource indicator / credential override / application (ADR-0020)
@@ -851,12 +812,14 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     } else {
       sessionId = randomUUID();
       sessionExpiresAt = new Date(issuedAt.getTime() + CONFIG.oauth.refreshTokenTtlSec * 1000);
-      await models.Session.create({
+      await store.sessions.create({
         _id: sessionId,
         contactId: args.sub,
         context: args.email ? { email: args.email } : {},
         status: 'active',
-        expiresAt: sessionExpiresAt
+        expiresAt: sessionExpiresAt,
+        createdAt: issuedAt,
+        updatedAt: issuedAt
       });
     }
 
@@ -873,7 +836,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       expiresAt: accessExp
     });
 
-    await models.OAuthToken.create({
+    await store.tokens.create({
       _id: jti,
       clientId: args.client._id,
       subject: args.sub,
@@ -889,7 +852,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     // Opaque, high-entropy refresh token — only its hash is stored.
     const refreshTokenValue = randomToken();
     const refreshJti = randomUUID();
-    await models.OAuthToken.create({
+    await store.tokens.create({
       _id: refreshJti,
       clientId: args.client._id,
       subject: args.sub,
@@ -966,22 +929,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   };
 }
 
-/** The user's active entitlement to an application (ADR-0019/0020), or null if none/suspended. Keyed on
- *  the user record `_id` (not the token `sub`, which for a federated login is the provider subject) and
- *  the APPLICATION id (a user assigned to an app may log in through any of its credentials). */
-async function findActiveAssignment(
-  models: ModelsBucket,
-  userId: string,
-  applicationId: string
-): Promise<AssignmentDocument | null> {
-  return models.Assignment.findOne({ userId, applicationId, status: 'active' }).lean().exec() as Promise<AssignmentDocument | null>;
-}
-
 /** Resolve the application a credential belongs to (ADR-0020). Required for user grants — it supplies the
  *  entitlement key and the default token audience. */
-async function requireApplication(models: ModelsBucket, client: { applicationId?: string }): Promise<ApplicationDocument> {
+async function requireApplication(store: Store, client: { applicationId?: string }): Promise<ApplicationDocument> {
   if (!client.applicationId) throw new UnauthorizedClientError('Client is not part of an application');
-  const application = await models.Application.findById(client.applicationId).lean().exec() as ApplicationDocument | null;
+  const application = await store.applications.get(client.applicationId);
   if (!application) throw new UnauthorizedClientError('Client application not found');
   return application;
 }
@@ -992,15 +944,12 @@ function effectiveAudience(client: { audience?: string }, application: { audienc
   return client.audience ?? application?.audience ?? undefined;
 }
 
-async function enforceRateLimit(models: ReturnType<OAuthServerDependencies['makeModels']>, issuedAt: Date, maxPerMinute: number) {
+async function enforceRateLimit(store: Store, issuedAt: Date, maxPerMinute: number) {
   if (!Number.isFinite(maxPerMinute) || maxPerMinute <= 0) {
     return;
   }
   const windowStart = new Date(issuedAt.getTime() - 60 * 1000);
-  const count = await models.OAuthToken.countDocuments({
-    type: 'access',
-    issuedAt: { $gte: windowStart }
-  }).exec();
+  const count = await store.tokens.countIssuedSince('access', windowStart);
 
   if (count >= maxPerMinute) {
     throw new RateLimitExceededError(60);

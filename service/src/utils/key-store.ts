@@ -1,6 +1,5 @@
 import { generateKeyPairSync, randomUUID, createPublicKey, randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'crypto';
-import { getMasterConnection } from './db.js';
-import { makeModels } from '../models/index.js';
+import { ConditionFailed, getStore } from '../db/index.js';
 import logger from './logger.js';
 import { CONFIG } from '../config.js';
 
@@ -11,10 +10,9 @@ interface ActiveKey {
 }
 
 export async function ensureActiveSigningKey(): Promise<ActiveKey> {
-  const connection = await getMasterConnection();
-  const { KeyStore } = makeModels(connection);
+  const keys = getStore().signingKeys;
 
-  const active = await KeyStore.findOne({ status: 'active' }).sort({ createdAt: -1 }).lean().exec();
+  const active = await keys.getActive();
   if (active) {
     return {
       kid: active.kid,
@@ -24,13 +22,22 @@ export async function ensureActiveSigningKey(): Promise<ActiveKey> {
   }
 
   const { privateKey, publicKey, kid } = createKeyPair();
-  await KeyStore.create({
-    kid,
-    privateKey: encryptPrivateKey(privateKey),
-    publicKey,
-    algorithm: 'RS256',
-    status: 'active'
-  });
+  try {
+    await keys.create({
+      kid,
+      privateKey: encryptPrivateKey(privateKey),
+      publicKey,
+      algorithm: 'RS256',
+      status: 'active',
+      createdAt: new Date(),
+      rotatedAt: null
+    });
+  } catch (err) {
+    // Two cold starts generating the first key at once: the kid is a UUID, so a failed put is not this
+    // key — re-read and use whatever is active now.
+    if (!(err instanceof ConditionFailed)) throw err;
+    return ensureActiveSigningKey();
+  }
 
   logger.info({ kid }, 'generated initial signing key');
 
@@ -38,38 +45,22 @@ export async function ensureActiveSigningKey(): Promise<ActiveKey> {
 }
 
 export async function rotateSigningKey(): Promise<ActiveKey> {
-  const connection = await getMasterConnection();
-  const { KeyStore } = makeModels(connection);
+  const keys = getStore().signingKeys;
 
   const { privateKey, publicKey, kid } = createKeyPair();
-  const newKeyDoc = {
+  const now = new Date();
+  // One transaction: every active key demoted, the new one inserted. The JWKS publishes both active and
+  // inactive keys, so a token signed by the just-demoted key still verifies (ADR rotation rule).
+  const active = (await keys.listPublishable()).filter((k) => k.status === 'active').map((k) => k.kid);
+  await keys.rotate(active, {
     kid,
     privateKey: encryptPrivateKey(privateKey),
     publicKey,
-    algorithm: 'RS256' as const,
-    status: 'active' as const
-  };
-
-  // Prefer an atomic rotation. A single-node Mongo (the default dev/prod compose) is a standalone,
-  // not a replica set, so `withTransaction` throws — fall back to a sequential rotation there. The
-  // demote-then-create ordering keeps verification safe either way: the JWKS publishes both active
-  // and inactive keys, so a token signed by the just-demoted key still verifies (ADR rotation rule).
-  const session = await connection.startSession();
-  try {
-    await session.withTransaction(async () => {
-      await KeyStore.updateMany({ status: 'active' }, { $set: { status: 'inactive', rotatedAt: new Date() } }).session(session);
-      await KeyStore.create([newKeyDoc], { session });
-    });
-  } catch (error) {
-    if (!isTransactionsUnsupported(error)) {
-      throw error;
-    }
-    logger.warn({ kid }, 'transactions unavailable (standalone Mongo); rotating signing key sequentially');
-    await KeyStore.updateMany({ status: 'active' }, { $set: { status: 'inactive', rotatedAt: new Date() } });
-    await KeyStore.create(newKeyDoc);
-  } finally {
-    await session.endSession();
-  }
+    algorithm: 'RS256',
+    status: 'active',
+    createdAt: now,
+    rotatedAt: null
+  }, now);
 
   logger.info({ kid }, 'rotated signing key');
 
@@ -77,9 +68,7 @@ export async function rotateSigningKey(): Promise<ActiveKey> {
 }
 
 export async function listPublicKeys() {
-  const connection = await getMasterConnection();
-  const { KeyStore } = makeModels(connection);
-  const keys = await KeyStore.find({ status: { $in: ['active', 'inactive'] } }).lean().exec();
+  const keys = await getStore().signingKeys.listPublishable();
 
   return keys.map((item) => ({
     kid: item.kid,
@@ -88,13 +77,6 @@ export async function listPublicKeys() {
     use: 'sig',
     ...exportPublicJwk(item.publicKey)
   }));
-}
-
-/** True when Mongo rejected a transaction because the deployment is a standalone (not a replica set). */
-function isTransactionsUnsupported(error: unknown): boolean {
-  const err = error as { code?: number; codeName?: string; message?: string };
-  if (err?.code === 20 || err?.codeName === 'IllegalOperation') return true;
-  return typeof err?.message === 'string' && /Transaction numbers are only allowed on a replica set/i.test(err.message);
 }
 
 function createKeyPair() {

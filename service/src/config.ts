@@ -16,9 +16,13 @@ const parseOrigins = (value: string | undefined): string[] =>
 export const CONFIG = {
   environment: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT ?? 7305),
-  mongo: {
-    uri: process.env.MONGO_URI ?? 'mongodb://localhost:27017',
-    dbName: process.env.MONGO_DB_NAME ?? 'identity-service'
+  // The table (ADR-0023, maestro ADR-0018): one DynamoDB table per deployment, made by the Terraform
+  // module and named here; on a laptop DynamoDB Local behind DYNAMODB_ENDPOINT. No credential: a
+  // deployment's function has a role, DynamoDB Local takes any key.
+  db: {
+    tableName: process.env.TABLE_NAME ?? '',
+    endpoint: process.env.DYNAMODB_ENDPOINT || undefined,
+    region: process.env.AWS_REGION || undefined
   },
   auth: {
     sessionTtlMinutes: toNumber(process.env.SESSION_TTL_MINUTES, 15),

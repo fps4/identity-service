@@ -1,7 +1,7 @@
 // Do the bundles resolve? The relay is imported in-process and must export its `handler` — a
 // function, resolved with every module it needs and nothing else (it connects to nothing at import).
-// The service is started against a port nothing listens on and read for what it dies of: a
-// connection failure means every module resolved and the server reached its database step — the
+// The service is started against a DynamoDB endpoint nothing listens on and read for what it dies of:
+// a connection failure means every module resolved and the server reached its database step — the
 // bundle is sound. Anything else (a missing package, a bad require, an undefined __dirname) is a
 // bundling defect and fails here rather than at the first cold start.
 import { spawn } from 'node:child_process';
@@ -28,8 +28,9 @@ const child = spawn(process.execPath, [entry], {
     NODE_ENV: 'production',
     LOG_PRETTY: 'false',
     PORT: '17305',
-    MONGO_URI: 'mongodb://127.0.0.1:1',
-    MONGO_DB_NAME: 'smoke',
+    TABLE_NAME: 'smoke',
+    DYNAMODB_ENDPOINT: 'http://127.0.0.1:1',
+    AWS_REGION: 'local',
     AUTH_JWT_ISSUER: 'https://identity.example',
     OAUTH_KEY_PASSPHRASE: 'smoke'
   },
@@ -40,7 +41,7 @@ let output = '';
 child.stdout.on('data', (d) => (output += d));
 child.stderr.on('data', (d) => (output += d));
 
-// The driver's server selection gives up after 30s; allow for it.
+// The SDK retries a refused connection a few times with backoff; allow for it.
 const timer = setTimeout(() => {
   child.kill('SIGKILL');
   console.error(output);
@@ -50,7 +51,7 @@ const timer = setTimeout(() => {
 
 child.on('exit', (code) => {
   clearTimeout(timer);
-  const connectionFailure = /failed to connect to MongoDB|MongooseServerSelectionError|ECONNREFUSED/.test(output);
+  const connectionFailure = /failed to reach DynamoDB|ECONNREFUSED/.test(output);
   const resolutionFailure = /Cannot find (package|module)|ERR_MODULE_NOT_FOUND|is not defined|Dynamic require of/.test(output);
   if (connectionFailure && !resolutionFailure) {
     console.log('bundle smoke: ok — every module resolved; the server reached its database step and failed there as intended');

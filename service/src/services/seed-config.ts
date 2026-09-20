@@ -2,7 +2,7 @@
 // deployment's APPLICATIONS — each with its role catalogue, default audience, and credentials (OAuth
 // clients) — plus local users and their per-application assignments. One deployment = one realm, so
 // there is no tenant layer; the application is the product-level unit (ADR-0020). Pure (no I/O) so it is
-// unit-testable; the loader script (`scripts/seed.ts`) handles YAML reading and the Mongo upserts.
+// unit-testable; the loader script (`scripts/seed.ts`) handles YAML reading and the table's upserts.
 
 const GRANTS_NEEDING_AUDIENCE = new Set(['password', 'authorization_code']);
 

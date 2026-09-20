@@ -22,6 +22,7 @@ export {
 export {
   clientPrincipalKind,
   principalStatusOf,
+  principalRow,
   ensureUserPrincipal,
   ensureClientPrincipal,
   setPrincipalStatus,
@@ -42,7 +43,7 @@ export {
   type Recorder,
   type RecorderDeps
 } from './outbox.js';
-export { withRecordTransaction, resetTransactionProbe } from './transaction.js';
+export { withRecordTransaction } from './transaction.js';
 export { actContextFor, selfContext, operatorContext, type ActContext } from './context.js';
-export { MongoOutboxSource } from './source.js';
+export { DynamoOutboxSource } from './source.js';
 export { sinkFor, createRelay, startRelayLoop, type Relay, type RecordSinkConfig } from './relay.js';

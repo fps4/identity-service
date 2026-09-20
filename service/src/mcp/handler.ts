@@ -13,10 +13,8 @@
  * (`delete_client`, `delete_application`) stay HTTP-only for break-glass: least-privilege still applies
  * to removal, which registration does not need. Users/credentials/keys/invites are DB-owned runtime state.
  */
-import { adminService } from '../container.js';
+import { adminService, store } from '../container.js';
 import { principalHasScope, ADMIN_SCOPES, type AdminPrincipal } from '../core/admin-auth.js';
-import { getMasterConnection } from '../utils/db.js';
-import { makeModels } from '../models/index.js';
 import logger from '../utils/logger.js';
 import { actContextFor, type ActContext } from '../record/index.js';
 
@@ -53,8 +51,7 @@ const roleCatalogue = { type: 'array', items: { type: 'object', properties: { ke
 
 /** Who is acting (ADR-0022): the maestro principal behind the verified MCP caller. */
 async function actOf(principal: AdminPrincipal): Promise<ActContext> {
-  const models = makeModels(await getMasterConnection());
-  return actContextFor(models, principal);
+  return actContextFor(store, principal);
 }
 
 export const TOOLS: ToolDef[] = [
@@ -222,8 +219,7 @@ export const TOOLS: ToolDef[] = [
 /** Append an MCP action to the same append-only audit trail as the HTTP admin API. Best-effort. */
 export async function writeAudit(principal: AdminPrincipal, action: string, ok: boolean, meta?: Record<string, unknown>): Promise<void> {
   try {
-    const models = makeModels(await getMasterConnection());
-    await models.AuditLog.create({
+    await store.audit.create({
       at: new Date(),
       principalClientId: principal.clientId,
       principalSubject: principal.subject,
@@ -239,7 +235,7 @@ export async function writeAudit(principal: AdminPrincipal, action: string, ok: 
 }
 
 /**
- * Injectable collaborators. Defaults are the real tool catalogue + the Mongo-backed audit writer; tests
+ * Injectable collaborators. Defaults are the real tool catalogue + the table-backed audit writer; tests
  * override them to exercise the dispatch/gate logic without a database.
  */
 export interface HandlerDeps {

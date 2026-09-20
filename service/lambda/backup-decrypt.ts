@@ -1,8 +1,8 @@
 /**
  * Decrypt one `.enc` backup object for a restore (the passphrase in BACKUP_PASSPHRASE):
  *
- *   BACKUP_PASSPHRASE=… npm run backup:decrypt -- users.jsonl.gz.enc users.jsonl.gz
- *   gunzip users.jsonl.gz && mongoimport --uri "$MONGO_URI/$MONGO_DB_NAME" --collection users --drop --file users.jsonl
+ *   BACKUP_PASSPHRASE=… npm run backup:decrypt -- user.jsonl.gz.enc user.jsonl.gz
+ *   gunzip user.jsonl.gz && npm run backup:restore -- user.jsonl     # PutItem per line into TABLE_NAME
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { decryptBackup } from './backup-crypto.js';

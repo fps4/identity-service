@@ -15,10 +15,10 @@ import {
   type Delivery,
   type RelayReport
 } from '@fps4/maestro-spine';
-import type { ModelsBucket } from '../oauth/types.js';
+import type { Store } from '../db/index.js';
 import type { Logger } from '../utils/logger.js';
 import { RECORD_TYPES } from './types.js';
-import { MongoOutboxSource } from './source.js';
+import { DynamoOutboxSource } from './source.js';
 
 export interface RecordSinkConfig {
   sink: 'local' | 's3' | 'off';
@@ -49,8 +49,8 @@ export function sinkFor(config: RecordSinkConfig): { archive: ArchiveStore; deli
   return { archive: new FsArchive(config.archiveDir), delivery: new InProcessDelivery() };
 }
 
-export function createRelay(models: () => Promise<ModelsBucket>, sink: { archive: ArchiveStore; delivery: Delivery }): Relay {
-  const source = new MongoOutboxSource(models);
+export function createRelay(store: () => Promise<Store>, sink: { archive: ArchiveStore; delivery: Delivery }): Relay {
+  const source = new DynamoOutboxSource(store);
   const deps = { source, archive: sink.archive, delivery: sink.delivery, resolve: source.resolve, types: RECORD_TYPES };
   return {
     archive: sink.archive,

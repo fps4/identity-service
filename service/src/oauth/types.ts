@@ -1,43 +1,11 @@
-import type { Connection, Model } from 'mongoose';
 import type { Logger } from '../utils/logger.js';
-import type {
-  OAuthClientDocument,
-  OAuthTokenDocument,
-  OAuthAuthorizationDocument,
-  UserDocument,
-  InviteDocument,
-  AssignmentDocument,
-  ApplicationDocument,
-  KeyStoreDocument,
-  SessionDocument,
-  AuditLogDocument,
-  PrincipalDocument,
-  OutboxDocument,
-  CounterDocument
-} from '../models/index.js';
+import type { Store } from '../db/index.js';
 import type { GoogleIdp } from './google.js';
 import type { RecordConfig } from '../record/outbox.js';
 
-export interface ModelsBucket {
-  Application: Model<ApplicationDocument>;
-  OAuthClient: Model<OAuthClientDocument>;
-  OAuthToken: Model<OAuthTokenDocument>;
-  OAuthAuthorization: Model<OAuthAuthorizationDocument>;
-  User: Model<UserDocument>;
-  Invite: Model<InviteDocument>;
-  Assignment: Model<AssignmentDocument>;
-  KeyStore: Model<KeyStoreDocument>;
-  Session: Model<SessionDocument>;
-  AuditLog: Model<AuditLogDocument>;
-  // maestro's record (ADR-0022).
-  Principal: Model<PrincipalDocument>;
-  Outbox: Model<OutboxDocument>;
-  Counter: Model<CounterDocument>;
-}
-
 export interface OAuthServerDependencies {
-  getMasterConnection: () => Promise<Connection>;
-  makeModels: (connection: Connection) => ModelsBucket;
+  /** The table (ADR-0023). Injectable so tests drive the server over a table of their own. */
+  store: Store;
   // The upstream Google OIDC adapter. Injectable so tests drive the flow with a stub (no network).
   googleIdp?: GoogleIdp;
   now?: () => Date;

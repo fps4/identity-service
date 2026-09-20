@@ -1,10 +1,8 @@
 import express from 'express';
 import type { Request, Response } from 'express';
-import { adminService, metricsRecorder } from '../container.js';
+import { adminService, metricsRecorder, store } from '../container.js';
 import { requireAdmin, ADMIN_SCOPES } from '../core/admin-auth.js';
 import { AdminServiceError } from '../services/admin.js';
-import { getMasterConnection } from '../utils/db.js';
-import { makeModels } from '../models/index.js';
 import { createRateLimiter } from '../utils/rate-limit.js';
 import { CONFIG } from '../config.js';
 import logger from '../utils/logger.js';
@@ -33,8 +31,7 @@ function audit(req: Request, res: Response, action: string, target?: { type?: st
   res.on('finish', () => {
     void (async () => {
       try {
-        const models = makeModels(await getMasterConnection());
-        await models.AuditLog.create({
+        await store.audit.create({
           at: new Date(),
           principalClientId: req.admin?.clientId,
           principalSubject: req.admin?.subject,
@@ -58,8 +55,7 @@ function audit(req: Request, res: Response, action: string, target?: { type?: st
  * request and handed to every mutating service call so the act is attributed where it happens.
  */
 async function actOf(req: Request): Promise<ActContext> {
-  const models = makeModels(await getMasterConnection());
-  return actContextFor(models, req.admin!);
+  return actContextFor(store, req.admin!);
 }
 
 function handleError(res: Response, error: unknown): Response {
@@ -350,9 +346,7 @@ router.get('/stats', requireAdmin(ADMIN_SCOPES.stats), async (_req, res) => {
 router.get('/audit', requireAdmin(ADMIN_SCOPES.stats), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
-    const models = makeModels(await getMasterConnection());
-    const entries = await models.AuditLog.find().sort({ at: -1 }).limit(limit).lean().exec();
-    res.json({ entries });
+    res.json({ entries: await store.audit.latest(limit) });
   } catch (e) { handleError(res, e); }
 });
 
