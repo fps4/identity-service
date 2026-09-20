@@ -7,6 +7,8 @@
 //            run.sh, which execs node on the bundle; the adapter (a layer) proxies API Gateway events
 //            to the port the service listens on.
 //   backup   the scheduled backup (lambda/backup.ts): every collection to S3 as Extended JSON lines.
+//   relay    the scheduled relay (src/relay/lambda.ts, ADR-0022 §5): the spine's relayHandler over this
+//            service's outbox, into the archive and the events topic the spine's module names.
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
@@ -14,7 +16,8 @@ import { resolve } from 'node:path';
 
 const FUNCTIONS = {
   service: { entry: 'src/server.ts', webAdapter: true },
-  backup: { entry: 'lambda/backup.ts', webAdapter: false }
+  backup: { entry: 'lambda/backup.ts', webAdapter: false },
+  relay: { entry: 'src/relay/lambda.ts', webAdapter: false }
 };
 
 // The MongoDB driver's optional native and cloud-auth dependencies. None is installed here and none is

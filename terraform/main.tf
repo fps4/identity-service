@@ -1,6 +1,7 @@
 # identity-service on AWS (maestro M1, ADR-0002/0006/0016): the Express server unchanged, behind the
 # Lambda Web Adapter on a Lambda function, behind an HTTP API Gateway — one realm per deployment. The
-# database is the tenant's Atlas cluster, named by MONGO_URI (ADR-0005). Backups are in backup.tf.
+# database is the tenant's Atlas cluster, named by MONGO_URI (ADR-0005). Backups are in backup.tf; the
+# relay that carries the registry's events into the spine's archive is in relay.tf.
 
 locals {
   tags         = merge({ "maestro:component" = "identity-service" }, var.tags)
@@ -15,7 +16,9 @@ locals {
   secret_values = { for key, version in data.aws_secretsmanager_secret_version.secret : key => version.secret_string }
 
   # Precedence: the module's defaults, the tenant's environment, the secrets, then the adapter's own
-  # variables and the issuer, which nothing overrides.
+  # variables, the issuer and the record's sink, which nothing overrides. RECORD_SINK=off: the service
+  # writes the outbox and relays nothing in-process; the relay function (relay.tf) is the one relay
+  # (ADR-0022 §5). A tenant's `s3` here would have two relays racing over one outbox.
   service_environment = merge(
     {
       NODE_ENV   = "production"
@@ -27,6 +30,7 @@ locals {
       PORT                             = local.port
       AUTH_JWT_ISSUER                  = local.issuer
       GOOGLE_REDIRECT_URI              = "${local.issuer}/oauth2/callback"
+      RECORD_SINK                      = "off"
       AWS_LAMBDA_EXEC_WRAPPER          = "/opt/bootstrap"
       AWS_LWA_PORT                     = local.port
       AWS_LWA_READINESS_CHECK_PATH     = "/health"
@@ -65,7 +69,8 @@ resource "aws_iam_role" "service" {
 }
 
 # Logs only. The service talks to its database and to Google; its signing keys live encrypted in the
-# database (src/utils/key-store.ts), not in any AWS service, so it needs no AWS API.
+# database (src/utils/key-store.ts), not in any AWS service, so it needs no AWS API. The archive is
+# the relay's.
 resource "aws_iam_role_policy" "service" {
   name = "service"
   role = aws_iam_role.service.id

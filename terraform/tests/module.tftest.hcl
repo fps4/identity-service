@@ -1,8 +1,9 @@
 # Module tests with a mocked provider: no account, no credentials. What they check is the shape the
 # design promises — the service behind the Web Adapter on Node 22 / arm64 with the environment the
-# service reads, the secrets present by name, the issuer, the backup on its schedule with an alarm that
-# treats silence as failure, a backup bucket that expires and never locks — not whether AWS accepts it.
-# That is proven by the first real tenant (maestro ADR-0017).
+# service reads and RECORD_SINK=off, the secrets present by name, the issuer, the backup on its schedule
+# with an alarm that treats silence as failure, a backup bucket that expires and never locks, the relay
+# carrying the spine's names under the spine's policy on its schedule, one at a time — not whether AWS
+# accepts it. That is proven by the first real tenant (maestro ADR-0017).
 
 # Terraform >= 1.11 (override_during). ARNs are mocked without an account — the layer's included: the
 # public-repository guards forbid one, and the policies only need the shape.
@@ -50,22 +51,35 @@ mock_provider "aws" {
 variables {
   service_package       = "./tests/fixtures/service.zip"
   backup_package        = "./tests/fixtures/backup.zip"
+  relay_package         = "./tests/fixtures/relay.zip"
   web_adapter_layer_arn = "arn:aws:lambda:eu-west-1::layer:LambdaAdapterLayerArm64:25"
   backup_bucket_name    = "example-identity-backups"
   environment = {
-    MONGO_DB_NAME          = "identity-service"
-    AUTH_JWT_AUDIENCE      = "maestro"
-    CORS_ORIGINS           = "https://console.aannemer-x.example"
-    AUTH_REGISTRATION_MODE = "invite"
-    AUTH_LOCAL_IDP_ENABLED = "true"
-    ADMIN_OPERATOR_ROLES   = "platform_admin"
-    LOG_LEVEL              = "info"
+    MONGO_DB_NAME             = "identity-service"
+    AUTH_JWT_AUDIENCE         = "maestro"
+    CORS_ORIGINS              = "https://console.aannemer-x.example"
+    AUTH_REGISTRATION_MODE    = "invite"
+    AUTH_LOCAL_IDP_ENABLED    = "true"
+    ADMIN_OPERATOR_ROLES      = "platform_admin"
+    LOG_LEVEL                 = "info"
+    MAESTRO_WORKSPACE_ID      = "ws-aannemer-x"
+    MAESTRO_ACCOUNTABLE       = "prn-h-0000000000ex"
+    MAESTRO_CONSEQUENCE_CLASS = "c1"
   }
   secrets = {
     MONGO_URI                    = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/mongo-uri"
     AUTH_JWT_SECRET              = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/jwt-secret"
     OAUTH_KEY_PASSPHRASE         = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/key-passphrase"
     IDENTITY_ADMIN_CLIENT_SECRET = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/admin-client-secret"
+  }
+  # The spine module's outputs, as a root passes them.
+  archive = {
+    relay_environment = {
+      ARCHIVE_BUCKET   = "aannemer-x-maestro-archive"
+      ARCHIVE_PREFIX   = "identity/"
+      EVENTS_TOPIC_ARN = "arn:aws:sns:eu-west-1::aannemer-x-spine-events.fifo"
+    }
+    relay_policy_json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\"],\"Resource\":\"arn:aws:s3:::aannemer-x-maestro-archive\"}]}"
   }
 }
 
@@ -110,8 +124,16 @@ run "defaults" {
     error_message = "29 s under the HTTP API's 30 s integration ceiling; 1 GB"
   }
   assert {
-    condition     = !strcontains(aws_iam_role_policy.service.policy, "s3:") && !strcontains(aws_iam_role_policy.service.policy, "secretsmanager:")
-    error_message = "the service's role is logs only: its keys live in the database"
+    condition     = !strcontains(aws_iam_role_policy.service.policy, "s3:") && !strcontains(aws_iam_role_policy.service.policy, "secretsmanager:") && !strcontains(aws_iam_role_policy.service.policy, "sns:")
+    error_message = "the service's role is logs only: its keys live in the database, the archive is the relay's"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.service.environment[0].variables["RECORD_SINK"]) == "off"
+    error_message = "the service writes the outbox and relays nothing; the relay function is the one relay"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.service.environment[0].variables["MAESTRO_WORKSPACE_ID"]) == "ws-aannemer-x" && nonsensitive(aws_lambda_function.service.environment[0].variables["MAESTRO_ACCOUNTABLE"]) == "prn-h-0000000000ex" && nonsensitive(aws_lambda_function.service.environment[0].variables["MAESTRO_CONSEQUENCE_CLASS"]) == "c1"
+    error_message = "the record's names come through the tenant's environment"
   }
 
   # --- the issuer without a domain ---
@@ -209,6 +231,64 @@ run "defaults" {
     condition     = strcontains(aws_s3_bucket_policy.backup.policy, "aws:SecureTransport")
     error_message = "TLS only"
   }
+
+  # --- the relay ---
+  assert {
+    condition     = aws_lambda_function.relay.runtime == "nodejs22.x" && aws_lambda_function.relay.architectures[0] == "arm64" && aws_lambda_function.relay.handler == "index.handler" && aws_lambda_function.relay.layers == null
+    error_message = "the relay is a plain handler on Node 22, arm64, no adapter"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["ARCHIVE_BUCKET"]) == "aannemer-x-maestro-archive" && nonsensitive(aws_lambda_function.relay.environment[0].variables["ARCHIVE_PREFIX"]) == "identity/" && nonsensitive(aws_lambda_function.relay.environment[0].variables["EVENTS_TOPIC_ARN"]) == "arn:aws:sns:eu-west-1::aannemer-x-spine-events.fifo"
+    error_message = "the relay carries the spine's three names as the spine's module output them"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["MONGO_URI"]) == "mocked-secret-value" && nonsensitive(aws_lambda_function.relay.environment[0].variables["MONGO_DB_NAME"]) == "identity-service" && nonsensitive(aws_lambda_function.relay.environment[0].variables["MAESTRO_WORKSPACE_ID"]) == "ws-aannemer-x"
+    error_message = "the relay reads the same database and configuration as the service"
+  }
+  assert {
+    condition     = !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "OAUTH_KEY_PASSPHRASE") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "AUTH_JWT_SECRET") && !contains(keys(nonsensitive(aws_lambda_function.relay.environment[0].variables)), "IDENTITY_ADMIN_CLIENT_SECRET")
+    error_message = "the database is the relay's one secret: a relay cannot sign tokens"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["NODE_ENV"]) == "production" && nonsensitive(aws_lambda_function.relay.environment[0].variables["LOG_PRETTY"]) == "false"
+    error_message = "production, JSON logs — pino-pretty is not in the bundle"
+  }
+  assert {
+    condition     = aws_iam_role_policy.relay_archive.policy == var.archive.relay_policy_json
+    error_message = "the relay's archive policy is the spine's, attached unchanged"
+  }
+  assert {
+    condition     = !strcontains(aws_iam_role_policy.relay_logs.policy, "s3:") && !strcontains(aws_iam_role_policy.relay_logs.policy, "sns:")
+    error_message = "the relay's own policy is its log; the archive and the topic come from the spine's policy"
+  }
+  assert {
+    condition     = aws_lambda_function.relay.reserved_concurrent_executions == 1
+    error_message = "one relay at a time: the outbox is drained in order"
+  }
+  assert {
+    condition     = aws_scheduler_schedule.relay.schedule_expression == "rate(1 minute)" && aws_scheduler_schedule.relay.flexible_time_window[0].mode == "OFF"
+    error_message = "the relay runs every minute, on the minute"
+  }
+  assert {
+    condition     = aws_scheduler_schedule.relay.target[0].retry_policy[0].maximum_retry_attempts == 2 && aws_scheduler_schedule.relay.target[0].retry_policy[0].maximum_event_age_in_seconds == 300
+    error_message = "a tick the scheduler could not deliver is retried twice and dropped after five minutes"
+  }
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.relay_errors.threshold == 1 && aws_cloudwatch_metric_alarm.relay_errors.period == 3600
+    error_message = "one relay error in an hour alarms"
+  }
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.relay_silent.treat_missing_data == "breaching" && aws_cloudwatch_metric_alarm.relay_silent.period == 900 && aws_cloudwatch_metric_alarm.relay_silent.comparison_operator == "LessThanThreshold"
+    error_message = "a relay that has not run in fifteen minutes is an alarm, not a quiet quarter-hour"
+  }
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.relay_refused.namespace == "maestro/spine" && aws_cloudwatch_metric_alarm.relay_refused.metric_name == "Refused" && aws_cloudwatch_metric_alarm.relay_refused.dimensions["function"] == "relay" && aws_cloudwatch_metric_alarm.relay_refused.dimensions["component"] == "identity"
+    error_message = "a refused event is an alarm on the spine's metric for this component"
+  }
+  assert {
+    condition     = output.relay_function_name == "maestro-identity-relay"
+    error_message = "the relay is named after the module"
+  }
 }
 
 run "with_a_domain" {
@@ -220,6 +300,7 @@ run "with_a_domain" {
     backup_passphrase_secret_arn = "arn:aws:secretsmanager:eu-west-1::secret:aannemer-x/identity/backup-passphrase"
     backup_retention_days        = 90
     backup_prefix                = "identity/backups/"
+    relay_schedule               = "rate(5 minutes)"
   }
 
   assert {
@@ -254,6 +335,10 @@ run "with_a_domain" {
     condition     = nonsensitive(aws_lambda_function.backup.environment[0].variables["BACKUP_PREFIX"]) == "identity/backups" && output.backup_prefix == "identity/backups"
     error_message = "the backup function gets the prefix without its trailing slash"
   }
+  assert {
+    condition     = aws_scheduler_schedule.relay.schedule_expression == "rate(5 minutes)"
+    error_message = "the tenant chose the relay's schedule"
+  }
 }
 
 run "the_environment_cannot_override_the_adapter" {
@@ -265,6 +350,8 @@ run "the_environment_cannot_override_the_adapter" {
       AWS_LAMBDA_EXEC_WRAPPER = "/opt/nothing"
       AUTH_JWT_ISSUER         = "https://somewhere.else.example"
       LOG_PRETTY              = "true"
+      RECORD_SINK             = "s3" # a tenant's mistake; the module owns this one
+      ARCHIVE_BUCKET          = "somewhere-else"
     }
   }
 
@@ -279,6 +366,14 @@ run "the_environment_cannot_override_the_adapter" {
   assert {
     condition     = nonsensitive(aws_lambda_function.service.environment[0].variables["LOG_PRETTY"]) == "true"
     error_message = "a module default, though, the tenant may override"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.service.environment[0].variables["RECORD_SINK"]) == "off"
+    error_message = "RECORD_SINK is the module's: the relay function is the one relay, whatever the tenant's environment says"
+  }
+  assert {
+    condition     = nonsensitive(aws_lambda_function.relay.environment[0].variables["ARCHIVE_BUCKET"]) == "aannemer-x-maestro-archive"
+    error_message = "the archive's names on the relay are the spine's, not the tenant's environment's"
   }
 }
 
@@ -312,4 +407,19 @@ run "rejects_a_layer_that_is_not_the_adapter" {
   }
 
   expect_failures = [var.web_adapter_layer_arn]
+}
+
+run "rejects_an_archive_missing_a_name" {
+  command = plan
+
+  variables {
+    archive = {
+      relay_environment = {
+        ARCHIVE_BUCKET = "aannemer-x-maestro-archive"
+      }
+      relay_policy_json = "{}"
+    }
+  }
+
+  expect_failures = [var.archive]
 }

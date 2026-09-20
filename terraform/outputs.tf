@@ -28,6 +28,10 @@ output "backup_function_name" {
   value = aws_lambda_function.backup.function_name
 }
 
+output "relay_function_name" {
+  value = aws_lambda_function.relay.function_name
+}
+
 output "backup_bucket_name" {
   value = aws_s3_bucket.backup.bucket
 }

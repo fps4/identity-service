@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "bundle": "node scripts/bundle.mjs",
     "bundle:smoke": "node scripts/bundle-smoke.mjs",
-    "sbom": "cyclonedx-npm --omit dev --output-format JSON --output-reproducible --output-file bundle/service.cdx.json && cyclonedx-npm --omit dev --output-format JSON --output-reproducible --output-file bundle/backup.cdx.json",
+    "sbom": "cyclonedx-npm --omit dev --output-format JSON --output-reproducible --output-file bundle/service.cdx.json && cyclonedx-npm --omit dev --output-format JSON --output-reproducible --output-file bundle/backup.cdx.json && cyclonedx-npm --omit dev --output-format JSON --output-reproducible --output-file bundle/relay.cdx.json",
     "typecheck:lambda": "tsc -p tsconfig.lambda.json",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",

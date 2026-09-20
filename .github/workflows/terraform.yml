@@ -1,9 +1,9 @@
 name: terraform
 
 # The deployment's gate (maestro ADR-0016/0017): the module is formatted, valid and passes its tests
-# against a mocked provider; the demo example validates; the Lambda bundles build, boot and carry an
-# SBOM. Nothing here touches an account — a public repository deploys nowhere. What AWS makes of the
-# module is proven by the first tenant's pipeline.
+# against a mocked provider; the demo example validates (fetching the spine's module at its tag); the
+# Lambda bundles build, boot and carry an SBOM. Nothing here touches an account — a public repository
+# deploys nowhere. What AWS makes of the module is proven by the first tenant's pipeline.
 
 on:
   pull_request:
@@ -11,6 +11,7 @@ on:
       - "terraform/**"
       - "service/scripts/**"
       - "service/lambda/**"
+      - "service/src/relay/**"
       - "service/package.json"
       - "service/package-lock.json"
       - ".github/workflows/terraform.yml"
@@ -20,6 +21,7 @@ on:
       - "terraform/**"
       - "service/scripts/**"
       - "service/lambda/**"
+      - "service/src/relay/**"
       - "service/package.json"
       - "service/package-lock.json"
       - ".github/workflows/terraform.yml"
@@ -69,10 +71,12 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: service/package-lock.json
+      # Green once @fps4/maestro-spine at the version service/package.json names is on npm; until
+      # then `npm ci` fails on the lockfile, which is the expected state, not a defect in this job.
       - run: npm ci
       - run: npm run typecheck:lambda
       - run: npm run bundle
-      - name: the service bundle boots
+      - name: the relay bundle exports its handler; the service bundle boots
         run: npm run bundle:smoke
       - run: npm run sbom
       - uses: actions/upload-artifact@v4
@@ -81,6 +85,8 @@ jobs:
           path: |
             service/bundle/service.zip
             service/bundle/backup.zip
+            service/bundle/relay.zip
             service/bundle/service.cdx.json
             service/bundle/backup.cdx.json
+            service/bundle/relay.cdx.json
           if-no-files-found: error
