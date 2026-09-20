@@ -18,6 +18,7 @@ import { principalHasScope, ADMIN_SCOPES, type AdminPrincipal } from '../core/ad
 import { getMasterConnection } from '../utils/db.js';
 import { makeModels } from '../models/index.js';
 import logger from '../utils/logger.js';
+import { actContextFor, type ActContext } from '../record/index.js';
 
 export const SERVER_INFO = { name: 'identity-service-admin', version: '0.1.0' };
 export const DEFAULT_PROTOCOL = '2024-11-05';
@@ -27,7 +28,8 @@ export interface ToolDef {
   description: string;
   areaScope: string;
   inputSchema: Record<string, unknown>;
-  handler: (args: any) => Promise<unknown>;
+  /** `principal` is the verified caller; a mutating tool resolves its act context from it (ADR-0022). */
+  handler: (args: any, principal: AdminPrincipal) => Promise<unknown>;
 }
 
 export interface JsonRpcRequest {
@@ -48,6 +50,12 @@ const obj = (props: Record<string, unknown>, required: string[] = []) =>
 const str = { type: 'string' };
 const strArr = { type: 'array', items: { type: 'string' } };
 const roleCatalogue = { type: 'array', items: { type: 'object', properties: { key: str, name: str, description: str }, required: ['key'] } };
+
+/** Who is acting (ADR-0022): the maestro principal behind the verified MCP caller. */
+async function actOf(principal: AdminPrincipal): Promise<ActContext> {
+  const models = makeModels(await getMasterConnection());
+  return actContextFor(models, principal);
+}
 
 export const TOOLS: ToolDef[] = [
   // REGISTRATION (ADR-0021). A credential's secret is minted here and returned ONCE, so registering one
@@ -70,7 +78,7 @@ export const TOOLS: ToolDef[] = [
       scopes: strArr, audience: str, subject: str,
       isConfidential: { type: 'boolean' }, claims: { type: 'object' }
     }, ['applicationId', 'name', 'grantTypes']),
-    handler: (a) => adminService.createClient(a)
+    handler: async (a, p) => adminService.createClient(a, await actOf(p))
   },
   {
     name: 'rotate_client_secret',
@@ -84,7 +92,7 @@ export const TOOLS: ToolDef[] = [
     description: 'Create a local-credential user. Grant app access separately with assign_user (roles are per-application — ADR-0019).',
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({ email: str, password: str }, ['email', 'password']),
-    handler: (a) => adminService.createUser(a)
+    handler: async (a, p) => adminService.createUser(a, await actOf(p))
   },
   {
     name: 'reset_user_password',
@@ -98,14 +106,14 @@ export const TOOLS: ToolDef[] = [
     description: "Set a user's status to 'active' or 'disabled'.",
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({ email: str, status: { type: 'string', enum: ['active', 'disabled'] } }, ['email', 'status']),
-    handler: async (a) => { await adminService.setUserStatus(a.email, a.status); return { ok: true }; }
+    handler: async (a, p) => { await adminService.setUserStatus(a.email, a.status, await actOf(p)); return { ok: true }; }
   },
   {
     name: 'unlock_user',
     description: 'Clear a brute-force lockout and reactivate a user.',
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({ email: str }, ['email']),
-    handler: async (a) => { await adminService.unlockUser(a.email); return { ok: true }; }
+    handler: async (a, p) => { await adminService.unlockUser(a.email, await actOf(p)); return { ok: true }; }
   },
   // Applications + assignments (ADR-0019/0020): the product registration, its role catalogue, and a
   // user's entitlement to it. Operational read/user-access state — belongs on the MCP surface.
@@ -121,21 +129,21 @@ export const TOOLS: ToolDef[] = [
     description: "Assign a user to an application with app-scoped roles (ADR-0020). Roles must be in the application's role catalogue. Idempotent — re-assigning updates the roles.",
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({ email: str, applicationId: str, roles: strArr }, ['email', 'applicationId']),
-    handler: (a) => adminService.assignUser(a)
+    handler: async (a, p) => adminService.assignUser(a, await actOf(p))
   },
   {
     name: 'update_assignment',
     description: "Change a user's app-scoped roles and/or suspend/reactivate their assignment to an application.",
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({ email: str, applicationId: str, roles: strArr, status: { type: 'string', enum: ['active', 'suspended'] } }, ['email', 'applicationId']),
-    handler: (a) => adminService.updateAssignment(a.email, a.applicationId, { roles: a.roles, status: a.status })
+    handler: async (a, p) => adminService.updateAssignment(a.email, a.applicationId, { roles: a.roles, status: a.status }, await actOf(p))
   },
   {
     name: 'revoke_assignment',
     description: "Revoke a user's entitlement to an application (they can no longer obtain a token for it).",
     areaScope: ADMIN_SCOPES.users,
     inputSchema: obj({ email: str, applicationId: str }, ['email', 'applicationId']),
-    handler: (a) => adminService.revokeAssignment(a.email, a.applicationId)
+    handler: async (a, p) => adminService.revokeAssignment(a.email, a.applicationId, await actOf(p))
   },
   {
     name: 'list_app_members',
@@ -254,7 +262,7 @@ async function handleToolCall(id: unknown, principal: AdminPrincipal, params: an
   }
 
   try {
-    const result = await tool.handler(params?.arguments ?? {});
+    const result = await tool.handler(params?.arguments ?? {}, principal);
     void deps.writeAudit(principal, tool.name, true);
     return ok(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
   } catch (err) {

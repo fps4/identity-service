@@ -148,6 +148,31 @@ export const CONFIG = {
   // downstream consumer.
   observability: {
     metricsWindowMs: toNumber(process.env.METRICS_WINDOW_MS, 60_000)
+  },
+  // maestro's record (ADR-0022): the principal registry emits its lifecycle to the spine through a
+  // transactional outbox, and a relay drains it into an archive. Names match `@fps4/maestro-spine`'s
+  // handlers and maestro-specs' `RECORD_SINK`, so one tenant module configures every component alike.
+  record: {
+    // `local` relays the outbox to a filesystem archive with in-process delivery — the laptop's spine,
+    // readable by `spine-verify` with everything off. `s3` is maestro's: the archive bucket and the FIFO
+    // topic the spine's Terraform module outputs. `off` writes the outbox and relays nothing here (the
+    // scheduled relay Lambda drains it instead).
+    sink: ((process.env.RECORD_SINK ?? 'local') as 'local' | 's3' | 'off'),
+    archiveDir: process.env.RECORD_ARCHIVE_DIR || './archive',
+    intervalMs: toNumber(process.env.RECORD_SINK_INTERVAL_MS, 2_000),
+    archiveBucket: process.env.ARCHIVE_BUCKET || undefined,
+    archivePrefix: process.env.ARCHIVE_PREFIX || undefined,
+    eventsTopicArn: process.env.EVENTS_TOPIC_ARN || undefined,
+    // This deployment's workspace on maestro's record. One deployment is one realm (ADR-0018), so one
+    // workspace: `ws-<realm slug>`. The dev default keeps a laptop run recordable; a tenant sets its own.
+    workspaceId: process.env.MAESTRO_WORKSPACE_ID || 'ws-identity-dev',
+    // The human answerable for what this deployment's own automation does — an agent or a workload
+    // acting through the management plane with a machine token. A maestro principal id (`prn-h-…`) of a
+    // user in this pool. NO default: without one a machine actor cannot act, and the refusal is logged.
+    accountable: process.env.MAESTRO_ACCOUNTABLE || undefined,
+    // The consequence class every event of this deployment carries (CONTEXT.md). `c1` unless a tenant
+    // says otherwise: an identity registry matters, but nothing here files to a government endpoint.
+    consequenceClass: process.env.MAESTRO_CONSEQUENCE_CLASS || 'c1'
   }
 } as const;
 

@@ -50,8 +50,25 @@ Terms where identity-service's business language and code diverge, or that a con
 - **User identity token** — the human-login token. An RS256 JWT carrying `email`, a stable `sub`,
   `iss`, an `aud` (the application's default audience, or the credential's override — ADR-0020), `exp`/`iat`,
   and an optional `roles` array — the user's **app-scoped** roles in that application, from the assignment
-  (ADR-0019). Proves *who you are*, not *what you may do*. Issued by either IdP (Google SSO or local password)
-  with the same shape, and only when the user holds an active assignment for the application.
+  (ADR-0019) — plus `prn`, the person's maestro principal id (ADR-0022). Proves *who you are*, not *what
+  you may do*. Issued by either IdP (Google SSO or local password) with the same shape, and only when the
+  user holds an active assignment for the application.
+
+- **Principal** (maestro) — anyone or anything that acts and is recorded on maestro's record: a **human**
+  (a user), an **agent** (a `client_credentials` credential declaring `claims.principal_kind: agent`) or a
+  **workload** (any other `client_credentials` credential). Its **maestro principal id** — `prn-h-…` /
+  `prn-a-…` / `prn-w-…` — is minted here (ADR-0022), kept in the `principals` collection and on the
+  user/credential (`principalId`), and carried in every token as `prn`. The only identifier of a person or
+  a machine that ever reaches maestro's record; a token `sub`, an email or a client id never does.
+
+- **Seat** (maestro) — a role in a process a principal occupies. Here, an application's **role** (its
+  catalogue key) is the seat and a user's **assignment** to that application is the occupancy; each role
+  that changes hands is a `SeatOccupancyChanged` event (ADR-0022).
+
+- **Outbox / record** — the `outbox` collection holding maestro **spine envelopes** the registry emits
+  (`PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`, `SeatOccupancyChanged`) in the same
+  transaction as the change, and the relay that drains it into maestro's archive (`RECORD_SINK`). The
+  spine's rules are enforced at emit: an act it would refuse is not performed (ADR-0022).
 
 - **Role** — an **app-scoped** string (e.g. `platform_admin`, `learner`) drawn from a specific
   application's role catalogue and granted to a user through an **assignment** to that app (ADR-0019). It

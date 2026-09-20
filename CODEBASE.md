@@ -22,6 +22,13 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
   user needs an active assignment to that **application** or the grant is refused (`access_denied`, ADR-0019).
   Both IdPs issue the same token; the local IdP is toggled deployment-wide (`AUTH_LOCAL_IDP_ENABLED`).
 
+Both carry **`prn`** — the **maestro principal id** (`prn-h-…` a human, `prn-a-…` an agent, `prn-w-…` a
+workload) this service mints and keeps in its `principals` registry — and `principal_kind` (ADR-0022).
+identity-service is **maestro's principal registry**: it emits `PrincipalRegistered`, `PrincipalSuspended`,
+`PrincipalReinstated` and `SeatOccupancyChanged` as maestro **spine** envelopes through a transactional
+**outbox** that a relay drains into maestro's archive (`RECORD_SINK`). An application's role is the
+**seat**; an assignment is its occupancy. An act the spine would refuse is not performed.
+
 ## Directory map
 
 | Path | Purpose |
@@ -31,9 +38,10 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 | `service/src/routes/` | HTTP surface: `oauth-routes.ts` (`/oauth2/*`), `session-routes.ts` (legacy `/v1/*`), `admin-routes.ts` (`/admin/v1/*` management plane — ADR-0007). |
 | `service/src/mcp/` | `server.ts` — MCP management server (stdio JSON-RPC, `npm run mcp`) exposing the admin operations as agent tools, over the same service layer + admin-auth + audit (ADR-0007). |
 | `service/src/core/` | JWT signing helpers, the session authorizer, and `admin-auth.ts` (verifies admin client-credentials tokens + scopes — ADR-0007). |
-| `service/src/models/` | Mongoose models: application (owns audience + role catalogue — ADR-0020), oauth-client (a credential under an `applicationId`, no role catalogue), oauth-token, oauth-authorization, user (no `roles` field), assignment (user↔app entitlement, keyed on `applicationId` — ADR-0019/0020), session, key-store, audit-log (ADR-0007). |
-| `service/src/services/` | `users.ts` — local-credential registration (RQ-0002); `admin.ts` — management operations for applications (+role catalogues, members, credentials — ADR-0020), users, assignments (ADR-0019), keys + stats (ADR-0007). |
-| `service/scripts/` | Operator CLIs: `manage-users.ts` (create/reset/lock/unlock/disable users) and `seed.ts` (idempotent `npm run seed` loader — RQ-0004); `bundle.mjs` (`npm run bundle`: the Lambda bundles the Terraform module deploys, reproducibly) and `bundle-smoke.mjs` (boots the service bundle). |
+| `service/src/models/` | Mongoose models: application (owns audience + role catalogue — ADR-0020), oauth-client (a credential under an `applicationId`, no role catalogue; `principalId` for a machine credential), oauth-token, oauth-authorization, user (no `roles` field; `principalId`), assignment (user↔app entitlement, keyed on `applicationId` — ADR-0019/0020), session, key-store, audit-log (ADR-0007), and maestro's record (ADR-0022): principal (the registry row — retired, never deleted), outbox (spine envelopes + relay bookkeeping), counter (`seq` / `subject_seq`). |
+| `service/src/services/` | `users.ts` — local-credential registration (RQ-0002; registers the principal in the `self` seat); `admin.ts` — management operations for applications (+role catalogues, members, credentials — ADR-0020), users, assignments (ADR-0019), keys + stats (ADR-0007); every mutating operation takes the act context and emits to the record (ADR-0022). |
+| `service/src/record/` | maestro's record (ADR-0022): `ids.ts` (mint `prn-…`), `types.ts` (the four event types' body schemas, registered with the spine), `registry.ts` (ensure/backfill a principal, resolve kinds), `outbox.ts` (the recorder: the attribution rules + the envelope built and validated in the transaction), `transaction.ts` (transactions where the database allows, probed once), `context.ts` (who is acting — from the admin token, or the principal itself), `source.ts` (`OutboxSource` over the `outbox` collection), `relay.ts` (`RECORD_SINK` → archive + delivery; the in-process loop), Depends on `@fps4/maestro-spine`. `service/src/relay/lambda.ts` is the scheduled relay Lambda's entry point (`handler`), beside the service and backup bundles. |
+| `service/scripts/` | Operator CLIs: `manage-users.ts` (create/reset/lock/unlock/disable users — predates the record; not a recorded path) and `seed.ts` (idempotent `npm run seed` loader — RQ-0004; an operator's recorded act, `--as=<email>`); `bundle.mjs` (`npm run bundle`: the Lambda bundles the Terraform module deploys, reproducibly) and `bundle-smoke.mjs` (boots the service bundle). |
 | `service/lambda/` | The scheduled backup Lambda (`backup.ts`: every collection to S3 as canonical Extended JSON lines; optional AES-256-GCM in `backup-crypto.ts`; `backup-decrypt.ts` for a restore). Outside `src/` on purpose: it is the deployment's code, not the service's, and the service's `tsc` never sees it (`npm run typecheck:lambda` does). |
 | `terraform/` | The deployment (maestro ADR-0016): the service on Lambda behind the Web Adapter and an HTTP API, the backup Lambda on a schedule, the backup bucket, alarms. Composed by a tenant's private root; `tests/` runs against a mocked provider; `examples/demo` is the demo tenant with placeholders. |
 | `config/` | `seed.example.yaml` (committed template) → `config/seed.yaml` (gitignored): applications (+ role catalogues + their credentials), users, and per-user assignments for seed provisioning (ADR-0019/0020). |
@@ -52,7 +60,8 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 - **User login — local (in):** `POST /v1/register` then `POST /oauth2/token` (`grant_type=password`) → the same user JWT + refresh token (RQ-0002).
 - **Token refresh / revoke (in):** `POST /oauth2/token` (`grant_type=refresh_token`); `POST /oauth2/revoke`.
 - **Verification (out):** consumers fetch `GET /.well-known/jwks.json` and verify tokens by `kid` (e.g. maestro's JWT verifier at its authenticated edge).
-- **Boot:** `service/src/server.ts` → `bootstrap()`.
+- **The record (out):** every registry act → `outbox` (same transaction) → the relay (`service/src/record/relay.ts` in-process, or `service/src/relay/lambda.ts` on a schedule) → maestro's archive + `events.fifo`. `spine-verify <archive> --workspace <ws>` verifies it with everything off.
+- **Boot:** `service/src/server.ts` → `bootstrap()` (starts the relay loop unless `RECORD_SINK=off`).
 
 ## Naming notes
 
@@ -60,6 +69,8 @@ It issues two kinds of JWT, both RS256-signed and verifiable via a published JWK
 - **application** — the first-class per-consumer object (a product); owns its `name`, default `audience`, and role catalogue, and is what users are assigned to (ADR-0020).
 - **client / credential** — an OAuth client *under* an application (`applicationId`); the auth material (grant types, redirect URIs, scopes, secret) that authenticates *as* the application. Carries no role catalogue; may set an `audience` override (ADR-0020).
 - **audience (`aud`)** — the consumer/workspace a user token is bound to (the application's audience, or a credential override); a token minted for one is not valid for another.
+- **principal / `prn`** — maestro's word for anyone or anything that acts and is recorded; its id (`prn-h-…` / `prn-a-…` / `prn-w-…`) is minted here and is the only identifier of a person or machine that reaches maestro's record (ADR-0022). A user is a human; a `client_credentials` credential is an agent (`claims.principal_kind: agent`) or a workload.
+- **seat / occupancy** — maestro's role-in-a-process and who holds it. Here the application's **role** is the seat and the **assignment** its occupancy; `SeatOccupancyChanged` is emitted per role that changes hands (ADR-0022). Not the envelope's own `seat` field, which is the seat an act was performed *from* (`operator` or `self`).
 
 ## Out of scope
 

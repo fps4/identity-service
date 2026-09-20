@@ -9,6 +9,7 @@ related:
   - docs/overview.md
   - docs/design/decisions/0018-collapse-tenant-into-deployment.md
   - docs/design/decisions/0019-application-assignments-and-app-roles.md
+  - docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md
   - docs/design/decisions/0020-application-aggregate.md
   - docs/design/decisions/0007-management-api-mcp-and-standalone-identity-service.md
 ---
@@ -84,7 +85,7 @@ flowchart LR
 
 ## OAuth 2.0 Architecture Highlights
 
-- **Token Endpoint** (`/oauth2/token`) supports the client-credentials grant (machine tokens) and, for user login, the authorization-code (Google SSO via OIDC + PKCE — RQ-0001), refresh-token, and password (local email/password IdP — RQ-0002) grants. The browser legs are `/oauth2/authorize` and `/oauth2/callback`; `/oauth2/revoke` revokes a refresh token and its session; `/v1/register` is local self-service registration. All user grants issue the same `email`+`sub` token. Additional grants plug into the OAuth server module.
+- **Token Endpoint** (`/oauth2/token`) supports the client-credentials grant (machine tokens) and, for user login, the authorization-code (Google SSO via OIDC + PKCE — RQ-0001), refresh-token, and password (local email/password IdP — RQ-0002) grants. The browser legs are `/oauth2/authorize` and `/oauth2/callback`; `/oauth2/revoke` revokes a refresh token and its session; `/v1/register` is local self-service registration. All user grants issue the same `email`+`sub` token, with the person's maestro principal id as `prn` (ADR-0022). Additional grants plug into the OAuth server module.
 - **Key Management** – Active keys are generated automatically; optional AES-256-GCM encryption at rest is available when `OAUTH_KEY_PASSPHRASE` is configured.
 - **Data Collections**
   - `applications` – The first-class product objects (ADR-0020): `name`, the default `audience`, the **role catalogue** (`roles: [{ key, name?, description? }]` — ADR-0019), and the **protected-resource registry** (`resources: [<absolute URI>]` — ADR-0009 §5). Users are assigned to an application; its credentials authenticate *as* it.
@@ -95,6 +96,8 @@ flowchart LR
   - `assignments` – User↔application entitlements (ADR-0019 / ADR-0020): one record per `{userId, applicationId}` with the app-scoped `roles` granted and a `status` (`active` | `suspended`). Gates token issuance for user grants and sources the token's `roles` claim.
   - `key_store` – RSA key material with status flags for rotation and JWKS publishing.
   - `audit_logs` – Append-only record of every management-plane mutation (who/what/when) — the per-actor accountability the admin plane provides (ADR-0007).
+  - `principals` – maestro's **principal registry** (ADR-0022): one row per user (`human`) and per machine credential (`agent` / `workload`), keyed by the maestro principal id (`prn-h-…` / `prn-a-…` / `prn-w-…`) that every token carries as `prn`. Retired on deletion, never removed. `users.principalId` / `oauth_clients.principalId` bind to it.
+  - `outbox` + `counters` – the transactional **outbox** of maestro **spine** envelopes the registry emits (`PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`, `SeatOccupancyChanged`), written in the same transaction as the change, drained by the relay (`RECORD_SINK`) into maestro's archive; the counters allocate `seq` per workspace and `subject_seq` per principal (ADR-0022).
 - **Rate Limiting** – Token throughput (`tokensPerMinute`) and refresh-token budgets are deployment-wide limits (`CONFIG.oauth.limits`, from `OAUTH_MAX_TOKENS_PER_MINUTE` / `OAUTH_MAX_REFRESH_TOKENS` / `OAUTH_MAX_CLIENTS`), applied on every token issuance.
 
 ## Management plane (ADR-0007)

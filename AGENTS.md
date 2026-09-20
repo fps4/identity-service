@@ -40,7 +40,12 @@ A change is not done until **all** of these hold (CI enforces them — `.github/
   to an unvalidated URI.
 - **Token contract is load-bearing.** User tokens MUST carry `email`, the stable `sub`, `iss`, a
   per-consumer `aud`, and `exp` — a consumer rejects anything else. Keep tests that verify a token
-  the way a consumer does (signature via JWKS, `iss`/`aud`/`exp` enforced).
+  the way a consumer does (signature via JWKS, `iss`/`aud`/`exp` enforced). Every token also carries
+  `prn`, the maestro principal id (ADR-0022) — additive, and the id maestro's record names.
+- **An act on the registry is recorded or not performed (ADR-0022).** A mutating operation on users,
+  credentials or assignments takes the act context (who is acting) and emits the spine envelope in the
+  same transaction; never write these collections around the service layer, and never put a name, an
+  email, a subject or free text in an event body.
 
 ## Code style
 

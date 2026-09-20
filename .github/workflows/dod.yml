@@ -36,7 +36,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # The service depends on @fps4/maestro-spine, which needs Node >= 22.14; the Lambda
+          # runtime is nodejs22.x. The other packages stay on 20 until they move.
+          node-version: 22
       - run: npm ci
       - run: npm run build
       - run: npm test -- --run

@@ -53,6 +53,12 @@ own permissions. (ADR-0005, RQ-0005 scope §5; ADR-0019 for the app-scoping and 
   **app-scoped** roles for that `aud` (omitted when the assignment grants none). Because issuance is
   entitlement-gated (ADR-0019), a token only exists for a user assigned to your app. See
   [`reference/api.md`](../reference/api.md) for the exact contract.
+- **A maestro principal id** in every token — **`prn`** (`prn-h-…` a human, `prn-a-…` an agent, `prn-w-…` a
+  workload) with `principal_kind` beside it
+  ([ADR-0022](../design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)). If your product keeps a
+  principal registry for maestro's record, key it on `prn` rather than minting an id of your own from
+  `(iss, sub)`: identity-service is the registry, and it emits `PrincipalRegistered` / `PrincipalSuspended` /
+  `PrincipalReinstated` / `SeatOccupancyChanged` to maestro's spine, so your registry can be a projection.
 - **JWKS** at `/.well-known/jwks.json` for signature verification.
 - **OAuth2 endpoints** — `/oauth2/token` (local password grant) and authorization-code + PKCE
   (Google SSO).
@@ -64,7 +70,7 @@ own permissions. (ADR-0005, RQ-0005 scope §5; ADR-0019 for the app-scoping and 
 ## What your product owns
 
 1. **Verify the token at the edge** — signature against the JWKS, and `iss` / `aud` / `exp`.
-   Extract `sub`, `email`, and `roles`.
+   Extract `sub`, `email`, `roles` — and `prn`, if anything you record names the principal.
 2. **Stay stateless on identity** — do **not** keep a user table or a role-grant store, and do
    **not** call back to identity-service to make an authorization decision. Everything you need
    arrives on the verified token.

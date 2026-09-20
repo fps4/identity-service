@@ -8,6 +8,7 @@ import { makeModels } from '../models/index.js';
 import { createRateLimiter } from '../utils/rate-limit.js';
 import { CONFIG } from '../config.js';
 import logger from '../utils/logger.js';
+import { ActRefused, actContextFor, type ActContext } from '../record/index.js';
 
 const router = express.Router();
 
@@ -52,8 +53,21 @@ function audit(req: Request, res: Response, action: string, target?: { type?: st
   });
 }
 
+/**
+ * Who is acting (ADR-0022): the maestro principal behind the verified admin token, resolved once per
+ * request and handed to every mutating service call so the act is attributed where it happens.
+ */
+async function actOf(req: Request): Promise<ActContext> {
+  const models = makeModels(await getMasterConnection());
+  return actContextFor(models, req.admin!);
+}
+
 function handleError(res: Response, error: unknown): Response {
   if (error instanceof AdminServiceError) {
+    return res.status(error.status).json({ error: error.code, error_description: error.message });
+  }
+  // An act maestro's record would refuse is not performed (ADR-0022); the reason goes to the caller.
+  if (error instanceof ActRefused) {
     return res.status(error.status).json({ error: error.code, error_description: error.message });
   }
   logger.error({ err: error }, 'admin route error');
@@ -84,7 +98,7 @@ router.post('/applications', requireAdmin(ADMIN_SCOPES.clients), async (req, res
 
 router.delete('/applications/:id', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
   try {
-    const result = await adminService.deleteApplication(req.params.id);
+    const result = await adminService.deleteApplication(req.params.id, await actOf(req));
     audit(req, res, 'application.delete', { type: 'application', id: req.params.id });
     res.json(result);
   } catch (e) { handleError(res, e); }
@@ -145,7 +159,7 @@ router.get('/clients', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
 
 router.post('/clients', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
   try {
-    const result = await adminService.createClient(req.body ?? {});
+    const result = await adminService.createClient(req.body ?? {}, await actOf(req));
     audit(req, res, 'client.create', { type: 'client', id: result.clientId }, { applicationId: req.body?.applicationId });
     // The secret is returned ONCE — only its hash is persisted.
     res.status(201).json(result);
@@ -162,7 +176,7 @@ router.post('/clients/:id/rotate-secret', requireAdmin(ADMIN_SCOPES.clients), as
 
 router.delete('/clients/:id', requireAdmin(ADMIN_SCOPES.clients), async (req, res) => {
   try {
-    const result = await adminService.deleteClient(req.params.id);
+    const result = await adminService.deleteClient(req.params.id, await actOf(req));
     audit(req, res, 'client.delete', { type: 'client', id: req.params.id });
     res.json(result);
   } catch (e) { handleError(res, e); }
@@ -178,7 +192,7 @@ router.get('/users', requireAdmin(ADMIN_SCOPES.users), async (_req, res) => {
 
 router.post('/users', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
-    const result = await adminService.createUser(req.body ?? {});
+    const result = await adminService.createUser(req.body ?? {}, await actOf(req));
     audit(req, res, 'user.create', { type: 'user', id: result.id });
     res.status(201).json(result);
   } catch (e) { handleError(res, e); }
@@ -199,7 +213,7 @@ router.post('/users/status', requireAdmin(ADMIN_SCOPES.users), async (req, res) 
     if (status !== 'active' && status !== 'disabled') {
       return res.status(400).json({ error: 'invalid_input', error_description: "status must be 'active' or 'disabled'" });
     }
-    await adminService.setUserStatus(email, status);
+    await adminService.setUserStatus(email, status, await actOf(req));
     audit(req, res, 'user.setStatus', { type: 'user', id: email }, { status });
     res.json({ ok: true });
   } catch (e) { handleError(res, e); }
@@ -208,7 +222,7 @@ router.post('/users/status', requireAdmin(ADMIN_SCOPES.users), async (req, res) 
 router.post('/users/unlock', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const { email } = req.body ?? {};
-    await adminService.unlockUser(email);
+    await adminService.unlockUser(email, await actOf(req));
     audit(req, res, 'user.unlock', { type: 'user', id: email });
     res.json({ ok: true });
   } catch (e) { handleError(res, e); }
@@ -235,7 +249,7 @@ router.post('/users/unlink-identity', requireAdmin(ADMIN_SCOPES.users), async (r
 router.post('/users/delete', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const { email } = req.body ?? {};
-    const result = await adminService.deleteUser(email);
+    const result = await adminService.deleteUser(email, await actOf(req));
     audit(req, res, 'user.delete', { type: 'user', id: email });
     res.json(result);
   } catch (e) { handleError(res, e); }
@@ -283,7 +297,7 @@ router.get('/assignments', requireAdmin(ADMIN_SCOPES.users), async (req, res) =>
 router.post('/assignments', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const { email, applicationId, roles } = req.body ?? {};
-    const result = await adminService.assignUser({ email, applicationId, roles, createdBy: req.admin?.subject ?? req.admin?.clientId });
+    const result = await adminService.assignUser({ email, applicationId, roles, createdBy: req.admin?.subject ?? req.admin?.clientId }, await actOf(req));
     audit(req, res, 'assignment.create', { type: 'assignment', id: `${email}@${applicationId}` }, { email, applicationId, roles });
     res.status(201).json(result);
   } catch (e) { handleError(res, e); }
@@ -292,7 +306,7 @@ router.post('/assignments', requireAdmin(ADMIN_SCOPES.users), async (req, res) =
 router.post('/assignments/update', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const { email, applicationId, roles, status } = req.body ?? {};
-    const result = await adminService.updateAssignment(email, applicationId, { roles, status });
+    const result = await adminService.updateAssignment(email, applicationId, { roles, status }, await actOf(req));
     audit(req, res, 'assignment.update', { type: 'assignment', id: `${email}@${applicationId}` }, { roles, status });
     res.json(result);
   } catch (e) { handleError(res, e); }
@@ -301,7 +315,7 @@ router.post('/assignments/update', requireAdmin(ADMIN_SCOPES.users), async (req,
 router.post('/assignments/revoke', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const { email, applicationId } = req.body ?? {};
-    const result = await adminService.revokeAssignment(email, applicationId);
+    const result = await adminService.revokeAssignment(email, applicationId, await actOf(req));
     audit(req, res, 'assignment.revoke', { type: 'assignment', id: `${email}@${applicationId}` }, { email, applicationId });
     res.json(result);
   } catch (e) { handleError(res, e); }

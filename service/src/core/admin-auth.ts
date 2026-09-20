@@ -20,6 +20,9 @@ import logger from '../utils/logger.js';
 export interface AdminPrincipal {
   clientId?: string;      // token `cid` (machine principals only)
   subject?: string;       // token `sub`
+  /** The maestro principal id behind the token — its `prn` claim (ADR-0022). Absent on a token minted
+   *  before the claim existed; the act context then resolves the principal from `cid` / `sub`. */
+  prn?: string;
   scopes: string[];
   kind: 'machine' | 'operator';
 }
@@ -97,6 +100,7 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
   }
   const cid = typeof payload.cid === 'string' ? payload.cid : undefined;
   const subject = typeof payload.sub === 'string' ? payload.sub : undefined;
+  const prn = typeof payload.prn === 'string' ? payload.prn : undefined;
 
   // Machine principal: a client_credentials token. Authority comes from its own admin scope(s).
   if (cid) {
@@ -104,6 +108,7 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
       kind: 'machine',
       clientId: cid,
       subject,
+      prn,
       scopes: parseScopes((payload as Record<string, unknown>).scope)
     };
   }
@@ -117,6 +122,7 @@ export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
     return {
       kind: 'operator',
       subject,
+      prn,
       scopes: [CONFIG.admin.requiredScope]
     };
   }
