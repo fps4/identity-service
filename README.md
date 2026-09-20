@@ -176,30 +176,36 @@ earlier self-hosted deploy, seed and migration workflows are gone.
 
 | Piece | |
 |---|---|
-| Service | the Express server, unchanged, as a Lambda function (Node 22, arm64) behind the [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) layer, behind an HTTP API Gateway with one `$default` route; one realm per deployment |
+| Service | the Express server, unchanged, as a Lambda function (Node 22, arm64) behind the [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) layer, behind an HTTP API Gateway with one `$default` route; one realm per deployment. `RECORD_SINK=off`: it writes the outbox and relays nothing in-process — the relay below is the one relay |
 | Database | the tenant's MongoDB Atlas cluster, named by `MONGO_URI` (maestro ADR-0005); the module creates none |
 | Signing keys | generated on first use and kept in the database's `key_store`, AES-256-GCM under `OAUTH_KEY_PASSPHRASE` — nothing on disk, so Lambda needs no change and the function's role is logs only |
+| Relay | a scheduled Lambda (every minute, one invocation at a time) runs the spine's relay handler over this service's outbox ([ADR-0022](docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md) §5) into the archive bucket and the FIFO topic the spine's module owns; its role is its log plus the spine's `relay_policy_json`, attached unchanged; its one secret is `MONGO_URI` |
 | Backups | a scheduled Lambda (02:30 UTC nightly) writes every collection to a versioned, encrypted, never-public S3 bucket; expires by a lifecycle rule; alarms on an error and on silence |
-| Alarms | API 5xx (≥ 5 in 5 min), backup errors (≥ 1 in a day), backup silent (no invocation in a day — missing data breaches) |
+| Alarms | API 5xx (≥ 5 in 5 min); backup errors (≥ 1 in a day), backup silent (no invocation in a day — missing data breaches); relay errors (≥ 1 in an hour), relay silent (no invocation in 15 min — missing data breaches), relay refused (the spine refused an event — `maestro/spine` `Refused`, `function=relay`, `component=identity`; that workspace's relay is stopped until a person looks) |
 | Console | **not in the module** — see [the console](#the-console) below |
 
 **Bundles.** `npm run bundle` in `service/` (Node 22) esbuilds the server to `bundle/service.zip` — one
-`index.mjs` plus `run.sh` for the Web Adapter's zip mode — and the backup to `bundle/backup.zip`;
-reproducibly, so `source_code_hash` only changes when the code does. `npm run bundle:smoke` boots the
-service bundle against a port nothing listens on and checks it dies of a connection failure and not a
-missing module; `npm run sbom` writes a CycloneDX SBOM per bundle (`bundle/*.cdx.json`, production
-dependencies only). `bundle/` is gitignored; the tenant's pipeline builds it at the tag it deploys.
+`index.mjs` plus `run.sh` for the Web Adapter's zip mode — the backup to `bundle/backup.zip` and the relay
+([`service/src/relay/lambda.ts`](service/src/relay/lambda.ts)) to `bundle/relay.zip`; reproducibly, so
+`source_code_hash` only changes when the code does. `npm run bundle:smoke` imports the relay bundle and
+checks it exports its `handler`, then boots the service bundle against a port nothing listens on and
+checks it dies of a connection failure and not a missing module; `npm run sbom` writes a CycloneDX SBOM
+per bundle (`bundle/*.cdx.json`, production dependencies only). `bundle/` is gitignored; the tenant's
+pipeline builds it at the tag it deploys.
 
 ### Inputs
 
 | Input | Default | |
 |---|---|---|
 | `name` | `maestro-identity` | prefix for every named resource |
-| `service_package`, `backup_package` | required | the zips from `npm run bundle` |
+| `service_package`, `backup_package`, `relay_package` | required | the zips from `npm run bundle` |
 | `web_adapter_layer_arn` | required | the arm64 Web Adapter layer in the deployment's region: `arn:aws:lambda:<region>:<aws-account>:layer:LambdaAdapterLayerArm64:<version>`, from [the adapter's README](https://github.com/awslabs/aws-lambda-web-adapter#lambda-functions-packaged-as-zip-package-for-aws-managed-runtimes). It carries AWS's account id, which a public repository may not hold — so an input, in the tenant's tfvars |
-| `environment` | `{}` | every non-secret variable the service reads ([`service/.env.example`](service/.env.example)): `MONGO_DB_NAME`, `AUTH_JWT_AUDIENCE`, `CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `ADMIN_OPERATOR_ROLES`, `GOOGLE_CLIENT_ID`, `LOG_LEVEL`, the `OAUTH_*` limits… The module sets `NODE_ENV` and `LOG_PRETTY` (a key here overrides them) and `AUTH_JWT_ISSUER`, `GOOGLE_REDIRECT_URI` and the adapter's variables (nothing overrides those) |
-| `secrets` | required | variable → Secrets Manager ARN: `MONGO_URI` (required), `AUTH_JWT_SECRET`, `OAUTH_KEY_PASSPHRASE`, `IDENTITY_ADMIN_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET` when Google federates |
+| `environment` | `{}` | every non-secret variable the service reads ([`service/.env.example`](service/.env.example)): `MONGO_DB_NAME`, `AUTH_JWT_AUDIENCE`, `CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`, `AUTH_LOCAL_IDP_ENABLED`, `ADMIN_OPERATOR_ROLES`, `GOOGLE_CLIENT_ID`, `LOG_LEVEL`, the `OAUTH_*` limits — and the record's: `MAESTRO_WORKSPACE_ID` (this realm's workspace on maestro's record, `ws-<realm slug>`; the service's default `ws-identity-dev` is a laptop's), `MAESTRO_ACCOUNTABLE` (the `prn-h-…` of the human answerable for machine actors' acts; without it an agent or a pipeline acting through the management plane is refused — ADR-0022 §4) and `MAESTRO_CONSEQUENCE_CLASS` (`c1` by default). The relay gets the same map. The module sets `NODE_ENV` and `LOG_PRETTY` (a key here overrides them) and `AUTH_JWT_ISSUER`, `GOOGLE_REDIRECT_URI`, `RECORD_SINK=off` and the adapter's variables (nothing overrides those) |
+| `secrets` | required | variable → Secrets Manager ARN: `MONGO_URI` (required), `AUTH_JWT_SECRET`, `OAUTH_KEY_PASSPHRASE`, `IDENTITY_ADMIN_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET` when Google federates. All reach the service; the backup and the relay get `MONGO_URI` only |
 | `domain`, `certificate_arn` | `null` | the realm's hostname and its ACM certificate (same region); the root aliases DNS to the `domain_target` output |
+| `archive` | required | `{ relay_environment = module.spine.relay_environment, relay_policy_json = module.spine.relay_policy_json }` — the spine module's outputs, passed through: the three names the relay reads (`ARCHIVE_BUCKET`, `ARCHIVE_PREFIX`, `EVENTS_TOPIC_ARN`) and what its role may do. Required because the record is not optional: without an archive the outbox is never drained |
+| `relay_schedule` | `rate(1 minute)` | EventBridge Scheduler expression; the latency between an act and its record |
+| `relay_memory_mb`, `relay_timeout_seconds` | `512`, `300` | one pass drains the outbox until it is empty |
 | `backup_bucket_name` | required | globally unique; the tenant's to choose |
 | `backup_prefix` | `backups` | key prefix; a day's backup is `<prefix>/<yyyy-mm-dd>/` |
 | `backup_retention_days` | `35` | lifecycle expiry of backups and their noncurrent versions |
@@ -212,20 +218,31 @@ dependencies only). `bundle/` is gitignored; the tenant's pipeline builds it at 
 | `tags` | `{}` | |
 
 Outputs: `api_url`, `issuer`, `domain_target`, `service_function_name`, `backup_function_name`,
-`backup_bucket_name`, `backup_prefix`, `api_id`.
+`relay_function_name`, `backup_bucket_name`, `backup_prefix`, `api_id`.
 
 ### A root, composing it
 
 The tenant's `deploy/aws/` root, with placeholders ([`terraform/examples/demo`](terraform/examples/demo)
-is the same with the demo tenant's values):
+is the same with the demo tenant's values; `terraform init -backend=false && terraform validate` there
+fetches the spine's module at its tag):
 
 ```hcl
+module "spine" {                                    # the archive, the events topic, the sealer
+  source              = "github.com/fps4/maestro//spine/terraform?ref=spine-v0.2.2"
+  name                = "<tenant>"
+  archive_bucket_name = "<tenant>-maestro-archive"
+  archive_prefix      = "identity/"
+  digest_contacts     = ["ops@<tenant-domain>"]
+  sealer_package      = "../../../maestro/spine/bundle/sealer.zip"
+}
+
 module "identity" {
   source = "../../../identity-service/terraform"   # the component, checked out at its tag
 
   name                  = "<tenant>-identity"
   service_package       = "../../../identity-service/service/bundle/service.zip"
   backup_package        = "../../../identity-service/service/bundle/backup.zip"
+  relay_package         = "../../../identity-service/service/bundle/relay.zip"
   web_adapter_layer_arn = var.web_adapter_layer_arn # tfvars
 
   domain          = "id.<tenant-domain>"
@@ -238,12 +255,19 @@ module "identity" {
     AUTH_REGISTRATION_MODE = "invite"
     AUTH_LOCAL_IDP_ENABLED = "true"
     ADMIN_OPERATOR_ROLES   = "platform_admin"
+    MAESTRO_WORKSPACE_ID   = "ws-<tenant>"          # this realm on maestro's record
+    MAESTRO_ACCOUNTABLE    = "prn-h-…"              # who answers for the realm's own automation
   }
   secrets = {                                       # names from the tenant's secrets.md
     MONGO_URI                    = aws_secretsmanager_secret.identity_mongo_uri.arn
     AUTH_JWT_SECRET              = aws_secretsmanager_secret.identity_jwt_secret.arn
     OAUTH_KEY_PASSPHRASE         = aws_secretsmanager_secret.identity_key_passphrase.arn
     IDENTITY_ADMIN_CLIENT_SECRET = aws_secretsmanager_secret.identity_admin_client_secret.arn
+  }
+
+  archive = {                                       # the spine module's outputs, passed through
+    relay_environment = module.spine.relay_environment
+    relay_policy_json = module.spine.relay_policy_json
   }
 
   backup_bucket_name = "<tenant>-identity-backups"
@@ -280,6 +304,16 @@ and Secrets Lambda extension with the service reading its configuration through 
 change to `service/src/config.ts`, and the module then grants `secretsmanager:GetSecretValue` on the
 listed ARNs instead of setting values. `MONGO_URI` is the connection string without a path or query —
 the service appends `/<MONGO_DB_NAME>`.
+
+**The record.** The registry emits its lifecycle — `PrincipalRegistered`, `PrincipalSuspended`,
+`PrincipalReinstated`, `SeatOccupancyChanged` — as spine envelopes into a transactional outbox
+([ADR-0022](docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)). On AWS the
+service runs with `RECORD_SINK=off`, set by the module and not overridable: it writes the outbox and relays
+nothing in-process. The relay function drains it every minute (`relay_schedule`), one invocation at a
+time, into the archive and the FIFO topic named by `archive` — the spine module's `relay_environment` and
+`relay_policy_json`, passed through unchanged. A refused event stops that workspace's relay where it
+stands, by design, and raises `<name>-relay-refused`; relay lag raises `<name>-relay-silent`. `archive` is
+required: a deployment without one would write an outbox nothing ever drains.
 
 ### Seeding a realm
 

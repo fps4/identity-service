@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Prefix for every named resource: <name>-service, <name>-backup, …"
+  description = "Prefix for every named resource: <name>-service, <name>-backup, <name>-relay, …"
   type        = string
   default     = "maestro-identity"
 }
@@ -13,6 +13,11 @@ variable "service_package" {
 
 variable "backup_package" {
   description = "Path to the backup Lambda's zip, produced by `npm run bundle` in service/ (bundle/backup.zip)."
+  type        = string
+}
+
+variable "relay_package" {
+  description = "Path to the relay Lambda's zip, produced by `npm run bundle` in service/ (bundle/relay.zip): the spine's relay handler over this service's outbox (ADR-0022 §5)."
   type        = string
 }
 
@@ -40,10 +45,16 @@ variable "environment" {
     Every non-secret environment variable the service reads (service/.env.example lists them all;
     docs/guides/deployment.md says which a deployment must set). Typically: MONGO_DB_NAME,
     AUTH_JWT_AUDIENCE, CORS_ORIGINS, AUTH_REGISTRATION_MODE, AUTH_LOCAL_IDP_ENABLED,
-    ADMIN_OPERATOR_ROLES, GOOGLE_CLIENT_ID, LOG_LEVEL and the OAUTH_* limits. The module sets
-    NODE_ENV, LOG_PRETTY, AUTH_JWT_ISSUER and GOOGLE_REDIRECT_URI itself (the last two from the
-    issuer) and the Web Adapter's own variables; a key here overrides the first two, never the
-    adapter's. No default here names anything.
+    ADMIN_OPERATOR_ROLES, GOOGLE_CLIENT_ID, LOG_LEVEL and the OAUTH_* limits — and the record's
+    (ADR-0022): MAESTRO_WORKSPACE_ID (this deployment's workspace on maestro's record, `ws-<realm
+    slug>`; the service defaults to ws-identity-dev, which no tenant should keep), MAESTRO_ACCOUNTABLE
+    (the `prn-h-…` of the human answerable for machine actors' acts; without it an agent or a pipeline
+    acting through the management plane is refused) and MAESTRO_CONSEQUENCE_CLASS (`c1` by default).
+    The module sets NODE_ENV, LOG_PRETTY, AUTH_JWT_ISSUER and GOOGLE_REDIRECT_URI itself (the last
+    two from the issuer), RECORD_SINK=off on the service (the relay function drains the outbox; the
+    service relays nothing in-process) and the Web Adapter's own variables; a key here overrides the
+    first two, never the rest. The relay function receives the same map. No default here names
+    anything.
   EOT
   type        = map(string)
   default     = {}
@@ -61,7 +72,7 @@ variable "secrets" {
   type        = map(string)
   validation {
     condition     = contains(keys(var.secrets), "MONGO_URI")
-    error_message = "secrets must name MONGO_URI: the database is the one dependency both functions have."
+    error_message = "secrets must name MONGO_URI: the database is the one dependency every function has."
   }
 }
 
@@ -129,6 +140,44 @@ variable "backup_timeout_seconds" {
   default = 900
 }
 
+# --- the record ----------------------------------------------------------------------------------
+
+variable "archive" {
+  description = <<-EOT
+    The spine's archive, as the spine's Terraform module outputs it: `relay_environment`
+    (ARCHIVE_BUCKET, ARCHIVE_PREFIX, EVENTS_TOPIC_ARN — the names the spine's relay handler reads)
+    and `relay_policy_json` (what a relay's role may do: read and write the archive prefix, publish
+    to the events topic, never delete). Pass module.spine.relay_environment and
+    module.spine.relay_policy_json. Required: the record is not optional in maestro — a deployment
+    without an archive would write an outbox nothing ever drains (ADR-0022 §5).
+  EOT
+  type = object({
+    relay_environment = map(string)
+    relay_policy_json = string
+  })
+  validation {
+    condition     = alltrue([for k in ["ARCHIVE_BUCKET", "ARCHIVE_PREFIX", "EVENTS_TOPIC_ARN"] : contains(keys(var.archive.relay_environment), k)])
+    error_message = "archive.relay_environment carries ARCHIVE_BUCKET, ARCHIVE_PREFIX and EVENTS_TOPIC_ARN — the spine module's relay_environment output."
+  }
+}
+
+variable "relay_schedule" {
+  description = "EventBridge Scheduler expression for the relay, which drains the outbox into the archive. One minute is the latency between an act and its record."
+  type        = string
+  default     = "rate(1 minute)"
+}
+
+variable "relay_memory_mb" {
+  type    = number
+  default = 512
+}
+
+variable "relay_timeout_seconds" {
+  description = "One pass drains the outbox in batches until it is empty; a long backlog after an outage is the case that needs the time."
+  type        = number
+  default     = 300
+}
+
 # --- sizing and operations ------------------------------------------------------------------------
 
 variable "memory_mb" {
@@ -152,7 +201,7 @@ variable "log_retention_days" {
 }
 
 variable "alarm_actions" {
-  description = "ARNs notified when the API returns 5xx, the backup errors or the backup fails to run — the tenant's ops-signals topic, once work-service listens to it."
+  description = "ARNs notified when the API returns 5xx, the backup or the relay errors or fails to run, or the spine refuses an event — the tenant's ops-signals topic, once work-service listens to it."
   type        = list(string)
   default     = []
 }
