@@ -10,9 +10,13 @@ import type {
   ApplicationDocument,
   KeyStoreDocument,
   SessionDocument,
-  AuditLogDocument
+  AuditLogDocument,
+  PrincipalDocument,
+  OutboxDocument,
+  CounterDocument
 } from '../models/index.js';
 import type { GoogleIdp } from './google.js';
+import type { RecordConfig } from '../record/outbox.js';
 
 export interface ModelsBucket {
   Application: Model<ApplicationDocument>;
@@ -25,6 +29,10 @@ export interface ModelsBucket {
   KeyStore: Model<KeyStoreDocument>;
   Session: Model<SessionDocument>;
   AuditLog: Model<AuditLogDocument>;
+  // maestro's record (ADR-0022).
+  Principal: Model<PrincipalDocument>;
+  Outbox: Model<OutboxDocument>;
+  Counter: Model<CounterDocument>;
 }
 
 export interface OAuthServerDependencies {
@@ -34,6 +42,12 @@ export interface OAuthServerDependencies {
   googleIdp?: GoogleIdp;
   now?: () => Date;
   logger?: Logger;
+  /**
+   * maestro's record (ADR-0022). When present every token carries the principal's `prn` claim and a
+   * first federated login registers the person on the record. The container always wires it; it is
+   * optional only so a unit test can drive a grant without the registry.
+   */
+  record?: RecordConfig;
 }
 
 export interface ClientCredentialsInput {

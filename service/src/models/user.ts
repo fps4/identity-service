@@ -36,6 +36,12 @@ export interface UserDocument extends Document<string> {
   lockedUntil?: Date | null;
   passwordUpdatedAt?: Date;
   lastLoginAt?: Date | null;
+  /**
+   * The person's maestro principal id — `prn-h-…` (ADR-0022). Minted when the user is created and
+   * backfilled on first use for records that predate it; surfaced in every token as the `prn` claim. This
+   * is the id maestro's record names; the token `sub` (this `_id`, or a provider subject) never reaches it.
+   */
+  principalId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -59,6 +65,7 @@ const userSchema = new mongoose.Schema<UserDocument>({
   lockedUntil: { type: Date, default: null },
   passwordUpdatedAt: { type: Date, default: Date.now },
   lastLoginAt: { type: Date, default: null },
+  principalId: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -72,6 +79,9 @@ userSchema.index(
   { 'identities.provider': 1, 'identities.subject': 1 },
   { unique: true, partialFilterExpression: { 'identities.provider': { $exists: true } } }
 );
+
+// A principal id binds to one user. Sparse, so records not yet backfilled (ADR-0022) do not collide on null.
+userSchema.index({ principalId: 1 }, { unique: true, sparse: true });
 
 export function getUserModel(connection: Connection): Model<UserDocument> {
   return (connection.models.User as Model<UserDocument>) ??

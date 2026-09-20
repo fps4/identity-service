@@ -36,6 +36,7 @@ import type { OAuthClientDocument } from '../models/oauth-client.js';
 import type { UserDocument } from '../models/user.js';
 import type { AssignmentDocument } from '../models/assignment.js';
 import type { ApplicationDocument } from '../models/application.js';
+import { ensureClientPrincipal, ensureUserPrincipal, mintPrincipalId, realmOf, selfContext, createRecorder, withRecordTransaction } from '../record/index.js';
 
 const GRANT_CLIENT_CREDENTIALS = 'client_credentials';
 const GRANT_AUTHORIZATION_CODE = 'authorization_code';
@@ -167,6 +168,16 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     };
     if (input.sessionId) {
       payload.sid = input.sessionId;
+    }
+    // The credential's maestro principal (ADR-0022): `prn` is the id maestro's record names, minted here
+    // and backfilled on first use. `principal_kind` stays as consumers read it today — the credential's
+    // own declaration passes through; a machine credential that declares none is a `workload`.
+    if (deps.record) {
+      const principal = await ensureClientPrincipal(models, client);
+      if (principal) {
+        payload.prn = principal.id;
+        if (typeof payload.principal_kind !== 'string') payload.principal_kind = principal.kind;
+      }
     }
 
     // Per-client audience when configured (US-0086) — a machine principal is audience-bound to one
@@ -490,9 +501,11 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       client,
       audience: resolveUserAudience(client, application, record.resource),
       // Token claims are unchanged from RQ-0001: the email + stable `sub` the IdP asserted. The user
-      // record is a resolution layer behind the token, never a change to it (ADR-0012).
+      // record is a resolution layer behind the token, never a change to it (ADR-0012). The `prn` claim
+      // (ADR-0022) is additive: the person's maestro principal id, whichever IdP asserted the `sub`.
       email: record.email,
       sub: record.sub,
+      prn: await principalClaimFor(models, user),
       scope: record.scope ?? [],
       roles: assignment.roles ?? [],
       resource: record.resource
@@ -577,6 +590,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       audience: effectiveAudience(client, application),
       email: user.email,
       sub: user._id, // the stable subject id
+      prn: await principalClaimFor(models, user),
       scope: [],
       roles: assignment.roles ?? []
     });
@@ -645,6 +659,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       audience: resolveUserAudience(client, application, tokenDoc.resource),
       email,
       sub,
+      prn: await principalClaimFor(models, user),
       scope: tokenDoc.scope ?? [],
       roles: assignment.roles ?? [],
       session,
@@ -676,6 +691,12 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
   /** Deny issuance for a person an operator has disabled or who is inside a brute-force lockout window.
    *  Enforced on every user grant so the guarantee holds regardless of provider (RQ-0011 US-3). */
+  /** The person's `prn` claim (ADR-0022) — minted on first use for a record that predates the registry. */
+  async function principalClaimFor(models: ModelsBucket, user: { _id: string; principalId?: string; status?: string }): Promise<string | undefined> {
+    if (!deps.record) return undefined;
+    return (await ensureUserPrincipal(models, user)).id;
+  }
+
   function assertUserActive(user: { status?: string; lockedUntil?: Date | null }): void {
     if (user.status === 'disabled') {
       throw new InvalidGrantError('Account is disabled');
@@ -746,14 +767,41 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new AccessDeniedError('Sign-up is not open');
     }
     try {
-      return await models.User.create({
-        _id: randomUUID(),
-        email: emailNorm,
-        emailVerified: args.emailVerified,
-        status: 'active',
-        identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
-        lastLoginAt: now
-      });
+      const record = deps.record;
+      if (!record) {
+        return await models.User.create({
+          _id: randomUUID(),
+          email: emailNorm,
+          emailVerified: args.emailVerified,
+          status: 'active',
+          identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
+          lastLoginAt: now
+        });
+      }
+      // A first sighting registers a HUMAN principal on maestro's record (ADR-0022): the person acts for
+      // themselves, in the `self` seat, and the event lands in the same transaction as the account.
+      const userId = randomUUID();
+      const principalId = mintPrincipalId('human');
+      const connection = await deps.getMasterConnection();
+      return await withRecordTransaction(connection, async (session) => {
+        const [created] = await models.User.create([{
+          _id: userId,
+          email: emailNorm,
+          emailVerified: args.emailVerified,
+          status: 'active',
+          identities: [{ provider, subject, email: emailNorm, emailVerified: args.emailVerified, linkedAt: now }],
+          lastLoginAt: now,
+          principalId
+        }], { session });
+        await models.Principal.create([{ _id: principalId, kind: 'human', status: 'active', subjectType: 'user', subjectId: userId, createdAt: now, updatedAt: now }], { session });
+        const recorder = createRecorder({ models, config: record, ...selfContext({ id: principalId, kind: 'human' }), logger: deps.logger, now: () => nowFn().toISOString() });
+        await recorder.emit(session, [{
+          type: 'PrincipalRegistered',
+          subject: principalId,
+          body: { kind: 'human', source: 'google', realm: realmOf(record.workspaceId) }
+        }]);
+        return created as UserDocument;
+      }, deps.logger);
     } catch (err) {
       // Concurrent first login: the unique identity index rejected the duplicate insert — re-read it.
       if ((err as { code?: number }).code === 11000) {
@@ -778,6 +826,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       audience?: string; // resolved from the resource indicator / credential override / application (ADR-0020)
       email?: string;
       sub: string;
+      /** The person's maestro principal id — the `prn` claim (ADR-0022). */
+      prn?: string;
       scope: string[];
       roles?: string[];
       session?: { _id: string; expiresAt: Date };
@@ -816,6 +866,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       audience: args.audience,
       email: args.email,
       sub: args.sub,
+      prn: args.prn,
       scope: args.scope,
       roles: args.roles,
       issuedAt,
@@ -866,12 +917,14 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
   }
 
   /** Build the user identity JWT maestro verifies: RS256, `email` + `sub` + `iss` + `aud` + `exp`/`iat`,
-   *  plus an optional coarse `roles` array (RQ-0005) — additive; consumers that don't read it ignore it. */
+   *  plus an optional coarse `roles` array (RQ-0005) — additive; consumers that don't read it ignore it —
+   *  and, with the record wired, `prn` + `principal_kind: human` (ADR-0022), additive likewise. */
   async function signUserAccessToken(args: {
     jti: string;
     audience: string;
     email?: string;
     sub: string;
+    prn?: string;
     scope: string[];
     roles?: string[];
     issuedAt: Date;
@@ -884,6 +937,10 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
     if (args.email) payload.email = args.email;
     if (args.scope.length) payload.scope = args.scope.join(' ');
     if (args.roles && args.roles.length) payload.roles = args.roles;
+    if (args.prn) {
+      payload.prn = args.prn;
+      payload.principal_kind = 'human';
+    }
 
     return new SignJWT(payload)
       .setProtectedHeader({ alg: 'RS256', kid: keyPair.kid, typ: 'JWT' })

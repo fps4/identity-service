@@ -28,6 +28,13 @@ export interface OAuthClientDocument extends Document<string> {
   // `{ role: 'product_runtime', email: 'runtime@…' }` so the resource server can match its principal.
   // Registered claims (`iss`/`aud`/`exp`/`sub`/…) are always set by the signer and cannot be overridden.
   claims?: Record<string, unknown>;
+  /**
+   * The credential's maestro principal id (ADR-0022), set only for a `client_credentials` credential —
+   * the thing that authenticates AS itself: `prn-a-…` when `claims.principal_kind` is `agent`, else
+   * `prn-w-…` (a workload). A user-login credential (`password` / `authorization_code`) authenticates
+   * people and is not a principal. Minted at creation, backfilled on first use; the `prn` token claim.
+   */
+  principalId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -44,9 +51,12 @@ const oauthClientSchema = new mongoose.Schema<OAuthClientDocument>({
   audience: { type: String },
   subject: { type: String },
   claims: { type: mongoose.Schema.Types.Mixed },
+  principalId: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
+
+oauthClientSchema.index({ principalId: 1 }, { unique: true, sparse: true });
 
 export function getOAuthClientModel(connection: Connection): Model<OAuthClientDocument> {
   return (connection.models.OAuthClient as Model<OAuthClientDocument>) ??

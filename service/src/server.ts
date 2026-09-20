@@ -4,7 +4,8 @@ import { Server } from 'http';
 import { CONFIG } from './config.js';
 import { getMasterConnection, disconnect } from './utils/db.js';
 import logger from './utils/logger.js';
-import { metricsRecorder } from './container.js';
+import { metricsRecorder, relay } from './container.js';
+import { startRelayLoop } from './record/index.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
@@ -85,6 +86,19 @@ async function bootstrap() {
   // rather than Express's default 500 HTML. Other errors fall through to the default handler.
   app.use(corsErrorHandler);
 
+  // maestro's record (ADR-0022): drain the outbox on an interval into the configured sink. `local`
+  // writes RECORD_ARCHIVE_DIR — the laptop's spine; `s3` is maestro's; `off` leaves it to the Lambda.
+  let stopRelay: (() => void) | undefined;
+  if (relay) {
+    stopRelay = startRelayLoop(relay, CONFIG.record.intervalMs, logger);
+    logger.info({ sink: CONFIG.record.sink, workspace: CONFIG.record.workspaceId }, 'record: relay started');
+  } else {
+    logger.info({ workspace: CONFIG.record.workspaceId }, 'record: sink is off; the outbox is drained by the scheduled relay');
+  }
+  if (!CONFIG.record.accountable) {
+    logger.warn('record: MAESTRO_ACCOUNTABLE is not set; acts by a machine principal (an agent or a workload with an admin token) will be refused until a human is named as answerable for them');
+  }
+
   let server: Server;
 
   server = app.listen(CONFIG.port, () => {
@@ -93,6 +107,7 @@ async function bootstrap() {
 
   const shutdown = (signal: NodeJS.Signals) => {
     logger.info({ signal }, 'shutting down');
+    stopRelay?.();
     server.close(async (err) => {
       if (err) {
         logger.error({ err }, 'error while closing server');

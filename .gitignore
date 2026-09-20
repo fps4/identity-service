@@ -75,6 +75,9 @@ web_modules/
 # Host-only secret for the MCP admin launcher (docker/mcp-admin.sh) — never commit
 .mcp-admin.env
 
+# maestro's record on a laptop (ADR-0022): the local sink's filesystem archive (RECORD_ARCHIVE_DIR).
+archive/
+
 # Seed config (ADR-0006 / RQ-0006): config/seed.yaml is COMMITTED — it holds only ${ENV} secret
 # references (no plaintext), so it is the durable, recoverable identity definition. Ad-hoc local
 # overrides stay ignored.

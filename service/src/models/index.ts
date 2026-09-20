@@ -9,6 +9,9 @@ import { getAssignmentModel, Assignment, type AssignmentDocument } from './assig
 import { getApplicationModel, Application, type ApplicationDocument } from './application.js';
 import { getKeyStoreModel, KeyStore, type KeyStoreDocument } from './key-store.js';
 import { getAuditLogModel, AuditLog, type AuditLogDocument } from './audit-log.js';
+import { getPrincipalModel, Principal, type PrincipalDocument } from './principal.js';
+import { getOutboxModel, Outbox, type OutboxDocument } from './outbox.js';
+import { getCounterModel, Counter, type CounterDocument } from './counter.js';
 
 export const makeModels = (connection: Connection) => ({
   Session: getSessionModel(connection) as Model<SessionDocument>,
@@ -20,7 +23,11 @@ export const makeModels = (connection: Connection) => ({
   Invite: getInviteModel(connection) as Model<InviteDocument>,
   Assignment: getAssignmentModel(connection) as Model<AssignmentDocument>,
   KeyStore: getKeyStoreModel(connection) as Model<KeyStoreDocument>,
-  AuditLog: getAuditLogModel(connection) as Model<AuditLogDocument>
+  AuditLog: getAuditLogModel(connection) as Model<AuditLogDocument>,
+  // maestro's record (ADR-0022): the principal registry, the transactional outbox and its counters.
+  Principal: getPrincipalModel(connection) as Model<PrincipalDocument>,
+  Outbox: getOutboxModel(connection) as Model<OutboxDocument>,
+  Counter: getCounterModel(connection) as Model<CounterDocument>
 });
 
 export { Session, type SessionDocument } from './session.js';
@@ -34,3 +41,6 @@ export { Assignment, type AssignmentDocument } from './assignment.js';
 export { KeyStore, type KeyStoreDocument } from './key-store.js';
 // (Application re-exported above.)
 export { AuditLog, type AuditLogDocument } from './audit-log.js';
+export { Principal, type PrincipalDocument, type PrincipalKind, type PrincipalStatus } from './principal.js';
+export { Outbox, type OutboxDocument } from './outbox.js';
+export { Counter, type CounterDocument } from './counter.js';
