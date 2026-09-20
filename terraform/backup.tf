@@ -1,15 +1,14 @@
-# The backup (ADR-0008 on AWS): a scheduled Lambda writes every collection to a bucket as gzipped
-# canonical Extended JSON lines under <prefix>/<yyyy-mm-dd>/, with a manifest — service/lambda/backup.ts.
-# The bucket is versioned, encrypted, never public, TLS-only, and expires backups by a lifecycle rule.
-# No Object Lock: a backup is a recovery point, not the record; the record is the spine's archive.
+# The backup (ADR-0008 on AWS, ADR-0023): a scheduled Lambda pages the whole table to a bucket as
+# gzipped canonical JSON lines under <prefix>/<yyyy-mm-dd>/, one file per item kind, with a manifest —
+# service/lambda/backup.ts. The bucket is versioned, encrypted, never public, TLS-only, and expires
+# backups by a lifecycle rule. No Object Lock: a backup is a recovery point, not the record; the record
+# is the spine's archive. The table's point-in-time recovery (table.tf) is the second line.
 
 locals {
   backup_name = "${var.name}-backup"
 
-  backup_secrets = merge(
-    { MONGO_URI = var.secrets["MONGO_URI"] },
-    var.backup_passphrase_secret_arn == null ? {} : { BACKUP_PASSPHRASE = var.backup_passphrase_secret_arn }
-  )
+  # The passphrase is the backup's one secret, and only when the tenant sets one. The table is a grant.
+  backup_secrets = var.backup_passphrase_secret_arn == null ? {} : { BACKUP_PASSPHRASE = var.backup_passphrase_secret_arn }
 }
 
 data "aws_secretsmanager_secret_version" "backup" {
@@ -114,14 +113,19 @@ resource "aws_iam_role" "backup" {
   tags = local.tags
 }
 
-# Write under the prefix, never read or delete: a compromised backup job cannot read a backup or
-# remove one. Its secrets arrive through the environment (see variables.tf, `secrets`).
+# Read the whole table, write under the prefix, never read or delete a backup: a compromised backup
+# job cannot read a backup, remove one, or change the table.
 resource "aws_iam_role_policy" "backup" {
   name = "backup"
   role = aws_iam_role.backup.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:DescribeTable", "dynamodb:Scan"]
+        Resource = aws_dynamodb_table.records.arn
+      },
       {
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
@@ -151,7 +155,7 @@ resource "aws_lambda_function" "backup" {
   environment {
     variables = merge(
       {
-        MONGO_DB_NAME = lookup(var.environment, "MONGO_DB_NAME", "identity-service")
+        TABLE_NAME    = aws_dynamodb_table.records.name
         BACKUP_BUCKET = aws_s3_bucket.backup.bucket
         BACKUP_PREFIX = trimsuffix(var.backup_prefix, "/")
       },

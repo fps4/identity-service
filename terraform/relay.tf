@@ -2,19 +2,14 @@
 # outbox — service/src/relay/lambda.ts — into the archive bucket and the FIFO topic the spine's own
 # module owns. That module's outputs arrive as `archive`; this one attaches its policy unchanged and
 # carries its names. The service itself runs with RECORD_SINK=off (main.tf): one outbox, one relay.
+#
+# The relay holds no secret. The signing-key passphrase, the JWT secret and the admin client secret are
+# the service's alone: a relay that could sign tokens would be a wider thing than a relay. Its reach into
+# the table is the same grant every function of a component gets (table.tf): the pending index it reads,
+# the outbox items it acknowledges, the registry rows it resolves principals from.
 
 locals {
   relay_name = "${var.name}-relay"
-
-  # The database is the relay's one secret. The signing-key passphrase, the JWT secret and the admin
-  # client secret are the service's alone: a relay that could sign tokens would be a wider thing than a
-  # relay. Same shape as the backup's.
-  relay_secrets = { MONGO_URI = var.secrets["MONGO_URI"] }
-}
-
-data "aws_secretsmanager_secret_version" "relay" {
-  for_each  = local.relay_secrets
-  secret_id = each.value
 }
 
 resource "aws_cloudwatch_log_group" "relay" {
@@ -49,6 +44,20 @@ resource "aws_iam_role_policy" "relay_logs" {
   })
 }
 
+# The outbox side: the table and its indexes, under the component's one grant (table.tf).
+resource "aws_iam_role_policy" "relay_table" {
+  name = "table"
+  role = aws_iam_role.relay.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = local.table_actions
+      Resource = local.table_resources
+    }]
+  })
+}
+
 # What the spine allows a relay: read and write the archive prefix, publish to the events topic,
 # never delete. The spine's module wrote it; this one attaches it unchanged.
 resource "aws_iam_role_policy" "relay_archive" {
@@ -72,9 +81,8 @@ resource "aws_lambda_function" "relay" {
   reserved_concurrent_executions = 1
   tags                           = local.tags
 
-  # Precedence: the module's defaults, the tenant's environment (MONGO_DB_NAME, LOG_LEVEL, the
-  # MAESTRO_* names — the same map the service gets), the database secret, then the spine's three
-  # names, which nothing overrides.
+  # Precedence: the module's defaults, the tenant's environment (LOG_LEVEL, the MAESTRO_* names — the
+  # same map the service gets), then the table and the spine's three names, which nothing overrides.
   environment {
     variables = merge(
       {
@@ -82,7 +90,7 @@ resource "aws_lambda_function" "relay" {
         LOG_PRETTY = "false"
       },
       var.environment,
-      { for key, version in data.aws_secretsmanager_secret_version.relay : key => version.secret_string },
+      { TABLE_NAME = aws_dynamodb_table.records.name },
       var.archive.relay_environment
     )
   }
@@ -92,7 +100,7 @@ resource "aws_lambda_function" "relay" {
     log_group  = aws_cloudwatch_log_group.relay.name
   }
 
-  depends_on = [aws_iam_role_policy.relay_logs, aws_iam_role_policy.relay_archive]
+  depends_on = [aws_iam_role_policy.relay_logs, aws_iam_role_policy.relay_table, aws_iam_role_policy.relay_archive]
 }
 
 resource "aws_iam_role" "relay_scheduler" {

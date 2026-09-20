@@ -61,7 +61,6 @@ module "identity" {
   certificate_arn = "arn:aws:acm:eu-west-1::certificate/replace-me"
 
   environment = {
-    MONGO_DB_NAME          = "identity-service"
     AUTH_JWT_AUDIENCE      = "maestro"
     CORS_ORIGINS           = "https://maestro.aannemer-x.example"
     AUTH_REGISTRATION_MODE = "invite"
@@ -74,7 +73,7 @@ module "identity" {
     MAESTRO_ACCOUNTABLE       = "prn-h-replaceme0000"
     MAESTRO_CONSEQUENCE_CLASS = "c1"
   }
-  secrets = var.secrets # MONGO_URI, AUTH_JWT_SECRET, OAUTH_KEY_PASSPHRASE, IDENTITY_ADMIN_CLIENT_SECRET
+  secrets = var.secrets # AUTH_JWT_SECRET, OAUTH_KEY_PASSPHRASE, IDENTITY_ADMIN_CLIENT_SECRET — no database credential (ADR-0023)
 
   # The spine module's outputs, passed through: the relay's names and its policy.
   archive = {
@@ -95,4 +94,9 @@ output "issuer" {
 
 output "domain_target" {
   value = module.identity.domain_target
+}
+
+output "table_name" {
+  description = "The realm's table: what a seed run from an operator's shell names as TABLE_NAME."
+  value       = module.identity.table_name
 }

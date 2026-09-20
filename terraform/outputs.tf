@@ -39,3 +39,12 @@ output "backup_bucket_name" {
 output "backup_prefix" {
   value = trimsuffix(var.backup_prefix, "/")
 }
+
+output "table_name" {
+  description = "The realm's DynamoDB table — what TABLE_NAME names on every function, and what a seed run from an operator's shell targets."
+  value       = aws_dynamodb_table.records.name
+}
+
+output "table_arn" {
+  value = aws_dynamodb_table.records.arn
+}

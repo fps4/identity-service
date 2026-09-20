@@ -43,7 +43,7 @@ variable "web_adapter_layer_arn" {
 variable "environment" {
   description = <<-EOT
     Every non-secret environment variable the service reads (service/.env.example lists them all;
-    docs/guides/deployment.md says which a deployment must set). Typically: MONGO_DB_NAME,
+    docs/guides/deployment.md says which a deployment must set). Typically:
     AUTH_JWT_AUDIENCE, CORS_ORIGINS, AUTH_REGISTRATION_MODE, AUTH_LOCAL_IDP_ENABLED,
     ADMIN_OPERATOR_ROLES, GOOGLE_CLIENT_ID, LOG_LEVEL and the OAUTH_* limits — and the record's
     (ADR-0022): MAESTRO_WORKSPACE_ID (this deployment's workspace on maestro's record, `ws-<realm
@@ -51,10 +51,10 @@ variable "environment" {
     (the `prn-h-…` of the human answerable for machine actors' acts; without it an agent or a pipeline
     acting through the management plane is refused) and MAESTRO_CONSEQUENCE_CLASS (`c1` by default).
     The module sets NODE_ENV, LOG_PRETTY, AUTH_JWT_ISSUER and GOOGLE_REDIRECT_URI itself (the last
-    two from the issuer), RECORD_SINK=off on the service (the relay function drains the outbox; the
-    service relays nothing in-process) and the Web Adapter's own variables; a key here overrides the
-    first two, never the rest. The relay function receives the same map. No default here names
-    anything.
+    two from the issuer), TABLE_NAME (its own table), RECORD_SINK=off on the service (the relay
+    function drains the outbox; the service relays nothing in-process) and the Web Adapter's own
+    variables; a key here overrides the first two, never the rest. The relay function receives the
+    same map. No default here names anything.
   EOT
   type        = map(string)
   default     = {}
@@ -62,18 +62,27 @@ variable "environment" {
 
 variable "secrets" {
   description = <<-EOT
-    Environment variable → Secrets Manager secret ARN, read at plan time and set on the function:
-    MONGO_URI, AUTH_JWT_SECRET, OAUTH_KEY_PASSPHRASE, IDENTITY_ADMIN_CLIENT_SECRET and, when Google
-    federates the login, GOOGLE_CLIENT_SECRET. The value lands in the state and in the function's
-    configuration, as a secret in any Lambda environment does — the state bucket is what protects
-    it (ADR-0017). Reading at boot through the Parameters and Secrets Lambda extension is the
-    follow-up, once the service reads its configuration from there.
+    Environment variable → Secrets Manager secret ARN, read at plan time and set on the service
+    function: AUTH_JWT_SECRET, OAUTH_KEY_PASSPHRASE, IDENTITY_ADMIN_CLIENT_SECRET and, when Google
+    federates the login, GOOGLE_CLIENT_SECRET. No database credential: the table is a grant (ADR-0023).
+    The value lands in the state and in the function's configuration, as a secret in any Lambda
+    environment does — the state bucket is what protects it (ADR-0017). Reading at boot through the
+    Parameters and Secrets Lambda extension is the follow-up, once the service reads its configuration
+    from there.
   EOT
   type        = map(string)
   validation {
-    condition     = contains(keys(var.secrets), "MONGO_URI")
-    error_message = "secrets must name MONGO_URI: the database is the one dependency every function has."
+    condition     = contains(keys(var.secrets), "OAUTH_KEY_PASSPHRASE")
+    error_message = "secrets must name OAUTH_KEY_PASSPHRASE: the signing keys are stored encrypted under it, and a deployment never stores them plain."
   }
+}
+
+# --- the table -----------------------------------------------------------------------------------
+
+variable "table_name" {
+  description = "The DynamoDB table's name. Defaults to `name`; set it only where the tenant names tables by its own rule."
+  type        = string
+  default     = null
 }
 
 variable "domain" {
@@ -130,7 +139,7 @@ variable "backup_passphrase_secret_arn" {
 }
 
 variable "backup_memory_mb" {
-  description = "The backup buffers each collection compressed in memory before it writes it; size for the largest collection (the audit log)."
+  description = "The backup holds the whole table in memory, grouped by kind, before it writes it; size for the realm (the audit log and the outbox are the bulk)."
   type        = number
   default     = 1024
 }
