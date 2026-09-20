@@ -8,7 +8,7 @@ import type { InviteDocument } from '../models/invite.js';
 import type { Logger } from '../utils/logger.js';
 import { createRecorder, mintPrincipalId, realmOf, selfContext, withRecordTransaction, type Act, type RecordConfig } from '../record/index.js';
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 
 /** A user/registration failure with an HTTP status + machine code (mapped by the route). */
 export class UserServiceError extends Error {

@@ -65,7 +65,7 @@ export class SeedConfigError extends Error {
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 
 /**
  * Replace any string that is exactly `${VAR}` with `env[VAR]` (so secrets need not live in the file).

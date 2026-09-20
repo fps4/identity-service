@@ -23,7 +23,7 @@ import {
   type Recorder
 } from '../record/index.js';
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 
 /** A management failure with an HTTP status + machine code (mapped by the route / MCP adapter). */
 export class AdminServiceError extends Error {
