@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generateKeyPairSync } from 'crypto';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { resolve } from 'path';
 import { CreateTableCommand, DeleteTableCommand, DescribeTableCommand, waitUntilTableExists } from '@aws-sdk/client-dynamodb';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
@@ -60,6 +60,24 @@ describe('the table\'s shape', () => {
     expect(input.BillingMode).toBe('PAY_PER_REQUEST');
     expect(Object.values(INDEXES).map((i) => i.name)).toEqual(['gsi1', 'gsi2', 'pending']);
     expect(KEY).toEqual({ pk: 'pk', sk: 'sk' });
+  });
+
+  it('every DynamoDB command the service sends is an action the module grants its role', () => {
+    // DynamoDB Local enforces no IAM: a command the code sends that the grant does not name passes every
+    // test here and fails the first request on AWS (DescribeTimeToLive did, once). The commands the
+    // store sends at runtime are read from the source; the actions from terraform/table.tf.
+    const dir = resolve(__dirname, '../src/db');
+    const source = readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => readFileSync(resolve(dir, f), 'utf-8')).join('\n');
+    const sent = new Set(
+      [...source.matchAll(/new (\w+)Command\(/g)].map((m) => m[1]).filter((c) => !['CreateTable', 'DeleteTable', 'UpdateTimeToLive', 'Scan'].includes(c)),
+    );
+    // CreateTable, DeleteTable and UpdateTimeToLive make and unmake a table on DynamoDB Local — the dev script's and the
+    // tests' (the module makes the real one); Scan is the backup's alone.
+    const tf = readFileSync(resolve(__dirname, '../../terraform/table.tf'), 'utf-8');
+    const granted = new Set([...tf.matchAll(/"dynamodb:(\w+)"/g)].map((m) => m[1]));
+    const toAction = (command: string) => (command === 'TransactWrite' ? 'TransactWriteItems' : command === 'BatchGet' ? 'BatchGetItem' : command === 'BatchWrite' ? 'BatchWriteItem' : command === 'Get' ? 'GetItem' : command === 'Put' ? 'PutItem' : command === 'Update' ? 'UpdateItem' : command === 'Delete' ? 'DeleteItem' : command);
+    for (const command of sent) expect(granted, `dynamodb:${toAction(command)} for ${command}Command`).toContain(toAction(command));
+    expect(sent.size).toBeGreaterThan(5);
   });
 
   it('is what the store checks at boot, and a table of another shape is refused', async () => {

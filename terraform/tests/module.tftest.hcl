@@ -138,7 +138,7 @@ run "defaults" {
     error_message = "the service's role is its table and its logs: its keys live in the table, the archive is the relay's"
   }
   assert {
-    condition     = strcontains(aws_iam_role_policy.service.policy, "dynamodb:TransactWriteItems") && strcontains(aws_iam_role_policy.service.policy, "dynamodb:Query") && strcontains(aws_iam_role_policy.service.policy, "/index/*") && !strcontains(aws_iam_role_policy.service.policy, "dynamodb:Scan")
+    condition     = strcontains(aws_iam_role_policy.service.policy, "dynamodb:TransactWriteItems") && strcontains(aws_iam_role_policy.service.policy, "dynamodb:DescribeTimeToLive") && strcontains(aws_iam_role_policy.service.policy, "dynamodb:Query") && strcontains(aws_iam_role_policy.service.policy, "/index/*") && !strcontains(aws_iam_role_policy.service.policy, "dynamodb:Scan")
     error_message = "the service transacts and queries its table and its indexes; it never scans"
   }
 
@@ -242,8 +242,8 @@ run "defaults" {
     error_message = "the backup writes; it never reads or deletes a backup"
   }
   assert {
-    condition     = strcontains(aws_iam_role_policy.backup.policy, "dynamodb:Scan") && strcontains(aws_iam_role_policy.backup.policy, "dynamodb:DescribeTable") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:PutItem") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:UpdateItem") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:Query")
-    error_message = "the backup reads the whole table and nothing else: Scan and DescribeTable only"
+    condition     = strcontains(aws_iam_role_policy.backup.policy, "dynamodb:Scan") && strcontains(aws_iam_role_policy.backup.policy, "dynamodb:DescribeTable") && strcontains(aws_iam_role_policy.backup.policy, "dynamodb:DescribeTimeToLive") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:PutItem") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:UpdateItem") && !strcontains(aws_iam_role_policy.backup.policy, "dynamodb:Query")
+    error_message = "the backup reads the whole table and nothing else: Scan and the two descriptions only"
   }
 
   # --- the backup bucket ---
