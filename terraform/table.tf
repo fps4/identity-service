@@ -100,8 +100,11 @@ locals {
   # The table and its indexes, as a policy names them.
   table_resources = [aws_dynamodb_table.records.arn, "${aws_dynamodb_table.records.arn}/index/*"]
 
-  # What a function that reads and writes items may do: every item action, the transaction, the
-  # description the boot check reads — and never Scan, which only the backup (backup.tf) is granted.
+  # What a function that reads and writes items may do: every item action, the transaction, the two
+  # descriptions the boot check reads (the table, and its TTL) — and never Scan, which only the backup
+  # (backup.tf) is granted. DynamoDB Local enforces no IAM: an action missing here passes every test
+  # and fails the first request on AWS, so tests/store.test.ts holds this list to the commands the code
+  # imports.
   table_actions = [
     "dynamodb:GetItem",
     "dynamodb:PutItem",
@@ -112,6 +115,7 @@ locals {
     "dynamodb:BatchWriteItem",
     "dynamodb:TransactWriteItems",
     "dynamodb:ConditionCheckItem",
-    "dynamodb:DescribeTable"
+    "dynamodb:DescribeTable",
+    "dynamodb:DescribeTimeToLive"
   ]
 }

@@ -123,7 +123,7 @@ resource "aws_iam_role_policy" "backup" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["dynamodb:DescribeTable", "dynamodb:Scan"]
+        Action   = ["dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive", "dynamodb:Scan"]
         Resource = aws_dynamodb_table.records.arn
       },
       {
