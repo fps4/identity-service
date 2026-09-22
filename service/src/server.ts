@@ -9,6 +9,7 @@ import { startRelayLoop } from './record/index.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
+import passwordRoutes from './routes/password-routes.js';
 import { buildCorsOptions, corsErrorHandler, selfOrigins, isBrowserSameOriginRequest } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
 import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from './mcp/http-transport.js';
@@ -65,6 +66,8 @@ async function bootstrap() {
 
   app.use('/oauth2', oauthRoutes);
   app.use('/v1', sessionRoutes);
+  // The set-password page a link opens (services/password-links.ts): first-party, server-rendered.
+  app.use(passwordRoutes);
 
   // Management plane (ADR-0007): authenticated admin API. Every route is guarded by an admin-scoped
   // client-credentials token and writes an append-only audit entry. Disable per-deployment with

@@ -3,6 +3,7 @@ import { createAuthorizer, createSessionJwtSigner } from './core/index.js';
 import { createOAuthServer } from './oauth/server.js';
 import { createUserService } from './services/users.js';
 import { createAdminService } from './services/admin.js';
+import { createPasswordLinkService } from './services/password-links.js';
 import { getStore, storeReady } from './db/index.js';
 import { MetricsRecorder } from './observability/metrics.js';
 import logger from './utils/logger.js';
@@ -55,6 +56,10 @@ export const adminService = createAdminService({
   logger,
   record: recordConfig
 });
+
+// Set-password links (services/password-links.ts): issued by an operator, redeemed on the service's
+// own page (routes/password-routes.ts).
+export const passwordLinkService = createPasswordLinkService({ store });
 
 // The relay from this service's outbox into the archive the sink names, or null for `off` (a scheduled
 // Lambda drains the outbox instead — `relay/lambda.ts`).
