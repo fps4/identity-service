@@ -206,7 +206,11 @@ router.post('/users/reset-password', requireAdmin(ADMIN_SCOPES.users), async (re
 
 // A set-password link for an existing user (services/password-links.ts): the URL is returned once;
 // only the token's digest is stored. Handed over out of band, like an invite code.
-router.post('/users/password-link', requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+const passwordLinkLimiter = createRateLimiter({
+  limit: CONFIG.admin.rateLimit.perIpPerMinute,
+  globalLimit: CONFIG.admin.rateLimit.globalPerMinute
+});
+router.post('/users/password-link', passwordLinkLimiter, requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
   try {
     const hours = req.body?.hours !== undefined ? Number(req.body.hours) : undefined;
     const link = await passwordLinkService.issue({

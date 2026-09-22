@@ -10,17 +10,29 @@ import { passwordLinkService } from '../container.js';
 import { CONFIG } from '../config.js';
 import { UserServiceError } from '../services/users.js';
 import logger from '../utils/logger.js';
+import { createRateLimiter } from '../utils/rate-limit.js';
 
 const router = express.Router();
 
-router.get('/password', async (req: Request, res: Response) => {
+// The page is public by nature — a link is opened by whoever holds it. A token is 256 random bits, so
+// guessing is not the risk; the budget is the login's: a GET reads two items, a POST runs scrypt.
+const pageLimiter = createRateLimiter({
+  limit: CONFIG.auth.loginRateLimit.authorizePerIpPerMinute,
+  globalLimit: CONFIG.auth.loginRateLimit.authorizeGlobalPerMinute
+});
+const setLimiter = createRateLimiter({
+  limit: CONFIG.auth.loginRateLimit.loginPerIpPerMinute,
+  globalLimit: CONFIG.auth.loginRateLimit.loginGlobalPerMinute
+});
+
+router.get('/password', pageLimiter, async (req: Request, res: Response) => {
   const token = typeof req.query.token === 'string' ? req.query.token : '';
   const whose = token ? await passwordLinkService.peek(token) : null;
   if (!whose) return sendPage(res, { kind: 'invalid' });
   return sendPage(res, { kind: 'form', token, email: whose.email });
 });
 
-router.post('/password', async (req: Request, res: Response) => {
+router.post('/password', setLimiter, async (req: Request, res: Response) => {
   const token = typeof req.body?.token === 'string' ? req.body.token : '';
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
   const confirm = typeof req.body?.password_confirm === 'string' ? req.body.password_confirm : '';
