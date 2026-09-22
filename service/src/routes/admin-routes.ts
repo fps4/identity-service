@@ -1,8 +1,9 @@
 import express from 'express';
 import type { Request, Response } from 'express';
-import { adminService, metricsRecorder, store } from '../container.js';
+import { adminService, metricsRecorder, passwordLinkService, store } from '../container.js';
 import { requireAdmin, ADMIN_SCOPES } from '../core/admin-auth.js';
 import { AdminServiceError } from '../services/admin.js';
+import { UserServiceError } from '../services/users.js';
 import { createRateLimiter } from '../utils/rate-limit.js';
 import { CONFIG } from '../config.js';
 import logger from '../utils/logger.js';
@@ -59,7 +60,7 @@ async function actOf(req: Request): Promise<ActContext> {
 }
 
 function handleError(res: Response, error: unknown): Response {
-  if (error instanceof AdminServiceError) {
+  if (error instanceof AdminServiceError || error instanceof UserServiceError) {
     return res.status(error.status).json({ error: error.code, error_description: error.message });
   }
   // An act maestro's record would refuse is not performed (ADR-0022); the reason goes to the caller.
@@ -200,6 +201,26 @@ router.post('/users/reset-password', requireAdmin(ADMIN_SCOPES.users), async (re
     await adminService.resetUserPassword(email, password);
     audit(req, res, 'user.resetPassword', { type: 'user', id: email });
     res.json({ ok: true });
+  } catch (e) { handleError(res, e); }
+});
+
+// A set-password link for an existing user (services/password-links.ts): the URL is returned once;
+// only the token's digest is stored. Handed over out of band, like an invite code.
+const passwordLinkLimiter = createRateLimiter({
+  limit: CONFIG.admin.rateLimit.perIpPerMinute,
+  globalLimit: CONFIG.admin.rateLimit.globalPerMinute
+});
+router.post('/users/password-link', passwordLinkLimiter, requireAdmin(ADMIN_SCOPES.users), async (req, res) => {
+  try {
+    const hours = req.body?.hours !== undefined ? Number(req.body.hours) : undefined;
+    const link = await passwordLinkService.issue({
+      ...(typeof req.body?.email === 'string' ? { email: req.body.email } : {}),
+      ...(typeof req.body?.userId === 'string' ? { userId: req.body.userId } : {}),
+      ...(hours !== undefined ? { hours } : {}),
+      createdBy: req.admin?.subject ?? req.admin?.clientId
+    });
+    audit(req, res, 'user.password_link', { type: 'user', id: link.email }, { expiresAt: link.expiresAt.toISOString() });
+    res.status(201).json({ url: link.url, email: link.email, expiresAt: link.expiresAt.toISOString() });
   } catch (e) { handleError(res, e); }
 });
 

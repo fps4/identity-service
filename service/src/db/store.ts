@@ -13,6 +13,7 @@ import { clients } from './clients.js';
 import { counters } from './counters.js';
 import { createDocumentClient, createDynamoClient, type DbConfig } from './client.js';
 import { invites } from './invites.js';
+import { passwordLinks } from './password-links.js';
 import { commit, scanAll, type Db } from './ops.js';
 import { describeAndCheck } from './table.js';
 import { outbox } from './outbox.js';
@@ -38,6 +39,7 @@ export interface Store {
   readonly tokens: ReturnType<typeof tokens>;
   readonly authorizations: ReturnType<typeof authorizations>;
   readonly invites: ReturnType<typeof invites>;
+  readonly passwordLinks: ReturnType<typeof passwordLinks>;
   readonly assignments: ReturnType<typeof assignments>;
   readonly signingKeys: ReturnType<typeof signingKeys>;
   readonly sessions: ReturnType<typeof sessions>;
@@ -70,6 +72,7 @@ export function createStore(config: StoreConfig, clients_?: { client: DynamoDBCl
     tokens: tokens(db),
     authorizations: authorizations(db),
     invites: invites(db),
+    passwordLinks: passwordLinks(db),
     assignments: assignments(db),
     signingKeys: signingKeys(db),
     sessions: sessions(db),

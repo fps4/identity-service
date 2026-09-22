@@ -6,6 +6,7 @@
  *
  *   tsx scripts/manage-users.ts create       --email=<e> --password=<p>
  *   tsx scripts/manage-users.ts set-password  --email=<e> --password=<p>
+ *   tsx scripts/manage-users.ts password-link --email=<e> [--hours=24] [--issuer=<https://…>]   # a link the person sets their own password on
  *   tsx scripts/manage-users.ts lock|unlock|disable|enable|delete --email=<e>
  *
  * Users are deployment-scoped (ADR-0018): email is the unique key, no tenant.
@@ -16,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { getStore, Transaction } from '../src/db/index.js';
 import { hashSecret } from '../src/utils/hash.js';
 import { assertPasswordPolicy, normalizeEmail } from '../src/services/users.js';
+import { createPasswordLinkService } from '../src/services/password-links.js';
 
 function parseArgs() {
   const [command, ...rest] = process.argv.slice(2);
@@ -31,7 +33,7 @@ async function main() {
   const { command, args } = parseArgs();
   const email = args.get('email') ? normalizeEmail(args.get('email')!) : undefined;
   if (!command || !email) {
-    console.error('Usage: manage-users <create|set-password|lock|unlock|disable|enable|delete> --email=<e> [--password=<p>]');
+    console.error('Usage: manage-users <create|set-password|password-link|lock|unlock|disable|enable|delete> --email=<e> [--password=<p>] [--hours=<h>] [--issuer=<url>]');
     process.exitCode = 2;
     return;
   }
@@ -60,6 +62,16 @@ async function main() {
       const user = await store.users.getByEmail(email);
       const updated = user && await store.users.update(user._id, { passwordHash: hashSecret(password), passwordUpdatedAt: now, failedAttempts: 0, lockedUntil: null, updatedAt: now });
       report(updated ? 1 : 0, email, 'password reset');
+      break;
+    }
+    case 'password-link': {
+      // The person sets the password themselves, on the service's page; nobody else ever holds one.
+      // The URL is printed once and never stored; the issuer is the deployment's public base.
+      const hours = args.get('hours') ? Number(args.get('hours')) : undefined;
+      const issuer = args.get('issuer');
+      const links = createPasswordLinkService({ store, ...(issuer ? { issuer } : {}) });
+      const link = await links.issue({ email, ...(hours !== undefined ? { hours } : {}), createdBy: `manage-users:${process.env.USER ?? 'operator'}` });
+      console.log(`${link.url}\n(for ${link.email}; valid until ${link.expiresAt.toISOString()}; works once)`);
       break;
     }
     case 'lock':

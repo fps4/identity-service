@@ -346,6 +346,27 @@ secrets that are the seed's, not the service's — packaging both per tenant int
 second secrets path buys nothing over the one command the compose stack already documents, and a person
 holding the role runs the same command from a laptop (ADR-0004).
 
+### A password nobody else has seen
+
+A person who already exists — seeded, or created by an operator — comes to hold a password through a
+**set-password link**: the operator issues it, hands it over out of band (as an invite code is, ADR-0013),
+and the person opens it on the service's own page (`/password?token=…`), types the password twice, and is
+done. Only the token's digest is stored; the link expires (24 hours by default, a week at most); it works
+once, consumed in the transaction that sets the password; every failure of the link is one sentence, so
+a link cannot be probed. Setting a password this way vouches the address the link went to, and unlocks
+a locked account. Nothing reaches maestro's record: a credential is the realm's, not the record's.
+
+```bash
+# an operator with the table (from service/):
+npm run manage-users -- password-link --email=<e> [--hours=24] [--issuer=https://<the deployment's issuer>]
+# or the management plane:
+curl -s -XPOST $ISSUER/admin/v1/users/password-link -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -H 'content-type: application/json' -d '{"email":"<e>","hours":24}'      # → { url, email, expiresAt }
+```
+
+So a fresh realm's first human is seeded with a random password nobody keeps and handed a link, and
+never learns a temporary one.
+
 ### Backups and restore
 
 The backup Lambda ([`service/lambda/backup.ts`](service/lambda/backup.ts)) pages the whole table (a
