@@ -46,6 +46,12 @@ export interface SeedAssignment {
 }
 
 export interface SeedUser {
+  /**
+   * The user id — the `sub` of every token they are issued — when it must be a particular one. Only for a
+   * person moving from another realm, whose consumers key their data by that subject; it is used when the
+   * user is created and checked on every run after, never changed. Absent, the id is minted.
+   */
+  id?: string;
   email: string;
   password: string;
   status?: 'active' | 'locked' | 'disabled';
@@ -66,6 +72,7 @@ export class SeedConfigError extends Error {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+const SUBJECT_RE = /^\S+$/;
 
 /**
  * Replace any string that is exactly `${VAR}` with `env[VAR]` (so secrets need not live in the file).
@@ -174,6 +181,9 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
     const uw = `users[${ui}]`;
     if (!isObject(u) || typeof u.email !== 'string' || !EMAIL_RE.test(u.email)) throw new SeedConfigError(`${uw} needs a valid email`);
     if (typeof u.password !== 'string' || !u.password) throw new SeedConfigError(`${uw} (${u.email}) needs a password`);
+    if (u.id !== undefined && (typeof u.id !== 'string' || !SUBJECT_RE.test(u.id))) {
+      throw new SeedConfigError(`${uw} (${u.email}) id must be a non-empty string with no whitespace`);
+    }
     const password = interpolate(u.password, env);
     if (!password) throw new SeedConfigError(`${uw} (${u.email}) resolved to an empty password`);
     let assignments: SeedAssignment[] = [];
@@ -189,8 +199,17 @@ export function parseSeedConfig(raw: unknown, env: Record<string, string | undef
         return { application: a.application, roles };
       });
     }
-    return { email: u.email.trim().toLowerCase(), password, status: (u.status as SeedUser['status']) ?? 'active', assignments };
+    return { ...(u.id !== undefined ? { id: u.id as string } : {}), email: u.email.trim().toLowerCase(), password, status: (u.status as SeedUser['status']) ?? 'active', assignments };
   }) : [];
+
+  // A subject names one person: two users claiming the same id is a file that cannot be loaded.
+  const claimed = new Map<string, string>();
+  for (const u of users) {
+    if (!u.id) continue;
+    const other = claimed.get(u.id);
+    if (other) throw new SeedConfigError(`users ${other} and ${u.email} both claim id ${u.id}`);
+    claimed.set(u.id, u.email);
+  }
 
   return { applications, users };
 }

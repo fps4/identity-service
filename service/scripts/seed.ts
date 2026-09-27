@@ -33,7 +33,7 @@ import { uuidv7 } from '@fps4/maestro-spine';
 import { getStore, type Store } from '../src/db/index.js';
 import { hashSecret } from '../src/utils/hash.js';
 import { CONFIG } from '../src/config.js';
-import { parseSeedConfig, type SeedConfig, type SeedCredential } from '../src/services/seed-config.js';
+import { parseSeedConfig, type SeedConfig, type SeedCredential, type SeedUser } from '../src/services/seed-config.js';
 import { assertPasswordPolicy, normalizeEmail } from '../src/services/users.js';
 import {
   clientPrincipalKind,
@@ -160,10 +160,36 @@ async function main() {
 }
 
 /** The seed run itself, over a store — what `main` calls and a test drives against DynamoDB Local. */
+/**
+ * A declared `id` is the subject a person already holds somewhere else (a realm they are moving from),
+ * so it may only ever describe them: the user by that email must have it, or nobody may yet hold it. A
+ * subject is never rewritten — every consumer that keyed data by it would lose that data silently.
+ */
+export async function assertSubjects(
+  store: { users: { get(id: string): Promise<{ email: string } | null>; getByEmail(email: string): Promise<{ _id: string } | null> } },
+  users: Pick<SeedUser, 'id' | 'email'>[]
+): Promise<void> {
+  for (const u of users) {
+    if (!u.id) continue;
+    const email = normalizeEmail(u.email);
+    const existing = await store.users.getByEmail(email);
+    if (existing && existing._id !== u.id) {
+      throw new Error(`${email} already exists as ${existing._id}, not ${u.id}; a subject is never changed — fix or drop the id`);
+    }
+    if (!existing) {
+      const holder = await store.users.get(u.id);
+      if (holder) throw new Error(`id ${u.id} for ${email} is already held by ${holder.email}`);
+    }
+  }
+}
+
 export async function runSeed({ config, store, operatorEmail, record, now = new Date() }: SeedRunDeps): Promise<SeedRunReport> {
   const realm = realmOf(record.workspaceId);
   const correlation_id = uuidv7(); // one per run: every event the seed records carries it
   let appsUpserted = 0, clientsUpserted = 0, usersCreated = 0, usersSkipped = 0, assignmentsUpserted = 0, eventsEmitted = 0;
+
+  // Before anything is written: every declared id must agree with the realm, or the run stops whole.
+  await assertSubjects(store, config.users);
 
   for (const app of config.applications) {
     // The application owns its name, default audience, role catalogue, and protected-resource registry
@@ -181,7 +207,7 @@ export async function runSeed({ config, store, operatorEmail, record, now = new 
   let operatorCreatedHere = false;
   if (!operator && seededOperator) {
     const principalId = mintPrincipalId('human');
-    const userId = randomUUID();
+    const userId = seededOperator.id ?? randomUUID();
     operator = await withRecordTransaction(store, async (tx) => {
       store.users.put(tx, {
         _id: userId, email: operatorEmail, passwordHash: hashSecret(seededOperator.password), identities: [], emailVerified: false,
@@ -238,7 +264,7 @@ export async function runSeed({ config, store, operatorEmail, record, now = new 
       if (!(email === operatorEmail && operatorCreatedHere)) usersSkipped++;
     } else {
       const principalId = mintPrincipalId('human');
-      userId = randomUUID();
+      userId = u.id ?? randomUUID();
       await withRecordTransaction(store, async (tx) => {
         store.users.put(tx, {
           _id: userId, email, passwordHash: hashSecret(u.password), identities: [], emailVerified: false,
