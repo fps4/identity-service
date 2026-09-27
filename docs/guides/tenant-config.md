@@ -339,6 +339,14 @@ A user with **no** `assignments` can authenticate but is refused a token for any
 (global entitlement gate, ADR-0019). Each assignment keys on the **`application`** id, and its `roles` must
 be a subset of that application's catalogue.
 
+**Moving a person between deployments keeps their subject.** A user's id is the `sub` of every token they
+are issued, and consumers key their data by it, so a person re-created with a fresh id would find their
+data gone. A seed user may declare `id:` — the id they hold in the realm they are leaving — and is created
+under it. It is checked on every later run and never changed: the seed stops before writing anything if the
+user by that email has a different id, or if the id belongs to someone else. `npm run dump-seed --
+--include-users` emits each user's `id`, so a dump of the old realm is a seed for the new one. Without
+`id:` the id is minted, as before.
+
 **Operator safeguard:** the bootstrap operator (`admin@identity-service.fps4.nl`) is always seeded with an
 `identity-console` / `platform_admin` assignment, so the console can never be accidentally locked out under
 global enforcement.
