@@ -113,8 +113,10 @@ The **live table is the system of record** for the auth data (clients, users, se
 SOPS/seed-as-code is **dropped** (ADR-0008, superseding ADR-0006): there is no encrypted secret file in
 git, and no `age` master key.
 
-- **Bootstrap definition** — `config/seed.yaml` (committed; only `${ENV}` references, no plaintext). It
-  stands up a brand-new **empty** deployment; the table is never recreated by a deploy (`prevent_destroy`),
+- **Bootstrap definition** — the realm's seed file, which is the **tenant's** (fps4's is
+  `maestro-fps4/identity/seed.yaml`; only `${ENV}` references, no plaintext). This repository commits no
+  realm's seed — [`config/seed.example.yaml`](../../config/seed.example.yaml) is the template, and
+  `config/seed.yaml` is a gitignored local copy for the compose stack. It stands up a brand-new **empty** deployment; the table is never recreated by a deploy (`prevent_destroy`),
   so steady-state data is never wiped. Day-2 changes go through the **management plane** (`/admin/v1` +
   MCP + console — ADR-0007), not a re-seed.
 - **Bootstrap seed** (rare — an empty table only): supply the `${ENV}` values from the environment (an
@@ -169,7 +171,7 @@ history is in git.
 
 The `/admin/v1` API, the MCP server, and the admin console all authenticate with a `client_credentials`
 token carrying the `admin` scope. That principal is seeded as a dedicated client
-(`identity-admin-mcp`) in [`config/seed.yaml`](../../config/seed.yaml).
+(`identity-admin-mcp`, under the `identity-service` application) in the realm's seed file.
 
 The **one** secret value lives in **two** places (it must be identical in both — same pattern as
 `MAESTRO_RUNTIME_CLIENT_SECRET`):
@@ -188,14 +190,14 @@ Provision it:
 
    ```bash
    # from service/ (the seed upserts the identity-admin-mcp client):
-   IDENTITY_ADMIN_CLIENT_SECRET=<the same value> SEED_FILE=../config/seed.yaml \
+   IDENTITY_ADMIN_CLIENT_SECRET=<the same value> SEED_FILE=<the realm's seed file> \
      TABLE_NAME=identity-service DYNAMODB_ENDPOINT=http://localhost:8000 npm run seed
    ```
 
 3. **Mint a token** (any caller — the console, `curl`, a test):
 
    ```bash
-   curl -s -XPOST https://auth.fps4.nl/oauth2/token -d grant_type=client_credentials \
+   curl -s -XPOST https://<issuer>/oauth2/token -d grant_type=client_credentials \
         -d client_id=identity-admin-mcp -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin | jq -r .access_token
    ```
 
@@ -203,48 +205,31 @@ Provision it:
 
 ### Driving the MCP server from an MCP client (e.g. Claude Code)
 
-The MCP server talks to the table directly and verifies the admin token against the service's own JWKS, so
-it runs **inside the `identity-service` container** (which already has the table, the key passphrase, and
-the issuer — plus `IDENTITY_ADMIN_CLIENT_SECRET`, from the deployment's environment).
-[`docker/mcp-admin.sh`](../../docker/mcp-admin.sh) mints a fresh token on each start and execs
-`node dist/mcp/server.js` in that container — nothing long-lived is stored:
+The MCP server talks to the table directly and verifies the admin token against the service's own JWKS.
+Over **stdio** (`npm run mcp` in `service/`) it needs the service's own environment — the table,
+`OAUTH_KEY_PASSPHRASE`, the issuer — and a freshly minted admin token in `IDENTITY_SERVICE_ADMIN_TOKEN`;
+nothing long-lived is stored. A Lambda deployment has no container to exec into, so for a deployed realm
+the **remote transport** below is the way in, and stdio is for the compose stack or break-glass from a
+shell that holds the deployment's credentials. (The ds1 launcher, `docker/mcp-admin.sh`, which ran the
+stdio server inside the ds1 container over SSH, went with the ds1 realm.)
 
-1. **No host-side secret is needed on ds1** — the launcher reads the secret from the container env. (For
-   local/dev, or if you prefer not to inject it into the container, the launcher also accepts a host
-   `IDENTITY_ADMIN_CLIENT_SECRET` env var or a `.mcp-admin.env` file next to the script, `chmod 600`.)
-2. A remote MCP client connects over SSH (stdio passes straight through). The launcher lives at
-   `~/identity-service/docker/mcp-admin.sh` on the ds1 host:
+#### Remote transport — MCP over HTTP (ADR-0009)
 
-   ```bash
-   ssh ds1 /home/fgurbanov/identity-service/docker/mcp-admin.sh
-   ```
-
-   For Claude Code, register it once at user scope so every project sees it:
-
-   ```bash
-   claude mcp add --scope user --transport stdio identity-service-admin -- ssh ds1 /home/fgurbanov/identity-service/docker/mcp-admin.sh
-   ```
-
-   The secret never leaves the ds1 host; the laptop config holds only the SSH command.
-
-#### Remote transport — MCP over HTTP, no SSH (ADR-0009)
-
-The stdio-over-SSH path above needs a shell account on ds1 and drops when the SSH tunnel times out.
 [ADR-0009](../design/decisions/0009-remote-authenticated-mcp-service.md) adds a network-reachable
-transport: the same MCP server, over **MCP Streamable HTTP**, as an OAuth-protected resource on its own
-origin **`https://auth-mcp.fps4.nl/mcp`** (a Cloudflare hostname pointing at the same `:7305` service,
-isolated from the token-issuing `auth.fps4.nl`) — verified through the same admin-auth + audit path.
+transport: the same MCP server, over **MCP Streamable HTTP**, as an OAuth-protected resource at
+`MCP_RESOURCE_URL` (default `<issuer>/mcp`; a deployment may put it on an origin of its own, isolated from
+the token-issuing one) — verified through the same admin-auth + audit path.
 
 1. **Mint an admin token *bound to the MCP resource*** (RFC 8707 audience-binding — the token is accepted
    only at `/mcp`, and a generic admin token is not), then point any MCP client at the endpoint:
 
    ```bash
-   TOKEN=$(curl -s -XPOST https://auth.fps4.nl/oauth2/token \
+   TOKEN=$(curl -s -XPOST https://<issuer>/oauth2/token \
      -d grant_type=client_credentials -d client_id=identity-admin-mcp \
      -d client_secret=$IDENTITY_ADMIN_CLIENT_SECRET -d scope=admin \
-     -d resource=https://auth-mcp.fps4.nl/mcp | jq -r .access_token)
+     -d resource=<MCP_RESOURCE_URL> | jq -r .access_token)
 
-   claude mcp add --scope user --transport http identity-service-admin https://auth-mcp.fps4.nl/mcp \
+   claude mcp add --scope user --transport http identity-service-admin <MCP_RESOURCE_URL> \
      --header "Authorization: Bearer $TOKEN"
    ```
 
@@ -255,17 +240,18 @@ isolated from the token-issuing `auth.fps4.nl`) — verified through the same ad
    answers an unauthenticated request with `401 WWW-Authenticate: Bearer resource_metadata=…`, and the
    app serves `/.well-known/oauth-protected-resource` (→ the authorization server) and
    `/.well-known/oauth-authorization-server` (authorization + token endpoints, JWKS). identity-service
-   is the authorization server for its own MCP resource, and it logs the operator in **itself** — ds1
-   configures no Google app, so `/oauth2/authorize` serves the first-party login form (RQ-0002) and the
+   is the authorization server for its own MCP resource, and it logs the operator in **itself** — with no
+   Google app configured, `/oauth2/authorize` serves the first-party login form (RQ-0002) and the
    resulting user token is audience-bound to the MCP resource via the client's `resource` parameter.
 
    The client must be **pre-registered** with the callback URI it listens on — MCP clients register
    anonymously, which gated DCR deliberately refuses (ADR-0009 §7), and a self-registered client would
-   hold no `admin:*` scope anyway. `config/seed.mcp-operator.yaml` provisions exactly that credential
-   (`identity-admin-mcp-operator`, public, `authorization_code`, loopback redirect on port `9414`):
+   hold no `admin:*` scope anyway. The realm's seed declares that credential under the `identity-service`
+   application (`identity-admin-mcp-operator`, public, `authorization_code`, a loopback redirect such as
+   port `9414`):
 
    ```bash
-   claude mcp add --scope user --transport http identity-service-admin https://auth-mcp.fps4.nl/mcp \
+   claude mcp add --scope user --transport http identity-service-admin <MCP_RESOURCE_URL> \
      --client-id identity-admin-mcp-operator --callback-port 9414
    ```
 
@@ -275,8 +261,8 @@ isolated from the token-issuing `auth.fps4.nl`) — verified through the same ad
 
    The operator signing in needs an **active assignment** to that client's application carrying a
    `platform_admin` role (`ADMIN_OPERATOR_ROLES`) — that is what `admin-auth` maps to the `admin`
-   superscope, and it, not the credential, is where the authority comes from. `seed.operators.yaml`
-   provisions that for `admin@identity-service.fps4.nl`. Without it the login succeeds and the MCP call
+   superscope, and it, not the credential, is where the authority comes from. The realm's seed grants it
+   to its bootstrap operator (an `identity-console` / `platform_admin` assignment). Without it the login succeeds and the MCP call
    is still refused, by design.
 
 Authentication is any admin-plane principal (a machine token with an admin scope, or a `platform_admin`
@@ -284,7 +270,7 @@ operator token — ADR-0010) whose `aud` includes the MCP resource; per-tool aut
 identically to the stdio + HTTP paths. Toggles: `MCP_HTTP_ENABLED` (default on), `MCP_RESOURCE_URL` (the
 resource identifier), `MCP_REQUIRE_AUDIENCE` (default on — set `false` to soft-launch before clients pass
 `resource`). Remaining Phase 2 hardening (DPoP/mTLS sender-constraint, step-up, dynamic registration) is
-tracked in ADR-0009/RQ-0019; stdio-over-SSH stays as break-glass.
+tracked in ADR-0009/RQ-0019; stdio stays as break-glass.
 
 `MCP_RESOURCE_URL` names **this service's own** MCP resource and nothing else. A different product
 fronting *its* MCP endpoint with this authorization server registers that endpoint in its **application's
