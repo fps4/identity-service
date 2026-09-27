@@ -7,7 +7,7 @@
  *   cd service
  *   npm run dump-seed                       # the whole table → stdout
  *   npm run dump-seed -- --out=../config/seed.yaml
- *   npm run dump-seed -- --include-users    # also emit users (with ${ENV} password placeholders)
+ *   npm run dump-seed -- --include-users    # also emit users: their id (the `sub` they keep), ${ENV} password placeholders
  *
  * SECRETS ARE NOT RECOVERABLE (one-way hashes). Credentials are dumped WITHOUT `secret`; a confidential
  * credential needs a `secret: ${ENV}` added before a fresh-db rebuild (the script warns). Users are
@@ -104,6 +104,8 @@ export function buildSeed(
     dumpedUsers = users.map((u) => {
       warnings.push(`user '${u.email}' dumped with a \${${passwordEnvVar(u.email)}} placeholder — set it in the env before loading`);
       return compact({
+        // The subject travels with the person, so a realm loaded from this file issues them the same `sub`.
+        id: u._id,
         email: u.email,
         password: `\${${passwordEnvVar(u.email)}}`,
         status: u.status,

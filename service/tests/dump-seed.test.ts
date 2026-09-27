@@ -53,6 +53,8 @@ describe('dump-seed', () => {
     expect(() => parseSeedConfig(parseYaml(yaml), {})).toThrow();
     const cfg = parseSeedConfig(parseYaml(yaml), { [envVar]: 'correct-horse-battery' });
     expect(cfg.users[0]?.email).toBe('demo@fps4.nl');
+    // The subject survives the round-trip, so a realm loaded from the dump issues the same `sub`.
+    expect(cfg.users[0]?.id).toBe('u-demo');
     // The dumped assignment survives the round-trip keyed on the application (ADR-0020).
     expect(cfg.users[0]?.assignments).toEqual([{ application: 'demo', roles: ['member'] }]);
   });

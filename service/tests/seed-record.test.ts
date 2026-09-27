@@ -114,3 +114,41 @@ describe('seed: a run on the record', () => {
     await expect(runSeed({ config, store: ghost.store, operatorEmail: 'ghost@example.test', record })).rejects.toThrow(/neither in the pool nor in the seed file/);
   });
 });
+
+describe('seed: a user who keeps their subject', () => {
+  let t: TestStore;
+  beforeAll(async () => { t = await testStore(); });
+  afterAll(async () => { await t.drop(); });
+
+  const record = { workspaceId: 'ws-identity-test', consequenceClass: 'c1' };
+  const moved = (id: string, email = 'moved@example.test') => parseSeedConfig({
+    users: [
+      { email: 'ops@example.test', password: 'ops-password-123' },
+      { id, email, password: 'moved-password-123' }
+    ]
+  }, {});
+
+  it('is created under the declared id, and a re-run with the same id changes nothing', async () => {
+    const { store } = t;
+    await runSeed({ config: moved('subject-from-the-old-realm'), store, operatorEmail: 'ops@example.test', record });
+    expect((await store.users.getByEmail('moved@example.test'))!._id).toBe('subject-from-the-old-realm');
+
+    const again = await runSeed({ config: moved('subject-from-the-old-realm'), store, operatorEmail: 'ops@example.test', record });
+    expect(again).toMatchObject({ usersCreated: 0, usersSkipped: 2 });
+  });
+
+  it('refuses a different id for someone who already exists, and writes nothing', async () => {
+    const { store } = t;
+    const before = (await store.outbox.list()).length;
+    await expect(runSeed({ config: moved('some-other-subject'), store, operatorEmail: 'ops@example.test', record }))
+      .rejects.toThrow(/already exists as subject-from-the-old-realm, not some-other-subject/);
+    expect(await store.outbox.list()).toHaveLength(before);
+  });
+
+  it("refuses an id that is already someone else's", async () => {
+    const { store } = t;
+    await expect(runSeed({ config: moved('subject-from-the-old-realm', 'someone-else@example.test'), store, operatorEmail: 'ops@example.test', record }))
+      .rejects.toThrow(/already held by moved@example.test/);
+    expect(await store.users.getByEmail('someone-else@example.test')).toBeNull();
+  });
+});
