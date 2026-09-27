@@ -72,15 +72,13 @@ web_modules/
 .env
 .env.*
 !.env.example
-# Host-only secret for the MCP admin launcher (docker/mcp-admin.sh) — never commit
-.mcp-admin.env
 
 # maestro's record on a laptop (ADR-0022): the local sink's filesystem archive (RECORD_ARCHIVE_DIR).
 archive/
 
-# Seed config (ADR-0006 / RQ-0006): config/seed.yaml is COMMITTED — it holds only ${ENV} secret
-# references (no plaintext), so it is the durable, recoverable identity definition. Ad-hoc local
-# overrides stay ignored.
+# Seed config: a realm's seed is the tenant's (maestro ADR-0017) and is never committed here — only
+# config/seed.example.yaml is. config/seed.yaml is the local copy the compose stack's seed run reads.
+config/seed.yaml
 config/*.local.yaml
 
 # SOPS secret backup: the *.sops.yaml ciphertext IS committed (the backup file). NEVER commit the age
