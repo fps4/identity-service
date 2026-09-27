@@ -17,7 +17,7 @@ related:
 
 Since [ADR-0018](../design/decisions/0018-collapse-tenant-into-deployment.md), **one deployment = one
 realm = one shared user pool**. There is no `Tenant` entity, no `tenantId`, and no `tenants` collection.
-A deployment (`ds1`, …) has its own DynamoDB table, active signing key, issuer origin, and Google app; **users
+A deployment (fps4's on AWS, …) has its own DynamoDB table, active signing key, issuer origin, and Google app; **users
 are deployment-scoped** (unique by `email`, shared across every application → instance-wide SSO). Since
 [ADR-0020](../design/decisions/0020-application-aggregate.md) the first-class per-consumer object is the
 **Application** (a product): it owns a `name`, a **default `audience`**, and a **role catalogue**, and it is

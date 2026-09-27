@@ -64,63 +64,27 @@ describe('seed credential upsert (ADR-0021)', () => {
   });
 });
 
-// The committed seed files themselves, not just the loader. A `secret: ${…}` reintroduced by a future PR
-// would compile, pass every other test, and quietly restore the coupling ADR-0021 removed: the value's
-// system of record back in this repo's CI, and a deploy that fails closed when it is unset.
+// A realm's seed is its tenant's (maestro ADR-0017): fps4's lives in maestro-fps4, and the ds1 realm's files
+// went with that realm. The only seed this repository commits is the template, so a realm's seed — with the
+// credentials and people it names — cannot creep back in here unnoticed.
 //
-// These read `config/`, which lives OUTSIDE `service/` — and the production image is built with
-// `service/` as its whole context while running `npm test` in the Dockerfile, so the seed files genuinely
-// do not exist there. Skipped in that environment and enforced where it counts: the DoD job, which runs
-// against a full repo checkout. Same seam, and same reasoning, as tests/deploy-env-passthrough.ts.
+// This reads `config/`, which lives OUTSIDE `service/` — and the production image is built with `service/` as
+// its whole context while running `npm test` in the Dockerfile, so the directory genuinely does not exist
+// there. Skipped in that environment and enforced where it counts: the DoD job, which runs against a full
+// repo checkout. Same seam, and same reasoning, as tests/deploy-env-passthrough.ts.
 const dir = fileURLToPath(new URL('../../config/', import.meta.url));
 const hasRepoTree = existsSync(dir);
 
-// Read the directory at module scope, NOT inside the describe: `describe.skipIf` still evaluates the
-// factory to register its tests, so a scandir in there throws during collection and fails the file
-// before the skip can apply.
-// seed.example.yaml is documentation of the schema, not a file the workflow ever applies.
-const files = hasRepoTree
-  ? readdirSync(dir).filter((f) => /^seed\..*\.yaml$|^seed\.yaml$/.test(f) && f !== 'seed.example.yaml')
-  : ['(skipped — no repo tree)'];
-
-describe.skipIf(!hasRepoTree)('committed seed files reference no product secrets (ADR-0021)', () => {
-  // Only the bootstrap pair may remain — minting a credential needs an admin credential to exist first,
-  // and the first operator needs a password before anyone can log in to create the rest.
-  const BOOTSTRAP = new Set(['IDENTITY_ADMIN_CLIENT_SECRET', 'SEED_CONSOLE_ADMIN_PASSWORD']);
-
-  it('finds the seed files it is meant to be checking', () => {
-    expect(files).toContain('seed.yaml');
-    expect(files).toContain('seed.skills-coach.yaml');
+describe.skipIf(!hasRepoTree)('the repository commits no realm\'s seed', () => {
+  it('holds only the template in config/', () => {
+    const seeds = readdirSync(dir).filter((f) => /^seed(\..*)?\.yaml$/.test(f));
+    // config/seed.yaml may exist in a working tree as the gitignored local copy; it is never committed.
+    expect(seeds.filter((f) => f !== 'seed.yaml')).toEqual(['seed.example.yaml']);
   });
 
-  it.each(files)('%s references only bootstrap secrets', (file) => {
-    // Comment lines are prose — several spell `${ENV_VAR}` while explaining the interpolation rule, and
-    // the loader never resolves those. Only what YAML actually parses counts.
-    const yamlOnly = readFileSync(dir + file, 'utf-8')
-      .split('\n')
-      .filter((l) => !l.trimStart().startsWith('#'))
-      .join('\n');
-    const referenced = [...yamlOnly.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map((m) => m[1]);
-    expect(referenced.filter((v) => !BOOTSTRAP.has(v))).toEqual([]);
-  });
-
-  // The loader validates every ${…} reference up front and aborts the whole run on the first unset one,
-  // so a file that fails to parse is only discovered mid-deploy. Parse them here instead.
-  it.each(files)('%s parses with only the bootstrap env set', (file) => {
-    const env = { IDENTITY_ADMIN_CLIENT_SECRET: 'x'.repeat(32), SEED_CONSOLE_ADMIN_PASSWORD: 'Str0ng!Passw0rd-x' };
-    const config = parseSeedConfig(parseYaml(readFileSync(dir + file, 'utf-8')), env);
-    const credentials = config.applications.flatMap((a) => a.credentials ?? []);
-    // Whatever resolved a secret must be a bootstrap credential — nothing else may carry one.
-    expect(credentials.filter((c) => c.secret).map((c) => c.id)).toEqual(
-      file === 'seed.yaml' ? ['identity-admin-mcp'] : []
-    );
-  });
-
-  it.each(files)('%s declares no credential secret at all', (file) => {
-    const withSecret = readFileSync(dir + file, 'utf-8')
-      .split('\n')
-      .filter((l) => /^\s*secret:/.test(l) && !l.trimStart().startsWith('#'));
-    // seed.yaml's one exemption is the admin credential that cannot bootstrap itself.
-    expect(withSecret.length).toBe(file === 'seed.yaml' ? 1 : 0);
+  it('keeps the template loadable with placeholder values', () => {
+    const env = new Proxy({}, { get: () => 'placeholder-Str0ng!-value' }) as Record<string, string>;
+    const config = parseSeedConfig(parseYaml(readFileSync(dir + 'seed.example.yaml', 'utf-8')), env);
+    expect(config.applications.length).toBeGreaterThan(0);
   });
 });
