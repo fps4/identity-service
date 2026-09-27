@@ -32,7 +32,7 @@ For a deployment registered as the client below, `POST /oauth2/token` with
 | `sub`   | client `subject` (← else client id) | `runtime@sovereign-llm-gateway.fps4.nl`  |
 | `role`  | client `claims.role`                | `product_runtime`                        |
 | `email` | client `claims.email`               | `runtime@sovereign-llm-gateway.fps4.nl`  |
-| `iss`   | service `AUTH_JWT_ISSUER`           | `https://auth.fps4.nl`                   |
+| `iss`   | service `AUTH_JWT_ISSUER`           | `https://<issuer>`                       |
 | `exp`   | `accessTokenTtlSec`                 | short-lived                              |
 | `prn`   | the credential's maestro principal id (ADR-0022) | `prn-w-7q3k9mwx2bcd` (a workload), `prn-a-…` (an agent) |
 | `principal_kind` | client `claims.principal_kind`, else `workload` | `agent`                        |
@@ -49,7 +49,7 @@ workload (`prn-w-…`).
 ## Registering a runtime client (self-registration — ADR-0017)
 
 > **Changed (ADR-0017 / RQ-0018).** A **managed product** no longer registers its runtime client in
-> identity-service's `config/seed.yaml`. Embedding each product's `secret: ${MAESTRO_*_DS1_SECRET}`
+> identity-service's seed. Embedding each product's `secret: ${MAESTRO_*_DS1_SECRET}`
 > there coupled identity-service's all-or-nothing bootstrap to other products' secrets and wedged the
 > ds1 seed (see [ds1 delivery-pipeline findings](../guides/ds1-delivery-pipeline-findings.md)). Instead
 > each product **self-registers** its runtime client through the management plane and receives the
@@ -75,32 +75,19 @@ against. See [ADR-0017](../design/decisions/0017-product-runtime-self-registrati
 [RQ-0018](../product/RQ-0018-product-runtime-self-registration.md) for the model, the shape-pinning
 rule, and atomic create-or-rotate redemption.
 
-### identity-service's own runtime client (still seeded)
+### identity-service's own runtime client (retired)
 
-identity-service's own telemetry runtime *is* still declared in `config/seed.yaml`, because its secret
-(`${MAESTRO_RUNTIME_CLIENT_SECRET}`) is identity-service-owned and is the same value the running service
-presents to self-mint — so seed and runtime cannot drift:
-
-```yaml
-      - id: identity-service-ds1-runtime
-        name: identity-service@ds1 runtime
-        grantTypes: [client_credentials]
-        isConfidential: true
-        secret: ${MAESTRO_RUNTIME_CLIENT_SECRET}   # identity-service-owned; the SAME value the runtime presents
-        audience: maestro-workspace                # must equal maestro's IDENTITY_SERVICE_AUDIENCE
-        subject: runtime@identity-service.fps4.nl
-        claims:
-          role: product_runtime
-          email: runtime@identity-service.fps4.nl
-```
+identity-service used to seed its own telemetry runtime, `identity-service-ds1-runtime`, in the ds1
+realm's `config/seed.yaml`. It stopped reporting to maestro (#84: an upstream service does not depend on a
+consumer), and the ds1 realm and its seed file are gone; no runtime client is seeded by this repository.
 
 ## Exchanging the credential
 
 ```bash
-curl -s -X POST https://auth.fps4.nl/oauth2/token \
+curl -s -X POST https://<issuer>/oauth2/token \
   -d grant_type=client_credentials \
-  -d client_id=sovereign-llm-gateway-ds1 \
-  -d client_secret="$GATEWAY_DS1_RUNTIME_SECRET"
+  -d client_id=<the product's runtime client> \
+  -d client_secret="$RUNTIME_CLIENT_SECRET"
 # → { "access_token": "<jwt>", "token_type": "Bearer", "expires_in": …, "scope": "" }
 ```
 
