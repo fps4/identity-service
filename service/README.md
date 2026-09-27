@@ -89,7 +89,8 @@ owner of a value that must be one of a kind (an email, a code digest, a login ha
 See `../docs/guides/tenant-config.md` for deployment configuration and registering applications & credentials.
 
 Register **applications** (with their role catalogues and credentials), users, and per-user **assignments**
-with the idempotent seed loader (`npm run seed`) from `config/seed.yaml` — a nested `applications:` (each with
+with the idempotent seed loader (`npm run seed`) from a seed file (default `config/seed.yaml`, a gitignored
+copy of `config/seed.example.yaml`; a deployed realm's seed is its tenant's) — a nested `applications:` (each with
 `credentials:`) / `users:` list, no tenant layer (ADR-0018/0020); roles are app-scoped via assignments, not a
 deployment-wide `user.roles` (ADR-0019). Realm-wide settings (`CORS_ORIGINS`, `AUTH_REGISTRATION_MODE`,
 `AUTH_LOCAL_IDP_ENABLED`) are deployment env, not DB rows. The seed is an operator's act on maestro's record

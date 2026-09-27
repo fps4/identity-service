@@ -63,8 +63,8 @@ services:
       OAUTH_TENANT_MAX_REFRESH_TOKENS: ${OAUTH_TENANT_MAX_REFRESH_TOKENS:-10000}
       OAUTH_KEY_PASSPHRASE: ${OAUTH_KEY_PASSPHRASE:-}
       OAUTH_KEY_ROTATION_HOURS: ${OAUTH_KEY_ROTATION_HOURS:-720}
-      # Management-plane admin client secret (ADR-0007). Present in the container so the in-container MCP
-      # launcher (docker/mcp-admin.sh) can mint an admin token; must equal the seeded client secret.
+      # Management-plane admin client secret (ADR-0007). Present in the container so a stdio MCP run
+      # inside it can mint an admin token; must equal the seeded client secret.
       IDENTITY_ADMIN_CLIENT_SECRET: ${IDENTITY_ADMIN_CLIENT_SECRET:-}
       # Operator-login (ADR-0010): user tokens whose `roles` include one of these are accepted by the
       # management plane as a per-actor operator principal. Matches the `operators` tenant in seed.yaml.
@@ -117,8 +117,8 @@ services:
 
   # Operator admin console (RQ-0007, ADR-0007/0010). A thin Next.js client over /admin/v1 — holds no
   # database access. Operators sign in with the `password` grant (browser → public issuer) and the console
-  # forwards their token server-side. Published on :7306; the Cloudflare hostname ids.fps4.nl
-  # points at the docker host's :7306. On net-public so the tunnel can reach it.
+  # forwards their token server-side. Published on :7306. On a laptop the issuer it signs in against is
+  # this stack's service on :7305; set CONSOLE_IDENTITY_BASE to point it at a deployed realm instead.
   console:
     container_name: identity-service-console
     build:
@@ -126,9 +126,9 @@ services:
       dockerfile: Dockerfile
       # NEXT_PUBLIC_* are baked into the CLIENT bundle at BUILD time — they must be build args, not runtime
       # env (the browser ignores container env). The browser runs the password grant against the PUBLIC
-      # issuer; the client id must match the `identity-console` client in seed.yaml.
+      # issuer; the client id must match the `identity-console` client in the realm's seed.
       args:
-        NEXT_PUBLIC_IDENTITY_SERVICE_BASE: ${CONSOLE_IDENTITY_BASE:-https://auth.fps4.nl}
+        NEXT_PUBLIC_IDENTITY_SERVICE_BASE: ${CONSOLE_IDENTITY_BASE:-http://localhost:7305}
         NEXT_PUBLIC_IDENTITY_SERVICE_CLIENT_ID: ${CONSOLE_CLIENT_ID:-identity-console}
     depends_on:
       - identity-service
