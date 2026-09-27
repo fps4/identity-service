@@ -158,6 +158,26 @@ describe('parseSeedConfig (RQ-0004)', () => {
     expect(withResources([{ url: 'https://coach-mcp.fps4.nl/mcp' }])).toThrowError(SeedConfigError);
   });
 
+  it("keeps a user's declared id, and leaves it off when none is declared", () => {
+    const cfg = parseSeedConfig({ users: [
+      { id: '3f1c9a52-moved', email: 'moved@x.test', password: 'correct-horse-battery' },
+      { email: 'new@x.test', password: 'correct-horse-battery' }
+    ] }, {});
+    expect(cfg.users[0].id).toBe('3f1c9a52-moved');
+    expect(cfg.users[1]).not.toHaveProperty('id');
+  });
+
+  it('rejects an id that is not a plain string, and two users claiming the same one', () => {
+    expect(() => parseSeedConfig({ users: [{ id: 'has space', email: 'a@x.test', password: 'correct-horse-battery' }] }, {}))
+      .toThrowError(/id must be a non-empty string/);
+    expect(() => parseSeedConfig({ users: [{ id: 42, email: 'a@x.test', password: 'correct-horse-battery' }] }, {}))
+      .toThrowError(/id must be a non-empty string/);
+    expect(() => parseSeedConfig({ users: [
+      { id: 'same', email: 'a@x.test', password: 'correct-horse-battery' },
+      { id: 'same', email: 'b@x.test', password: 'correct-horse-battery' }
+    ] }, {})).toThrowError(/a@x.test and b@x.test both claim id same/);
+  });
+
   it('accepts an empty config with no applications or users', () => {
     const cfg = parseSeedConfig({});
     expect(cfg.applications).toEqual([]);
