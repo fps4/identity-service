@@ -5,13 +5,13 @@
  *
  * DynamoDB has no date type. A `Date` is written as its ISO string and revived on read by its name —
  * the camel-case `…At` fields and `lockedUntil` — except inside the opaque subtrees a caller owns
- * (`meta`, `context`, `claims`, `body`), whose strings are theirs. The spine envelope's `occurred_at` /
+ * (`meta`, `context`, `claims`, `body`, `preferences`), whose strings are theirs. The spine envelope's `occurred_at` /
  * `recorded_at` / `delivered_at` are snake-case and stay strings, as the spine wants them.
  */
 export const ITEM_ATTRIBUTES = ['pk', 'sk', 'kind', 'gsi1pk', 'gsi1sk', 'gsi2pk', 'gsi2sk', 'pending_pk', 'pending_sk', 'expires_at'] as const;
 
 const DATE_FIELD = /At$|^lockedUntil$/;
-const OPAQUE = new Set(['meta', 'context', 'claims', 'body']);
+const OPAQUE = new Set(['meta', 'context', 'claims', 'body', 'preferences']);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
 type Plain = Record<string, unknown>;

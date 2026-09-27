@@ -15,3 +15,4 @@ export type { AuditLogDocument } from './audit-log.js';
 export type { PrincipalDocument, PrincipalKind, PrincipalStatus } from './principal.js';
 export type { OutboxDocument } from './outbox.js';
 export type { CounterDocument } from './counter.js';
+export type { PreferencesDocument } from './preferences.js';
