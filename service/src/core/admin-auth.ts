@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
-import { jwtVerify, createLocalJWKSet, type JWTVerifyGetKey } from 'jose';
 import { CONFIG } from '../config.js';
-import { listPublicKeys } from '../utils/key-store.js';
+import { bearerToken as ownBearer, verifyOwnToken } from './own-token.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -36,24 +35,8 @@ declare global {
   }
 }
 
-// Cache the local JWKS; refresh on a kid-miss so a key rotation is picked up without a restart.
-let cachedJwks: JWTVerifyGetKey | null = null;
-let cachedAt = 0;
-const JWKS_TTL_MS = 60_000;
-
-async function getJwks(forceRefresh = false): Promise<JWTVerifyGetKey> {
-  const fresh = Date.now() - cachedAt < JWKS_TTL_MS;
-  if (cachedJwks && fresh && !forceRefresh) return cachedJwks;
-  const keys = await listPublicKeys();
-  cachedJwks = createLocalJWKSet({ keys: keys as unknown as Parameters<typeof createLocalJWKSet>[0]['keys'] });
-  cachedAt = Date.now();
-  return cachedJwks;
-}
-
 function bearerToken(req: Request): string | null {
-  const header = req.headers.authorization;
-  if (header && header.startsWith('Bearer ')) return header.slice(7).trim();
-  return null;
+  return ownBearer(req.headers.authorization);
 }
 
 function parseScopes(claim: unknown): string[] {
@@ -88,15 +71,10 @@ export class AdminTokenError extends Error {
 export async function verifyAdminToken(token: string): Promise<AdminPrincipal> {
   let payload;
   try {
-    ({ payload } = await jwtVerify(token, await getJwks(), { issuer: CONFIG.auth.jwtIssuer }));
-  } catch {
-    // A key may have rotated since we cached the JWKS — refresh once and retry.
-    try {
-      ({ payload } = await jwtVerify(token, await getJwks(true), { issuer: CONFIG.auth.jwtIssuer }));
-    } catch (err) {
-      logger.warn({ err }, 'admin token verification failed');
-      throw new AdminTokenError('Invalid or expired admin token', 'unauthorized');
-    }
+    payload = await verifyOwnToken(token);
+  } catch (err) {
+    logger.warn({ err }, 'admin token verification failed');
+    throw new AdminTokenError('Invalid or expired admin token', 'unauthorized');
   }
   const cid = typeof payload.cid === 'string' ? payload.cid : undefined;
   const subject = typeof payload.sub === 'string' ? payload.sub : undefined;

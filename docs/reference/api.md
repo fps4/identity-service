@@ -356,6 +356,38 @@ Update an existing session with additional identifiers or cookie data.
 
 ---
 
+## `GET` / `PUT /v1/me/preferences/{application}`
+
+A person's preferences for one application ([ADR-0024](../design/decisions/0024-preferences-on-the-persons-profile.md)):
+what the application wants to show them first, stored on their profile and read back on any device.
+
+- **Authentication**: `Authorization: Bearer <access token>`. Any user token this service issued, for
+  any audience; the person is the token's `sub` (a local login's user id, or a federated login's subject
+  resolved through the linked identity). A machine (`client_credentials`) token is refused.
+- **`{application}`**: an application id of this realm.
+
+`GET` returns the stored JSON object, or `{}` when nothing is stored. `PUT` takes a JSON object
+(`Content-Type: application/json`, at most 8 KB) and replaces the stored one; it returns what it stored.
+Both answer `Cache-Control: no-store`.
+
+```http
+PUT /v1/me/preferences/maestro
+Authorization: Bearer eyJ…
+Content-Type: application/json
+
+{ "console": { "owed": { "who": "mine" } } }
+```
+
+### Errors
+
+- `400` – the body is not a JSON object.
+- `401` – no bearer token, or one this service cannot verify.
+- `403` – a machine token, or a token naming no active user of this realm.
+- `404` – no such application in this realm.
+- `413` – the document is larger than 8 KB.
+
+---
+
 ## `GET /health`
 
 Simple status endpoint returning `{ "status": "ok" }`. Useful for orchestrators and monitoring.

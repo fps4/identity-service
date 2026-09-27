@@ -4,11 +4,13 @@ import { Server } from 'http';
 import { CONFIG } from './config.js';
 import { connectStore } from './db/index.js';
 import logger from './utils/logger.js';
-import { metricsRecorder, relay } from './container.js';
+import { metricsRecorder, relay, store } from './container.js';
 import { startRelayLoop } from './record/index.js';
 import sessionRoutes from './routes/session-routes.js';
 import oauthRoutes from './routes/oauth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
+import { createMeRouter } from './routes/me-routes.js';
+import { verifyOwnToken } from './core/own-token.js';
 import passwordRoutes from './routes/password-routes.js';
 import { buildCorsOptions, corsErrorHandler, selfOrigins, isBrowserSameOriginRequest } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
@@ -65,6 +67,9 @@ async function bootstrap() {
   });
 
   app.use('/oauth2', oauthRoutes);
+  // The person's own routes (maestro ADR-0029): their preferences, with their own token. Before the
+  // legacy `/v1` router, which owns nothing under `/v1/me`.
+  app.use('/v1/me', createMeRouter({ store, verifyToken: verifyOwnToken }));
   app.use('/v1', sessionRoutes);
   // The set-password page a link opens (services/password-links.ts): first-party, server-rendered.
   app.use(passwordRoutes);

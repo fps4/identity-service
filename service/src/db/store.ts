@@ -17,6 +17,7 @@ import { passwordLinks } from './password-links.js';
 import { commit, scanAll, type Db } from './ops.js';
 import { describeAndCheck } from './table.js';
 import { outbox } from './outbox.js';
+import { preferences } from './preferences.js';
 import { principals } from './principals.js';
 import { sessions } from './sessions.js';
 import { signingKeys } from './signing-keys.js';
@@ -44,6 +45,7 @@ export interface Store {
   readonly signingKeys: ReturnType<typeof signingKeys>;
   readonly sessions: ReturnType<typeof sessions>;
   readonly audit: ReturnType<typeof audit>;
+  readonly preferences: ReturnType<typeof preferences>;
   readonly principals: ReturnType<typeof principals>;
   readonly outbox: ReturnType<typeof outbox>;
   readonly counters: ReturnType<typeof counters>;
@@ -77,6 +79,7 @@ export function createStore(config: StoreConfig, clients_?: { client: DynamoDBCl
     signingKeys: signingKeys(db),
     sessions: sessions(db),
     audit: audit(db),
+    preferences: preferences(db),
     principals: principals(db),
     outbox: outbox(db),
     counters: counters(db),
