@@ -15,6 +15,7 @@ import passwordRoutes from './routes/password-routes.js';
 import { buildCorsOptions, corsErrorHandler, selfOrigins, isBrowserSameOriginRequest } from './utils/cors.js';
 import { listPublicKeys, ensureActiveSigningKey } from './utils/key-store.js';
 import { createMcpRouter, protectedResourceMetadata, authorizationServerMetadata } from './mcp/http-transport.js';
+import { openIdConfiguration } from './oauth/discovery.js';
 
 async function bootstrap() {
   const app = express();
@@ -64,6 +65,11 @@ async function bootstrap() {
     await ensureActiveSigningKey();
     const keys = await listPublicKeys();
     res.json({ keys });
+  });
+
+  // OIDC discovery for relying parties that verify tokens generically (oauth/discovery.ts).
+  app.get('/.well-known/openid-configuration', (_req, res) => {
+    res.json(openIdConfiguration());
   });
 
   app.use('/oauth2', oauthRoutes);
