@@ -67,6 +67,7 @@ The service listens on `PORT` (default `7305`). Health check at `GET /health`.
 
 - `POST /oauth2/token` – client credentials grant issuing RS256 access tokens.
 - `GET /.well-known/jwks.json` – JWKS for verifying issued tokens.
+- `GET /.well-known/openid-configuration` – OIDC discovery: the issuer, endpoints and JWKS URI, for verifiers that find keys through discovery (AWS API Gateway's JWT authorizer).
 - `POST /v1/sessions` – persist session, issue legacy session JWT (in migration).
 - `PATCH /v1/sessions/:sessionId` – attach contact identifiers or cookie context.
 - `/admin/v1/*` – the authenticated **management plane** (ADR-0007): **applications** (their role catalogues, members, and credentials — ADR-0020), **credentials** (OAuth clients under an application), users, **assignments** (user↔app entitlements — ADR-0019), invites, signing keys, stats, and audit. Network-restricted, scoped per actor, append-only audited. The same operations are exposed to agents over an **MCP server** (`npm run mcp`).
