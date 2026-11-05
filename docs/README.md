@@ -55,6 +55,7 @@ work warrants it.
 | maestro M1 — the principal registry: maestro principal ids in every token (`prn`) and lifecycle events to the spine | [ADR-0022](./design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md) |
 | maestro M1 — the store is one DynamoDB table per deployment, made by the module, reached by a role (maestro ADR-0018) | [ADR-0023](./design/decisions/0023-the-store-is-dynamodb.md) |
 | maestro — a person's preferences on their profile, per application (maestro ADR-0029) | [ADR-0024](./design/decisions/0024-preferences-on-the-persons-profile.md) |
+| identity-service — Google federates one client at a time, so one application can move without moving the realm | [ADR-0025](./design/decisions/0025-google-can-federate-one-client-at-a-time.md) |
 
 The **management plane** (HTTP `/admin/v1` + MCP + admin console) and the repositioning as a standalone
 identity service are decided in [ADR-0007](./design/decisions/0007-management-api-mcp-and-standalone-identity-service.md),

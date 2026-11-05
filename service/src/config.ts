@@ -137,6 +137,9 @@ export const CONFIG = {
     authorizationEndpoint: process.env.GOOGLE_AUTHORIZATION_ENDPOINT ?? 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenEndpoint: process.env.GOOGLE_TOKEN_ENDPOINT ?? 'https://oauth2.googleapis.com/token',
     jwksUri: process.env.GOOGLE_JWKS_URI ?? 'https://www.googleapis.com/oauth2/v3/certs',
+    // Which clients' browser login goes to Google. Empty means every client's, as before. Set, the others
+    // keep the local form, so one application can move without moving the realm (ADR-0025).
+    federatedClients: parseOrigins(process.env.GOOGLE_FEDERATED_CLIENTS),
     // Where Google redirects back to this service; must be a registered redirect URI on the Google app.
     redirectUri: process.env.GOOGLE_REDIRECT_URI ?? ''
   },

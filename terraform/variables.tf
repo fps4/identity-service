@@ -45,7 +45,7 @@ variable "environment" {
     Every non-secret environment variable the service reads (service/.env.example lists them all;
     docs/guides/deployment.md says which a deployment must set). Typically:
     AUTH_JWT_AUDIENCE, CORS_ORIGINS, AUTH_REGISTRATION_MODE, AUTH_LOCAL_IDP_ENABLED,
-    ADMIN_OPERATOR_ROLES, GOOGLE_CLIENT_ID, LOG_LEVEL and the OAUTH_* limits — and the record's
+    ADMIN_OPERATOR_ROLES, GOOGLE_CLIENT_ID, GOOGLE_FEDERATED_CLIENTS, LOG_LEVEL and the OAUTH_* limits — and the record's
     (ADR-0022): MAESTRO_WORKSPACE_ID (this deployment's workspace on maestro's record, `ws-<realm
     slug>`; the service defaults to ws-identity-dev, which no tenant should keep), MAESTRO_ACCOUNTABLE
     (the `prn-h-…` of the human answerable for machine actors' acts; without it an agent or a pipeline

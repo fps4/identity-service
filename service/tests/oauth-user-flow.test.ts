@@ -168,6 +168,28 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
     expect(await store.tokens.countActiveRefresh()).toBe(1);
   });
 
+  it('sends only the named clients to Google, and leaves the others on the local form (ADR-0025)', async () => {
+    const saved = CONFIG.google.federatedClients;
+    const start = () =>
+      server.startAuthorization({
+        clientId: 'client-maestro',
+        redirectUri: 'https://maestro.test/callback',
+        codeChallenge: pkceChallenge(verifier),
+        state: 'consumer-state-xyz',
+      });
+    try {
+      (CONFIG.google as { federatedClients: string[] }).federatedClients = [];
+      expect((await start()).mode).toBe('redirect');
+      (CONFIG.google as { federatedClients: string[] }).federatedClients = ['client-maestro'];
+      expect((await start()).mode).toBe('redirect');
+      (CONFIG.google as { federatedClients: string[] }).federatedClients = ['some-other-client'];
+      const local = await start();
+      expect(local.mode).not.toBe('redirect');
+    } finally {
+      (CONFIG.google as { federatedClients: string[] }).federatedClients = saved;
+    }
+  });
+
   it('rejects an unregistered redirect_uri at authorize time', async () => {
     await expect(server.startAuthorization({
       clientId: 'client-maestro',
