@@ -78,6 +78,9 @@ whoever holds a role that may write it (below).
   this service's own local-credential IdP (RQ-0002) instead of redirecting to Google; setting these
   switches the same endpoint over to federation. A deployment needs one or the other — no Google app
   *and* `AUTH_LOCAL_IDP_ENABLED=false` means no interactive login at all, and `/oauth2/authorize` says so.
+- `GOOGLE_FEDERATED_CLIENTS` — **optional**, comma-separated client ids whose browser login goes to Google;
+  the others keep the local form ([ADR-0025](../design/decisions/0025-google-can-federate-one-client-at-a-time.md)).
+  Empty means every client's, as before. The password grant is unaffected either way.
 - `OAUTH_KEY_PASSPHRASE` — encrypts the signing keys at rest (AES-256-GCM). Required in a deployment.
 - `AUTH_JWT_SECRET`, `IDENTITY_ADMIN_CLIENT_SECRET` (below), and the rest of the knobs documented in
   `service/.env.example`.

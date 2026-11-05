@@ -256,16 +256,18 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       throw new InvalidRequestError('redirect_uri is required');
     }
 
-    // Which provider authenticates this person. Google when the deployment configures it, otherwise
-    // this service's own local-credential IdP (RQ-0002) — so an install with no external IdP is still
-    // able to log a human in, rather than failing the browser leg outright. A deployment with neither
-    // genuinely cannot serve an interactive login, and says so.
-    const idpKind: 'google' | 'local' = isGoogleConfigured() ? 'google' : 'local';
+    const { client } = await loadFlowClient(input.clientId, GRANT_AUTHORIZATION_CODE);
+
+    // Which provider authenticates this person. Google when the deployment configures it, for every
+    // client or for those it names (ADR-0025), otherwise this service's own local-credential IdP
+    // (RQ-0002) — so an install with no external IdP is still able to log a human in, rather than
+    // failing the browser leg outright. A client with neither genuinely cannot serve an interactive
+    // login, and says so.
+    const federated = isGoogleConfigured() && (CONFIG.google.federatedClients.length === 0 || CONFIG.google.federatedClients.includes(client._id));
+    const idpKind: 'google' | 'local' = federated ? 'google' : 'local';
     if (idpKind === 'local' && !CONFIG.auth.localIdpEnabled) {
       throw new InvalidRequestError('No interactive login is configured on this service');
     }
-
-    const { client } = await loadFlowClient(input.clientId, GRANT_AUTHORIZATION_CODE);
 
     // The redirect_uri MUST be pre-registered on the client (open-redirect / token-theft guard).
     if (!client.redirectUris?.includes(input.redirectUri)) {
