@@ -18,14 +18,12 @@ import type { JWTPayload } from 'jose';
 import type { Store } from '../db/index.js';
 import type { UserDocument } from '../models/index.js';
 import { bearerToken } from '../core/own-token.js';
-import { createRecorder, ensureUserPrincipal, selfContext, withRecordTransaction, type RecordConfig } from '../record/index.js';
+import { ActRefused, ensureUserPrincipal, selfContext, type RecordConfig } from '../record/index.js';
+import { createUserService, UserServiceError, type UserService } from '../services/users.js';
 import logger from '../utils/logger.js';
 
 /** A preferences document is small by design: filters and pins, never data (ADR-0029). */
 export const PREFERENCES_MAX_BYTES = 8 * 1024;
-
-/** A name is short and human: 1 to 80 characters once trimmed, with at least one letter in it. */
-export const NAME_MAX_LENGTH = 80;
 
 const APPLICATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -35,6 +33,8 @@ export interface MeRouterDependencies {
   now?: () => Date;
   /** maestro's record (ADR-0022). The container wires it; without it a name change is stored, not recorded. */
   record?: RecordConfig;
+  /** The user service the name is set through (ADR-0022: an act on a user goes through the service layer). Built from `store` and `record` when absent. */
+  users?: Pick<UserService, 'setName'>;
 }
 
 type Refusal = { refused: true; status: number; error: string; description: string };
@@ -44,6 +44,7 @@ const refuse = (res: Response, r: Refusal) => res.status(r.status).json({ error:
 export function createMeRouter(deps: MeRouterDependencies) {
   const router = express.Router();
   const now = deps.now ?? (() => new Date());
+  const users = deps.users ?? createUserService({ store: deps.store, now: deps.now, logger, record: deps.record });
 
   /**
    * The person the token names. A local login's `sub` is the user's id; a federated login's is the
@@ -60,7 +61,7 @@ export function createMeRouter(deps: MeRouterDependencies) {
       return { refused: true, status: 401, error: 'unauthorized', description: 'Invalid or expired token' };
     }
     if (typeof claims.cid === 'string' || typeof claims.sub !== 'string') {
-      return { refused: true, status: 403, error: 'forbidden', description: 'A machine token names no person; preferences are a person\'s' };
+      return { refused: true, status: 403, error: 'forbidden', description: 'A machine token names no person; this route is a person\'s own' };
     }
     const user = (await deps.store.users.get(claims.sub)) ?? (await deps.store.users.getByIdentity('google', claims.sub));
     if (!user || user.status === 'disabled') {
@@ -83,30 +84,19 @@ export function createMeRouter(deps: MeRouterDependencies) {
     if (!req.is('application/json') || typeof body !== 'object' || body === null || Array.isArray(body)) {
       return refuse(res, { refused: true, status: 400, error: 'invalid_request', description: 'The body is a JSON object' });
     }
-    const raw = (body as { name?: unknown }).name;
-    const name = typeof raw === 'string' ? raw.trim() : '';
-    if (typeof raw !== 'string' || name.length === 0 || name.length > NAME_MAX_LENGTH || !/\p{L}/u.test(name)) {
-      return refuse(res, {
-        refused: true,
-        status: 400,
-        error: 'invalid_request',
-        description: `name is 1 to ${NAME_MAX_LENGTH} characters with at least one letter`
-      });
+    try {
+      // The act is the person's own, in the `self` seat; the service validates, writes and records it.
+      const ctx = deps.record ? selfContext(await ensureUserPrincipal(deps.store, who)) : undefined;
+      const name = await users.setName(ctx, who._id, (body as { name?: unknown }).name);
+      res.set('Cache-Control', 'no-store');
+      return res.json({ email: who.email, name });
+    } catch (err) {
+      if (err instanceof UserServiceError) return res.status(err.status).json({ error: err.status === 400 ? 'invalid_request' : err.code, error_description: err.message });
+      // An act maestro's record would refuse is not performed (ADR-0022); the reason goes to the caller.
+      if (err instanceof ActRefused) return res.status(err.status).json({ error: err.code, error_description: err.message });
+      logger.error({ err }, 'me: setting the name failed');
+      return res.status(500).json({ error: 'server_error', error_description: 'Internal Server Error' });
     }
-    if (name !== who.name) {
-      const at = now();
-      const record = deps.record;
-      const principal = record ? await ensureUserPrincipal(deps.store, who) : null;
-      await withRecordTransaction(deps.store, async (tx) => {
-        deps.store.users.updateIn(tx, who._id, { name, updatedAt: at });
-        if (record && principal) {
-          const recorder = createRecorder({ store: deps.store, config: record, ...selfContext(principal), now: () => at.toISOString(), logger });
-          await recorder.emit(tx, [{ type: 'PrincipalProfileChanged', subject: principal.id, body: { field: 'name' } }]);
-        }
-      }, logger);
-    }
-    res.set('Cache-Control', 'no-store');
-    return res.json({ email: who.email, name });
   });
 
   /** The application must be one this realm knows: a preference for nothing is refused, not stored. */

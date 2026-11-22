@@ -368,7 +368,7 @@ of an email.
 
 `GET` answers `{ "email": …, "name": … }`, `name` being `null` when none is set. `PUT` takes
 `{ "name": … }` (`Content-Type: application/json`) and answers the same shape with the name as kept. A name is
-trimmed, 1 to 80 characters, with at least one letter in it. Both answer `Cache-Control: no-store`. A name
+trimmed, 1 to 80 characters, with at least one letter in it and no control or invisible character. Both answer `Cache-Control: no-store`. A name
 change is an act on a user: it is recorded as `PrincipalProfileChanged` (who and when, never the name) in the
 same transaction, and a `PUT` of the name already kept records nothing. The new name reaches the person's
 next token — on its next refresh.
@@ -383,7 +383,7 @@ Content-Type: application/json
 
 ### Errors
 
-- `400` – the body is not a JSON object, or `name` is not a string of 1 to 80 characters with a letter in it. Nothing changes.
+- `400` – the body is not a JSON object, or `name` is not a string of 1 to 80 characters (code points, once trimmed) with at least one letter and no control, format or invisible character (a newline, a NUL, a bidi override, a zero-width space). Nothing changes.
 - `401` – no bearer token, or one this service cannot verify.
 - `403` – a machine token, or a token naming no active user of this realm.
 

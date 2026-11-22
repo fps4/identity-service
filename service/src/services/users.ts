@@ -5,7 +5,7 @@ import { inviteCodeDigest } from './invites.js';
 import type { AssignmentDocument, InviteDocument, UserDocument } from '../models/index.js';
 import type { Logger } from '../utils/logger.js';
 import { ConditionFailed, type Store, type Transaction } from '../db/index.js';
-import { createRecorder, mintPrincipalId, principalRow, realmOf, selfContext, withRecordTransaction, type Act, type RecordConfig } from '../record/index.js';
+import { createRecorder, ensureUserPrincipal, mintPrincipalId, principalRow, realmOf, selfContext, withRecordTransaction, type Act, type ActContext, type RecordConfig } from '../record/index.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 
@@ -39,6 +39,25 @@ export interface RegisteredUser {
   principalId?: string;
 }
 
+/** A name is short and human: 1 to 80 characters once trimmed, with at least one letter in it. */
+export const NAME_MAX_LENGTH = 80;
+
+/**
+ * The name a person may keep (maestro ADR-0062 §2): trimmed, 1 to 80 characters (code points, not UTF-16
+ * units), at least one letter, and no control, format, private-use, unassigned or surrogate character —
+ * which is what a newline, a NUL, a bidi override or a zero-width space is. Throws `UserServiceError` (400).
+ */
+export function parseName(raw: unknown): string {
+  const invalid = () => new UserServiceError(
+    `name is 1 to ${NAME_MAX_LENGTH} characters with at least one letter, and no control or invisible character`, 400, 'invalid_name'
+  );
+  if (typeof raw !== 'string') throw invalid();
+  const name = raw.trim();
+  const length = [...name].length;
+  if (length === 0 || length > NAME_MAX_LENGTH || !/\p{L}/u.test(name) || /\p{C}/u.test(name)) throw invalid();
+  return name;
+}
+
 export const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /** Validate a password against the configured policy. Throws `UserServiceError` (400) on failure. */
@@ -58,6 +77,8 @@ export function assertLocalIdpEnabled(): void {
     throw new UserServiceError('Local password login is not enabled', 400, 'local_idp_disabled');
   }
 }
+
+export type UserService = ReturnType<typeof createUserService>;
 
 export function createUserService(deps: UserServiceDependencies) {
   const nowFn = deps.now ?? (() => new Date());
@@ -197,5 +218,29 @@ export function createUserService(deps: UserServiceDependencies) {
     return { id, email, ...(principalId ? { principalId } : {}) };
   }
 
-  return { registerUser };
+  /**
+   * Set the person's own name (maestro ADR-0062 §2): an act on a user, recorded as `PrincipalProfileChanged`
+   * (the field, never the value) in the same transaction, by the person in the `self` seat. A name already
+   * kept is not an act and records nothing. `ctx` is the person's own context; without the record wired
+   * it is not needed. Returns the name as kept.
+   */
+  async function setName(ctx: ActContext | undefined, userId: string, name: unknown): Promise<string> {
+    const kept = parseName(name);
+    const user = await store.users.get(userId);
+    if (!user) throw new UserServiceError('User not found', 404, 'user_not_found');
+    if (kept === user.name) return kept;
+    const at = nowFn();
+    const record = deps.record;
+    const principal = record ? await ensureUserPrincipal(store, user) : null;
+    await withRecordTransaction(store, async (tx: Transaction) => {
+      store.users.updateIn(tx, user._id, { name: kept, updatedAt: at });
+      if (record && principal) {
+        const recorder = createRecorder({ store, config: record, ...(ctx ?? selfContext(principal)), logger: deps.logger, now: () => at.toISOString() });
+        await recorder.emit(tx, [{ type: 'PrincipalProfileChanged', subject: principal.id, body: { field: 'name' } }]);
+      }
+    }, deps.logger);
+    return kept;
+  }
+
+  return { registerUser, setName };
 }

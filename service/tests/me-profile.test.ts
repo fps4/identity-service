@@ -19,8 +19,9 @@ vi.mock('../src/utils/key-store.js', () => ({
 
 import { CONFIG } from '../src/config.js';
 import { verifyOwnToken } from '../src/core/own-token.js';
-import { createMeRouter, NAME_MAX_LENGTH } from '../src/routes/me-routes.js';
-import type { RecordConfig } from '../src/record/index.js';
+import { createMeRouter } from '../src/routes/me-routes.js';
+import { NAME_MAX_LENGTH } from '../src/services/users.js';
+import { ActRefused, type RecordConfig } from '../src/record/index.js';
 import type { SpineEvent } from '@fps4/maestro-spine';
 import { fixtures } from './helpers/fixtures.js';
 import { testStore, type TestStore } from './helpers/store.js';
@@ -102,11 +103,30 @@ describe('/v1/me — the person\'s name', () => {
     // A name may be in any script, and as long as the limit.
     expect((await call('PUT', token, { name: 'Zoë 李' })).status).toBe(200);
     expect((await call('PUT', token, { name: 'x'.repeat(NAME_MAX_LENGTH) })).status).toBe(200);
+    // A trimmed newline is whitespace, not part of the name.
+    expect(await (await call('PUT', token, { name: '\nJan Dekker\n' })).json()).toEqual({ email: 'a@x.test', name: 'Jan Dekker' });
+  });
+
+  it('AC-2: the limit counts characters, not UTF-16 units — 80 astral characters are kept, 81 refused', async () => {
+    const token = await sign({ sub: 'user-local' });
+    const kept = '𝔍'.repeat(NAME_MAX_LENGTH);
+    expect(kept.length).toBe(NAME_MAX_LENGTH * 2);
+    expect(await (await call('PUT', token, { name: kept })).json()).toEqual({ email: 'a@x.test', name: kept });
+    expect((await call('PUT', token, { name: '𝔍'.repeat(NAME_MAX_LENGTH + 1) })).status).toBe(400);
+    expect((await db.store.users.get('user-local'))!.name).toBe(kept);
   });
 
   it('AC-2: a name with no letter, an empty or too long one, or not a string is refused (400) and nothing changes', async () => {
     const token = await sign({ sub: 'user-fed' });
-    for (const bad of ['', '   ', '1234', '-- ?!', 'x'.repeat(NAME_MAX_LENGTH + 1), `  ${'x'.repeat(NAME_MAX_LENGTH + 1)}  `, 42, null, ['Jan'], undefined]) {
+    const bads = [
+      '', '   ', '1234', '-- ?!', 'x'.repeat(NAME_MAX_LENGTH + 1), `  ${'x'.repeat(NAME_MAX_LENGTH + 1)}  `, 42, null, ['Jan'], undefined,
+      'Jan\nDekker', 'Jan\r\nDekker', 'Jan\tDekker', 'Jan\u0000Dekker', // control characters
+      'Jan\u202eDekker', 'Jan\u2066Dekker',                              // bidi override and isolate (format)
+      'Jan\u200bDekker', '\u200b', 'Jan\ufeffDekker', 'Jan\u00adDekker', // zero-width space, BOM, soft hyphen (format)
+      'Jan\ue000Dekker',                                                   // private use
+      'Jan\ud800Dekker'                                                    // a lone surrogate
+    ];
+    for (const bad of bads) {
       const res = await call('PUT', token, { name: bad });
       expect(res.status, JSON.stringify(bad)).toBe(400);
     }
@@ -186,5 +206,41 @@ describe('/v1/me — the person\'s name', () => {
     } finally {
       await new Promise<void>((resolve) => bare.close(() => resolve()));
     }
+  });
+
+  describe('when the act fails', () => {
+    const serve = async (users: { setName: (...args: any[]) => Promise<string> }) => {
+      const app = express();
+      app.use(express.json());
+      app.use('/v1/me', createMeRouter({ store: db.store, verifyToken: verifyOwnToken, record, users }));
+      const s = await new Promise<Server>((resolve) => {
+        const srv = app.listen(0, () => resolve(srv));
+      });
+      return { s, url: `http://127.0.0.1:${(s.address() as AddressInfo).port}/v1/me` };
+    };
+    const put = async (users: { setName: (...args: any[]) => Promise<string> }) => {
+      const { s, url } = await serve(users);
+      try {
+        return await fetch(url, {
+          method: 'PUT',
+          headers: { authorization: `Bearer ${await sign({ sub: 'user-local' })}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Jan' })
+        });
+      } finally {
+        await new Promise<void>((resolve) => s.close(() => resolve()));
+      }
+    };
+
+    it('answers 403 with the reason when the record refuses the act (ActRefused)', async () => {
+      const res = await put({ setName: async () => { throw new ActRefused('The record refuses this act.'); } });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'act_refused', error_description: 'The record refuses this act.' });
+    });
+
+    it('answers 500 for any other failure, and never leaves the request unanswered', async () => {
+      const res = await put({ setName: async () => { throw new Error('the table is gone'); } });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'server_error', error_description: 'Internal Server Error' });
+    });
   });
 });
