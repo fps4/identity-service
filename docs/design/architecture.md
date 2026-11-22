@@ -97,7 +97,7 @@ flowchart LR
   - `key_store` – RSA key material with status flags for rotation and JWKS publishing.
   - `audit_logs` – Append-only record of every management-plane mutation (who/what/when) — the per-actor accountability the admin plane provides (ADR-0007).
   - `principals` – maestro's **principal registry** (ADR-0022): one row per user (`human`) and per machine credential (`agent` / `workload`), keyed by the maestro principal id (`prn-h-…` / `prn-a-…` / `prn-w-…`) that every token carries as `prn`. Retired on deletion, never removed. `users.principalId` / `oauth_clients.principalId` bind to it.
-  - `outbox` + `counters` – the transactional **outbox** of maestro **spine** envelopes the registry emits (`PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`, `SeatOccupancyChanged`), written in the same transaction as the change, drained by the relay (`RECORD_SINK`) into maestro's archive; the counters allocate `seq` per workspace and `subject_seq` per principal (ADR-0022).
+  - `outbox` + `counters` – the transactional **outbox** of maestro **spine** envelopes the registry emits (`PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`, `PrincipalProfileChanged`, `SeatOccupancyChanged`), written in the same transaction as the change, drained by the relay (`RECORD_SINK`) into maestro's archive; the counters allocate `seq` per workspace and `subject_seq` per principal (ADR-0022).
 - **Rate Limiting** – Token throughput (`tokensPerMinute`) and refresh-token budgets are deployment-wide limits (`CONFIG.oauth.limits`, from `OAUTH_MAX_TOKENS_PER_MINUTE` / `OAUTH_MAX_REFRESH_TOKENS` / `OAUTH_MAX_CLIENTS`), applied on every token issuance.
 
 ## Management plane (ADR-0007)

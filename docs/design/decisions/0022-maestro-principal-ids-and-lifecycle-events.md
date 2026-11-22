@@ -73,13 +73,14 @@ token the credential's own declaration passes through, and a machine credential 
 `workload`. `prn` is what a consumer's registry should key on from now; `principal_kind` is how a consumer
 that has not yet moved still tells an agent from a human. Nothing about oversight level is a claim.
 
-### 3. Four types, bodies of tokens only
+### 3. Five types, bodies of tokens only
 
 | Type | When | Body |
 |---|---|---|
 | `PrincipalRegistered@1` | a user is created (operator, self-service, first Google login, seed); a machine credential is created | `{ kind: human\|agent\|workload, source: local\|google\|client_credentials\|seed, realm }` |
 | `PrincipalSuspended@1` | a user is disabled; a user or a credential is deleted | `{ reason: disabled\|locked\|deleted }` |
 | `PrincipalReinstated@1` | a disabled or locked user is re-enabled or unlocked | `{ reason: enabled\|unlocked }` |
+| `PrincipalProfileChanged@1` | a person changes their own name on `PUT /v1/me` (added with the person's name, maestro ADR-0062 §2) | `{ field: name }` — which part changed, never its value |
 | `SeatOccupancyChanged@1` | a role is granted to or revoked from a principal on an application | `{ seat, application, change: granted\|revoked, oversight_level }` |
 
 `PrincipalReinstated` is this service's addition to maestro's three: the model has reactivation, and an

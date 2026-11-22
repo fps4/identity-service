@@ -126,6 +126,17 @@ describe('Local password IdP — login (RQ-0002)', () => {
     expect(token.refreshToken).toBeTruthy();
   });
 
+  it('carries the person\'s name as the name claim, and no claim for a person with none', async () => {
+    const publicKey = await importSPKI(signingPublicPem, 'RS256');
+    const claims = async () => {
+      const token = await server.issuePasswordToken({ username: 'reviewer@fps4.test', password, clientId: 'client-local' });
+      return (await jwtVerify(token.accessToken, publicKey, { issuer: CONFIG.auth.jwtIssuer, audience: 'maestro-workspace', currentDate: fixedNow })).payload;
+    };
+    expect(await claims()).not.toHaveProperty('name');
+    await store.users.update('user-sub-1', { name: 'Jan Dekker' });
+    expect((await claims()).name).toBe('Jan Dekker');
+  });
+
   it('omits the roles claim when the assignment grants no roles', async () => {
     await fixtures.assignment(store, { userId: 'user-sub-1', applicationId: 'app-local', roles: [], status: 'active' });
     const token = await server.issuePasswordToken({ username: 'reviewer@fps4.test', password, clientId: 'client-local' });

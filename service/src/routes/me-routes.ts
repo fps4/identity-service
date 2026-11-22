@@ -1,22 +1,31 @@
 /**
- * The person's own routes (maestro ADR-0029): `/v1/me/preferences/:application` — what an application
- * wants to show them first. Called with the person's own access token, for that person only: the token
+ * The person's own routes (maestro ADR-0029): `/v1/me` — who they are here (their email and the name
+ * they set, maestro ADR-0062 §2) — and `/v1/me/preferences/:application` — what an application wants to
+ * show them first. Called with the person's own access token, for that person only: the token
  * is verified against this service's own keys, and a machine token (`cid`) is refused, since it names no
  * person. Any application's user token will do — the document is the person's, namespaced by application.
  *
  * Not the registry: a preference authorises nothing and is not recorded on maestro's spine (ADR-0022
  * records acts on users, credentials and assignments). Not in the admin plane either — it is not an
  * operator's to see.
+ *
+ * A name is different: it is an act on a user, so with the record wired a change is recorded as
+ * `PrincipalProfileChanged` in the same transaction, by the person in the `self` seat — who changed it
+ * and when is kept, the name itself is not (ADR-0022: no free text in an event body).
  */
 import express, { type Request, type Response } from 'express';
 import type { JWTPayload } from 'jose';
 import type { Store } from '../db/index.js';
 import type { UserDocument } from '../models/index.js';
 import { bearerToken } from '../core/own-token.js';
+import { createRecorder, ensureUserPrincipal, selfContext, withRecordTransaction, type RecordConfig } from '../record/index.js';
 import logger from '../utils/logger.js';
 
 /** A preferences document is small by design: filters and pins, never data (ADR-0029). */
 export const PREFERENCES_MAX_BYTES = 8 * 1024;
+
+/** A name is short and human: 1 to 80 characters once trimmed, with at least one letter in it. */
+export const NAME_MAX_LENGTH = 80;
 
 const APPLICATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -24,6 +33,8 @@ export interface MeRouterDependencies {
   store: Store;
   verifyToken: (token: string) => Promise<JWTPayload>;
   now?: () => Date;
+  /** maestro's record (ADR-0022). The container wires it; without it a name change is stored, not recorded. */
+  record?: RecordConfig;
 }
 
 type Refusal = { refused: true; status: number; error: string; description: string };
@@ -57,6 +68,46 @@ export function createMeRouter(deps: MeRouterDependencies) {
     }
     return user;
   }
+
+  router.get('/', async (req: Request, res: Response) => {
+    const who = await person(req);
+    if ('refused' in who) return refuse(res, who);
+    res.set('Cache-Control', 'no-store');
+    return res.json({ email: who.email, name: who.name ?? null });
+  });
+
+  router.put('/', async (req: Request, res: Response) => {
+    const who = await person(req);
+    if ('refused' in who) return refuse(res, who);
+    const body: unknown = req.body;
+    if (!req.is('application/json') || typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return refuse(res, { refused: true, status: 400, error: 'invalid_request', description: 'The body is a JSON object' });
+    }
+    const raw = (body as { name?: unknown }).name;
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (typeof raw !== 'string' || name.length === 0 || name.length > NAME_MAX_LENGTH || !/\p{L}/u.test(name)) {
+      return refuse(res, {
+        refused: true,
+        status: 400,
+        error: 'invalid_request',
+        description: `name is 1 to ${NAME_MAX_LENGTH} characters with at least one letter`
+      });
+    }
+    if (name !== who.name) {
+      const at = now();
+      const record = deps.record;
+      const principal = record ? await ensureUserPrincipal(deps.store, who) : null;
+      await withRecordTransaction(deps.store, async (tx) => {
+        deps.store.users.updateIn(tx, who._id, { name, updatedAt: at });
+        if (record && principal) {
+          const recorder = createRecorder({ store: deps.store, config: record, ...selfContext(principal), now: () => at.toISOString(), logger });
+          await recorder.emit(tx, [{ type: 'PrincipalProfileChanged', subject: principal.id, body: { field: 'name' } }]);
+        }
+      }, logger);
+    }
+    res.set('Cache-Control', 'no-store');
+    return res.json({ email: who.email, name });
+  });
 
   /** The application must be one this realm knows: a preference for nothing is refused, not stored. */
   async function application(req: Request): Promise<string | Refusal> {
