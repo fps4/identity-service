@@ -28,6 +28,13 @@ export interface FederatedIdentity {
 export interface UserDocument {
   _id: string;              // stable subject id (the token `sub` for local logins)
   email: string;            // unique within the deployment (stored lowercased)
+  /**
+   * What the person is called — theirs to set, on `/v1/me` with their own token (maestro ADR-0062 §2).
+   * 1 to 80 characters, trimmed, at least one letter. Optional: a person with none has a token with no
+   * `name` claim, and a reader falls back to the email. Never a login key and never on the record's
+   * event bodies (ADR-0022).
+   */
+  name?: string;
   passwordHash?: string;    // optional — absent for federated-only users
   identities: FederatedIdentity[]; // linked upstream IdP identities (RQ-0011)
   emailVerified: boolean;   // whether the email is vouched (by a provider or, later, a verify channel)

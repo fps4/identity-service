@@ -495,6 +495,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email: record.email,
       sub: record.sub,
       prn: await principalClaimFor(user),
+      name: user.name,
       scope: record.scope ?? [],
       roles: assignment.roles ?? [],
       resource: record.resource
@@ -585,6 +586,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email: user.email,
       sub: user._id, // the stable subject id
       prn: await principalClaimFor(user),
+      name: user.name,
       scope: [],
       roles: assignment.roles ?? []
     });
@@ -650,6 +652,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email,
       sub,
       prn: await principalClaimFor(user),
+      name: user.name,
       scope: tokenDoc.scope ?? [],
       roles: assignment.roles ?? [],
       session,
@@ -791,6 +794,8 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       sub: string;
       /** The person's maestro principal id — the `prn` claim (ADR-0022). */
       prn?: string;
+      /** What the person is called — the `name` claim, when they have set one (maestro ADR-0062 §2). */
+      name?: string;
       scope: string[];
       roles?: string[];
       session?: { _id: string; expiresAt: Date };
@@ -832,6 +837,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
       email: args.email,
       sub: args.sub,
       prn: args.prn,
+      name: args.name,
       scope: args.scope,
       roles: args.roles,
       issuedAt,
@@ -883,13 +889,15 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
   /** Build the user identity JWT maestro verifies: RS256, `email` + `sub` + `iss` + `aud` + `exp`/`iat`,
    *  plus an optional coarse `roles` array (RQ-0005) — additive; consumers that don't read it ignore it —
-   *  and, with the record wired, `prn` + `principal_kind: human` (ADR-0022), additive likewise. */
+   *  and, with the record wired, `prn` + `principal_kind: human` (ADR-0022), additive likewise. A person
+   *  who has set a name carries it as `name` (maestro ADR-0062 §2); one who has not carries no claim. */
   async function signUserAccessToken(args: {
     jti: string;
     audience: string;
     email?: string;
     sub: string;
     prn?: string;
+    name?: string;
     scope: string[];
     roles?: string[];
     issuedAt: Date;
@@ -900,6 +908,7 @@ export function createOAuthServer(deps: OAuthServerDependencies) {
 
     const payload: Record<string, unknown> = {};
     if (args.email) payload.email = args.email;
+    if (args.name) payload.name = args.name;
     if (args.scope.length) payload.scope = args.scope.join(' ');
     if (args.roles && args.roles.length) payload.roles = args.roles;
     if (args.prn) {

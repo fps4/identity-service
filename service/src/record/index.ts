@@ -1,7 +1,7 @@
 /**
  * maestro's record, from this service's side (ADR-0022): the principal registry mints maestro principal
  * ids and emits its lifecycle — `PrincipalRegistered`, `PrincipalSuspended`, `PrincipalReinstated`,
- * `SeatOccupancyChanged` — to the spine through a transactional outbox that a relay drains.
+ * `PrincipalProfileChanged`, `SeatOccupancyChanged` — to the spine through a transactional outbox that a relay drains.
  */
 export { mintPrincipalId, kindOfPrincipalId, realmOf } from './ids.js';
 export {
@@ -11,6 +11,7 @@ export {
   REGISTRATION_SOURCES,
   SUSPENSION_REASONS,
   REINSTATEMENT_REASONS,
+  PROFILE_FIELDS,
   SEAT_CHANGES,
   isBodyToken,
   type RecordType,

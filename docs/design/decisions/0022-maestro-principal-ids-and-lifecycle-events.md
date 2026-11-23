@@ -1,8 +1,8 @@
 ---
 title: "0022: identity-service mints maestro principal ids and emits its lifecycle to the spine"
-summary: "Every user and every machine credential gets a stable maestro principal id (prn-h-… / prn-a-… / prn-w-…) minted here and carried in every token as the `prn` claim. The registry emits PrincipalRegistered, PrincipalSuspended, PrincipalReinstated and SeatOccupancyChanged as maestro spine envelopes through a transactional outbox, attributed at the act — a human answers for their own act at O0; a machine answers to the deployment's configured accountable human — and a relay carries them into maestro's archive. An application's role is the seat; an assignment is its occupancy. Consumers may stop minting ids of their own."
+summary: "Every user and every machine credential gets a stable maestro principal id (prn-h-… / prn-a-… / prn-w-…) minted here and carried in every token as the `prn` claim. The registry emits PrincipalRegistered, PrincipalSuspended, PrincipalReinstated and SeatOccupancyChanged — and, since the person's name (2026-11-22), PrincipalProfileChanged — as maestro spine envelopes through a transactional outbox, attributed at the act — a human answers for their own act at O0; a machine answers to the deployment's configured accountable human — and a relay carries them into maestro's archive. An application's role is the seat; an assignment is its occupancy. Consumers may stop minting ids of their own."
 status: accepted
-last_updated: 2026-09-20
+last_updated: 2026-11-22
 date: 2026-09-20
 related:
   - ./0019-application-assignments-and-app-roles.md
@@ -16,6 +16,13 @@ related:
   - https://github.com/fps4/maestro/blob/main/docs/governance-model.md
   - https://github.com/fps4/maestro-specs/blob/main/docs/design/decisions/0019-the-outbox-holds-spine-envelopes.md
 ---
+
+> **Amended (2026-11-22), with the person's name (maestro ADR-0062 §2, story US-0103):** a fifth type,
+> `PrincipalProfileChanged@1`, body `{ field: name }`, is emitted when a person changes their own name on
+> `PUT /v1/me` — by the person, in the `self` seat, at `O0`, in the same transaction as the change; a `PUT`
+> of the name already kept records nothing. It names which part changed, never its value: the name is free
+> text and stays out of every body (§3's last paragraph holds). Read §3's table as five rows, the fifth being
+> this one; the rest of this decision stands.
 
 ## Context
 

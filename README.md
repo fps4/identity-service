@@ -316,7 +316,7 @@ listed ARNs instead of setting values. There is no database secret at all: the t
 function's role (ADR-0023).
 
 **The record.** The registry emits its lifecycle — `PrincipalRegistered`, `PrincipalSuspended`,
-`PrincipalReinstated`, `SeatOccupancyChanged` — as spine envelopes into a transactional outbox
+`PrincipalReinstated`, `PrincipalProfileChanged`, `SeatOccupancyChanged` — as spine envelopes into a transactional outbox
 ([ADR-0022](docs/design/decisions/0022-maestro-principal-ids-and-lifecycle-events.md)). On AWS the
 service runs with `RECORD_SINK=off`, set by the module and not overridable: it writes the outbox and relays
 nothing in-process. The relay function drains it every minute (`relay_schedule`), one invocation at a

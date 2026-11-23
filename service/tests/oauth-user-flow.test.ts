@@ -147,6 +147,23 @@ describe('OAuth server – Google SSO user flow (RQ-0001)', () => {
     expect(typeof payload.exp).toBe('number');
   });
 
+  it('carries the person\'s name as the name claim — on the code grant, on a refresh after it with the new name once changed — and none for a person with none', async () => {
+    const publicKey = await importSPKI(signingPublicPem, 'RS256');
+    const claims = async (accessToken: string) =>
+      (await jwtVerify(accessToken, publicKey, { issuer: CONFIG.auth.jwtIssuer, audience: 'maestro-workspace', currentDate: fixedNow })).payload;
+
+    const { token: unnamed } = await runHappyPath(server, verifier);
+    expect(await claims(unnamed.accessToken)).not.toHaveProperty('name');
+
+    await store.users.update(REVIEWER._id, { name: 'Jan Dekker' });
+    const { token: named } = await runHappyPath(server, verifier);
+    expect((await claims(named.accessToken)).name).toBe('Jan Dekker');
+
+    await store.users.update(REVIEWER._id, { name: 'Jan de Vries' });
+    const refreshed = await server.refreshUserToken({ refreshToken: named.refreshToken, clientId: 'client-maestro' });
+    expect((await claims(refreshed.accessToken)).name).toBe('Jan de Vries');
+  });
+
   it('binds aud to the initiating client (a token is not valid for another workspace)', async () => {
     const { token } = await runHappyPath(server, verifier);
     const publicKey = await importSPKI(signingPublicPem, 'RS256');

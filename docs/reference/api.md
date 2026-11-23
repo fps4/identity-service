@@ -141,6 +141,7 @@ The token also carries the person's **maestro principal**
 |---|---|
 | `prn` | the user's maestro principal id — `prn-h-…`, minted by identity-service when the user was created (backfilled on first use for older accounts) and stable for life, whichever IdP asserted the `sub`. This is the id maestro's record names; a consumer that keeps a principal registry should key it on `prn`, not on `(iss, sub)` |
 | `principal_kind` | always `human` on a user token |
+| `name` | what the person is called, when they have set one with `PUT /v1/me` (maestro ADR-0062 §2); a person with none has a token with no `name` claim. Carried by every grant that issues a user token, and re-read at every refresh, so a changed name reaches the next token |
 
 Oversight level is **never** a token claim — a consumer reads it from seat occupancy at the act, so a
 demotion takes effect on the next act rather than the next token refresh.
@@ -353,6 +354,38 @@ Update an existing session with additional identifiers or cookie data.
 - `400` – no fields supplied or invalid payload.
 - `404` – session not found.
 - `500` – unexpected error.
+
+---
+
+## `GET` / `PUT /v1/me`
+
+A person's own profile: their email and the name they set (maestro ADR-0062 §2). The name is carried in every
+user token as `name`; maestro's registry renames the principal from it, and every reader sees a name instead
+of an email.
+
+- **Authentication**: `Authorization: Bearer <access token>`, as for the preferences routes below — the
+  person's own user token, never a machine (`client_credentials`) token.
+
+`GET` answers `{ "email": …, "name": … }`, `name` being `null` when none is set. `PUT` takes
+`{ "name": … }` (`Content-Type: application/json`) and answers the same shape with the name as kept. A name is
+trimmed, 1 to 80 characters, with at least one letter in it and no control or invisible character. Both answer `Cache-Control: no-store`. A name
+change is an act on a user: it is recorded as `PrincipalProfileChanged` (who and when, never the name) in the
+same transaction, and a `PUT` of the name already kept records nothing. The new name reaches the person's
+next token — on its next refresh.
+
+```http
+PUT /v1/me
+Authorization: Bearer eyJ…
+Content-Type: application/json
+
+{ "name": "Jan Dekker" }
+```
+
+### Errors
+
+- `400` – the body is not a JSON object, or `name` is not a string of 1 to 80 characters (code points, once trimmed) with at least one letter and no control, format or invisible character (a newline, a NUL, a bidi override, a zero-width space). Nothing changes.
+- `401` – no bearer token, or one this service cannot verify.
+- `403` – a machine token, or a token naming no active user of this realm.
 
 ---
 

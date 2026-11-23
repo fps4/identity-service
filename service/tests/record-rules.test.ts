@@ -74,7 +74,7 @@ describe('the three types and their bodies (ADR-0022 §3)', () => {
   const schema = (type: string) => RECORD_TYPES.get(typeKey(type, 1))!;
 
   it('are declared, versioned, and no more', () => {
-    expect(RECORD_TYPE_NAMES.sort()).toEqual(['PrincipalRegistered', 'PrincipalReinstated', 'PrincipalSuspended', 'SeatOccupancyChanged']);
+    expect(RECORD_TYPE_NAMES.sort()).toEqual(['PrincipalProfileChanged', 'PrincipalRegistered', 'PrincipalReinstated', 'PrincipalSuspended', 'SeatOccupancyChanged']);
     for (const name of RECORD_TYPE_NAMES) expect(RECORD_TYPES.has(typeKey(name, 1))).toBe(true);
   });
 
@@ -91,6 +91,12 @@ describe('the three types and their bodies (ADR-0022 §3)', () => {
     expect(schema('PrincipalSuspended').safeParse({ reason: 'left the company' }).success).toBe(false);
     expect(schema('PrincipalReinstated').safeParse({ reason: 'enabled' }).success).toBe(true);
     expect(schema('PrincipalReinstated').safeParse({ reason: 'disabled' }).success).toBe(false);
+  });
+
+  it('PrincipalProfileChanged names the field that changed, never its value', () => {
+    expect(schema('PrincipalProfileChanged').safeParse({ field: 'name' }).success).toBe(true);
+    expect(schema('PrincipalProfileChanged').safeParse({ field: 'email' }).success).toBe(false);
+    expect(schema('PrincipalProfileChanged').safeParse({ field: 'name', value: 'Jan Dekker' }).success).toBe(false);
   });
 
   it('SeatOccupancyChanged names a seat, an application, a change and a level — never a name', () => {

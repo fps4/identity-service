@@ -7,6 +7,7 @@
  *   PrincipalRegistered@1    a principal now exists: which kind, from which source, in which realm
  *   PrincipalSuspended@1     it can no longer act, and why (disabled by an operator, deleted)
  *   PrincipalReinstated@1    it can act again (enabled, unlocked)
+ *   PrincipalProfileChanged@1 a person changed a part of their own profile — which part, never its value
  *   SeatOccupancyChanged@1   a seat was granted to or revoked from a principal on an application
  *
  * `SeatOccupancyChanged` is where identity-service's own model meets maestro's vocabulary: an
@@ -26,6 +27,7 @@ export const REGISTRATION_SOURCES = ['local', 'google', 'client_credentials', 's
 export const SUSPENSION_REASONS = ['disabled', 'locked', 'deleted'] as const;
 export const REINSTATEMENT_REASONS = ['enabled', 'unlocked'] as const;
 export const SEAT_CHANGES = ['granted', 'revoked'] as const;
+export const PROFILE_FIELDS = ['name'] as const;
 export const OVERSIGHT_LEVELS = ['O0', 'O1', 'O2', 'O3', 'O4'] as const;
 
 export type RegistrationSource = (typeof REGISTRATION_SOURCES)[number];
@@ -44,6 +46,10 @@ const bodies = {
   }).strict(),
   PrincipalReinstated: z.object({
     reason: z.enum(REINSTATEMENT_REASONS)
+  }).strict(),
+  // Which part changed, never what it became: a name is free text and stays off the record (the floor).
+  PrincipalProfileChanged: z.object({
+    field: z.enum(PROFILE_FIELDS)
   }).strict(),
   SeatOccupancyChanged: z.object({
     seat: token,             // the application's role key
